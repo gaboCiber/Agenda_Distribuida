@@ -6,6 +6,10 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+RUN apt-get update && apt-get install -y sqlite3
+
+RUN pip install jose
+
 COPY . .
 
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
