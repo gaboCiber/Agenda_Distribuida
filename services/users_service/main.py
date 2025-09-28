@@ -1,11 +1,12 @@
-from fastapi import FastAPI, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordRequestForm
+from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi.security import OAuth2PasswordRequestForm, OAuth2PasswordBearer
 from sqlalchemy.orm import Session
 from datetime import timedelta
+from typing import Annotated
 
 import crud, models, schemas
 from database import engine, get_db
-from security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from security import create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES, get_current_user
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -58,6 +59,24 @@ def login_for_access_token(form_data: OAuth2PasswordRequestForm = Depends(), db:
         data={"sub": user.email}, expires_delta=access_token_expires
     )
     return {"access_token": access_token, "token_type": "bearer"}
+
+@app.delete("/users/me", response_model=schemas.UserResponse)
+async def delete_current_user(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    """
+    Elimina la cuenta del usuario autenticado.
+    
+    Requiere autenticación mediante token JWT.
+    """
+    deleted_user = crud.delete_user(db, user_id=current_user.id)
+    if not deleted_user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User not found"
+        )
+    return deleted_user
 
 @app.get("/")
 def read_root():

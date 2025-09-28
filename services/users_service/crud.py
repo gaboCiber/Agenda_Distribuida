@@ -20,3 +20,20 @@ def create_user(db: Session, user: schemas.UserCreate):
     db.commit()
     db.refresh(db_user)
     return db_user
+
+def delete_user(db: Session, user_id: int):
+    """Elimina un usuario por su ID.
+    
+    Args:
+        db: Sesión de base de datos
+        user_id: ID del usuario a eliminar
+        
+    Returns:
+        El usuario eliminado o None si no se encontró
+    """
+    db_user = db.query(models.User).filter(models.User.id == user_id).first()
+    if db_user:
+        db.delete(db_user)
+        db.commit()
+        return db_user
+    return None
