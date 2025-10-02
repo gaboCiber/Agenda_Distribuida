@@ -46,4 +46,4 @@ RUN chown -R 1000:1000 /app
 RUN pip install --no-cache-dir uvicorn
 
 # Run the application with uvicorn
-CMD ["uvicorn", "main_fixed:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "info"]
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--log-level", "info"]

@@ -212,13 +212,17 @@ class RedisService:
                     # Si ya es string, usar directamente
                     event = json.loads(message['data'])
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                logger.error(f"Error procesando mensaje: {e}")
+                logger.error(f"Error procesando mensaje JSON: {e}. Datos recibidos: {message['data']}")
                 return
-                
+
+            logger.info(f"Evento recibido: {event}")  # Logging detallado
+
             event_type = event.get('type')
             if not event_type:
-                logger.warning("Mensaje recibido sin tipo de evento")
+                logger.warning(f"Mensaje recibido sin tipo de evento. Evento completo: {event}")
                 return
+
+            logger.info(f"Procesando evento de tipo: {event_type}")  # Logging detallado
                 
             # Obtener manejadores para este tipo de evento
             handlers = self.handlers.get(event_type, [])
@@ -230,16 +234,22 @@ class RedisService:
             loop = asyncio.get_event_loop()
             for handler in handlers:
                 try:
-                    # Usar run_in_executor para código síncrono o await para asíncrono
+                    logger.info(f"Ejecutando manejador para evento {event_type}: {handler}")
+                    logger.info(f"Evento completo que se pasa al manejador: {event}")
+
+                    # Verificar si el manejador es una función asíncrona
                     if asyncio.iscoroutinefunction(handler):
+                        logger.info("Manejador es una función asíncrona, ejecutando directamente")
                         # Si el manejador es una corutina, esperar directamente
                         await handler(event)
                     else:
+                        logger.info("Manejador es una función síncrona, ejecutando en hilo separado")
                         # Si es síncrono, ejecutar en un hilo separado
                         await loop.run_in_executor(
                             self.executor,
                             lambda: handler(event)
                         )
+                    logger.info(f"Manejador ejecutado exitosamente para evento {event_type}")
                 except Exception as e:
                     logger.error(f"Error ejecutando manejador para {event_type}: {e}", exc_info=True)
                     
@@ -287,15 +297,15 @@ class RedisService:
                     try:
                         # Usar get_message con timeout en lugar de listen() para mejor control
                         message = self.pubsub.get_message(timeout=1.0, ignore_subscribe_messages=True)
-                        if message:
+                        if message and message.get('type') == 'message':
                             logger.debug(f"Mensaje recibido en canal {message['channel']}: {message}")
                             await self._process_message(message)
-                        
+
                         # Verificar periódicamente la conexión
                         if not self.is_connected():
                             logger.warning("Conexión perdida, intentando reconectar...")
                             break
-                            
+
                     except (RedisConnectionError, RedisTimeoutError) as e:
                         logger.error(f"Error de conexión: {e}")
                         break

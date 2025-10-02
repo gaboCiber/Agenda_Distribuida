@@ -44,51 +44,74 @@ class UserEventHandler:
     
     async def handle_registration(self, event: Dict[str, Any]):
         """Maneja el evento de registro de usuario.
-        
+
         Args:
             event: Diccionario con los datos del evento
         """
+        print(f"🚀🚀🚀 MANEJADOR DE REGISTRO EJECUTÁNDOSE: {event.get('event_id')} 🚀🚀🚀")  # Debug directo
         logger.info(f"Manejando evento de registro: {event.get('event_id')}")
-        
+
         with self._get_db_session() as db:
             try:
                 payload = event.get('payload', {})
                 email = payload.get('email', '').strip().lower()
                 password = payload.get('password', '').strip()
                 username = payload.get('username', '').strip() or email.split('@')[0]
-                
+
+                print(f"📧 DATOS EXTRAÍDOS: email={email}, username={username}")  # Debug directo
+                logger.info(f"Datos extraídos del evento: email={email}, username={username}")
+
                 # Validar datos de entrada
                 if not email or not password:
+                    print("❌ ERROR: Email y contraseña son requeridos pero no se proporcionaron")  # Debug directo
+                    logger.error("Email y contraseña son requeridos pero no se proporcionaron")
                     return await self._publish_registration_response(
                         event=event,
                         success=False,
                         error="Email y contraseña son requeridos"
                     )
-                
+
+                print(f"✅ VALIDANDO DATOS: email={email}, password={'*' * len(password)}")  # Debug directo
+                logger.info(f"Validando datos de entrada: email={email}, password={'*' * len(password)}")
+
                 # Verificar si el usuario ya existe
+                print(f"🔍 VERIFICANDO USUARIO EXISTENTE: {email}")  # Debug directo
+                logger.info(f"Verificando si el usuario ya existe: {email}")
                 existing_user = user_crud.get_user_by_email(db, email=email)
                 if existing_user:
+                    print(f"⚠️  USUARIO YA EXISTE: {email}")  # Debug directo
+                    logger.warning(f"El correo electrónico ya está registrado: {email}")
                     return await self._publish_registration_response(
                         event=event,
                         success=False,
                         error="El correo electrónico ya está registrado"
                     )
-                
+
+                print("✅ USUARIO NO EXISTE, PROCEDIENTO CON CREACIÓN")  # Debug directo
+                logger.info("Usuario no existe, procediendo con creación")
+
                 # Crear nuevo usuario
                 user_data = {
                     "email": email,
                     "password": password,
                     "username": username
                 }
-                
+
+                print(f"💾 CREANDO USUARIO: {user_data}")  # Debug directo
+                logger.info(f"Creando usuario con datos: {user_data}")
                 new_user = user_crud.create_user(db, user_data=user_data)
                 if not new_user:
+                    print("❌ ERROR: No se pudo crear el usuario - user_crud.create_user devolvió None")  # Debug directo
+                    logger.error("No se pudo crear el usuario - user_crud.create_user devolvió None")
                     return await self._publish_registration_response(
                         event=event,
                         success=False,
                         error="No se pudo crear el usuario"
                     )
-                
+
+                print(f"✅ USUARIO CREADO EXITOSAMENTE: {new_user.email} (ID: {new_user.id})")  # Debug directo
+                logger.info(f"Usuario creado exitosamente: {new_user.email} (ID: {new_user.id})")
+
                 # Publicar respuesta de éxito
                 await self._publish_registration_response(
                     event=event,
@@ -98,10 +121,12 @@ class UserEventHandler:
                     username=new_user.username,
                     is_active=new_user.is_active
                 )
-                
+
+                print(f"🎉 USUARIO REGISTRADO EXITOSAMENTE: {email}")  # Debug directo
                 logger.info(f"Usuario registrado exitosamente: {email}")
-                
+
             except Exception as e:
+                print(f"💥 ERROR EN REGISTRO: {e}")  # Debug directo
                 logger.error(f"Error en el registro de usuario: {e}", exc_info=True)
                 await self._publish_registration_response(
                     event=event,
