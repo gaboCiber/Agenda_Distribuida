@@ -1,0 +1,6 @@
+2025-10-01 21:21:39,184 - main - INFO - ==================================================
+2025-10-01 21:21:39,184 - main - INFO - 🚀 Iniciando servicio de usuarios (Event-Driven)
+2025-10-01 21:21:39,185 - main - INFO - ✅ Conexión a Redis verificada
+2025-10-01 21:21:39,185 - main - INFO - ✅ Servicio de usuarios listo para recibir eventos
+2025-10-01 21:21:39,185 - services.event_service - INFO - Suscribiéndose al canal: users_events
+2025-10-01 21:21:39,185 - services.event_service - INFO - ✅ Suscrito exitosamente al canal: users_events
