@@ -1,0 +1,41 @@
+Agenda distribuida
+
+El tiempo es un recurso crı́tico. Una de las formas habituales de administrarlo es manteniendo una
+agenda. Para ello existen un número de alternativas que van desde la clásica agenda en papel hasta
+su variante electrónica. Sin embargo, dada la propia naturaleza de las personas y su interacción con
+otras, no basta con llevar una agenda personal sino que muchas veces es necesario colegiarla con
+varias personas para realizar actividades de conjunto. Esto conlleva identificar los horarios comunes
+e identificar espacios temporales desocupados. Igualmente estas planificaciones puede variar por
+eventos no previstos por uno a los cuales debe asistir modificando nuevamente su agenda.
+
+Especificaciones
+
+El proyecto que se propone tiene como propósito implementar un agenda distribuida. En esta
+agenda uno debe poder organizar los eventos y citas personales. Igualmente debe poder establecer
+citas con otras personas de manera que estos eventos sean reflejados inmediatamente en las agendas
+de las personas involucradas. Esta agenda distribuida debe preveer las citas grupales para ello
+debe permitir la conformación de grupos jerárquicos o no de manera dinámica. En el caso que se
+organice una cita por alguien jerárquicamente superior a uno esta debe aparecer inmediatamente en
+todas las agendas de las personas del grupo. En caso de que sean en grupo sin jerarquı́a para
+conformarse la cita todos deben aceptarla. En este sistema es vital la autenticación e identificación
+de cada uno de los usuarios de las agendas del sistema. Igualmente se debe poder visualizar las
+agendas, en un perı́odo de tiempo dado, de un grupo de personas respetando en cada caso la
+privacidad de su información y los niveles de jerarquı́a.
+
+Recomendaciones
+
+El sistema que se proponga debe poseer las sisguientes cararecterísticas:
+• Arquitectura distribuida.
+• Mecanismo de autenticación e identificación.
+• Conformación de grupos, jerárquicos o no, dinámicamente.
+• Creación de citas grupales.
+• Actualización automática de las agendas.
+• Identificación de conflictos en las agendas locales.
+• Visualización, de un intervalo temporal, de las agendas de un grupo de usuarios respetando su
+privacidad y los niveles jerárquicos.
+
+Nota
+
+Cualquier enriquecimiento del proyecto es válido y se tendrá en cuenta en la evaluación del mismo.
+En caso de modificar la orden del proyecto debe consultarse a los profesores con anterioridad.
+

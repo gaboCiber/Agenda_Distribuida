@@ -25,7 +25,13 @@ docker run -d --name agenda-api-gateway --network $NETWORK_NAME -p 8000:8000 \
 # 3. Users Service
 echo "Starting Users Service..."
 docker run -d --name agenda-users-service --network $NETWORK_NAME -p 8001:8001 \
-  -v "$CURRENT_DIR/services/users_service:/app" agenda-users:latest
+  -e REDIS_HOST=agenda-bus-redis \
+  -e REDIS_PORT=6379 \
+  -e REDIS_DB=0 \
+  -e LOG_DIR=/app/logs \
+  -v "$CURRENT_DIR/services/users_service:/app" \
+  -v "$CURRENT_DIR/services/users_service/logs:/app/logs" \
+  agenda-users:latest
 
 # 4. Events Service
 echo "Starting Events Service..."

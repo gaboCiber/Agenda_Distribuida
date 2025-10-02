@@ -26,11 +26,11 @@ try:
     import models
     from services.event_service import RedisService
     from services.user_event_handler import user_event_handler
-    
+
     # Crear tablas en la base de datos
     models.Base.metadata.create_all(bind=engine)
     logger.info("✅ Base de datos inicializada correctamente")
-    
+
 except Exception as e:
     logger.critical(f"❌ Error crítico al inicializar la base de datos: {str(e)}", exc_info=True)
     sys.exit(1)
@@ -38,85 +38,77 @@ except Exception as e:
 # Inicializar FastAPI
 app = FastAPI(title="Users Service (Event-Driven)")
 
-# Variable para almacenar la tarea de fondo
-background_task = None
-
-# Get Redis configuration from environment variables
+# Configuración de Redis
 REDIS_HOST = os.getenv('REDIS_HOST', 'agenda-bus-redis')
 REDIS_PORT = int(os.getenv('REDIS_PORT', '6379'))
 REDIS_DB = int(os.getenv('REDIS_DB', '0'))
 
-# Log Redis connection details
-logger.info(f"🔌 Intentando conectar a Redis en {REDIS_HOST}:{REDIS_PORT} (DB: {REDIS_DB})")
+# Variable para almacenar la tarea de fondo
+background_task = None
 
-# Instancia global del servicio de Redis
-try:
-    redis_service = RedisService(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
-    logger.info("✅ Servicio Redis inicializado correctamente")
-except Exception as e:
-    logger.critical(f"❌ No se pudo inicializar el servicio Redis: {str(e)}", exc_info=True)
-    redis_service = None
+# Instancia global del servicio de Redis (inicialización diferida)
+redis_service = None
+_redis_initialized = False
 
+def get_redis_service():
+    """Obtener instancia de Redis con inicialización diferida"""
+    global redis_service, _redis_initialized
 
-# Eventos de inicio y parada
-@app.on_event("startup")
-async def startup_event():
-    """Evento de inicio con configuración de Redis"""
-    logger.info("=" * 50)
-    logger.info("🚀 Iniciando servicio de usuarios (Event-Driven)")
-    
-    # Configurar Redis en segundo plano si está disponible
-    if redis_service:
+    if not _redis_initialized:
         try:
-            # Crear tarea en segundo plano para suscribirse a eventos
-            asyncio.create_task(_setup_redis_subscription())
+            redis_service = RedisService(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
+            logger.info("✅ Servicio Redis inicializado correctamente")
+            _redis_initialized = True
         except Exception as e:
-            logger.warning(f"⚠️ Error configurando Redis: {e}")
-    
-    logger.info("✅ Servicio iniciado correctamente")
+            logger.error(f"❌ No se pudo inicializar el servicio Redis: {str(e)}")
+            redis_service = None
 
-async def _setup_redis_subscription():
+    return redis_service
+
+async def setup_redis_subscription():
     """Configurar suscripción a Redis en segundo plano"""
     global background_task
-    
+
     try:
-        # Verificar conexión a Redis
-        if redis_service and redis_service.is_connected():
-            logger.info("✅ Conexión a Redis verificada")
-            # Iniciar la suscripción a Redis en segundo plano
+        redis_svc = get_redis_service()
+        if redis_svc and redis_svc.is_connected():
+            logger.info("🔄 Configurando suscripción a eventos de Redis...")
             background_task = asyncio.create_task(
-                redis_service.subscribe_to_channel("users_events")
+                redis_svc.subscribe_to_channel("users_events")
             )
-            logger.info("✅ Servicio de usuarios listo para recibir eventos")
+            logger.info("✅ Suscripción a canal 'users_events' configurada correctamente")
         else:
-            logger.warning("⚠️ Redis no disponible - funcionando sin suscripción a eventos")
+            logger.warning("⚠️ Redis no disponible - no se pudo configurar suscripción")
     except Exception as e:
         logger.error(f"Error configurando suscripción Redis: {e}")
 
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Evento de parada"""
-    logger.info("🛑 Deteniendo servicio de usuarios...")
-    if background_task:
-        background_task.cancel()
-        try:
-            await background_task
-        except asyncio.CancelledError:
-            pass
-    logger.info("✅ Servicio detenido correctamente")
+# Eventos de inicio y parada removidos para evitar conflictos
+
+@app.post("/setup-redis")
+async def setup_redis_endpoint():
+    """Endpoint para configurar manualmente la suscripción a Redis"""
+    try:
+        await setup_redis_subscription()
+        return {"status": "success", "message": "Suscripción a Redis configurada correctamente"}
+    except Exception as e:
+        logger.error(f"Error configurando Redis: {e}")
+        return {"status": "error", "message": str(e)}, 500
 
 @app.get("/health")
 async def health_check():
     """Endpoint de verificación de salud"""
     try:
+        # Inicializar Redis si no está inicializado
+        redis_svc = get_redis_service()
+
         # Verificar conexión a Redis sin bloquear
         redis_connected = False
-        if hasattr(redis_service, 'client') and redis_service.client:
+        if redis_svc and hasattr(redis_svc, 'client') and redis_svc.client:
             try:
-                redis_connected = redis_service.client.ping()
+                redis_connected = redis_svc.client.ping()
             except:
                 redis_connected = False
-                
+
         return {
             "status": "ok",
             "service": "users_service",

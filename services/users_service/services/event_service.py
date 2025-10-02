@@ -203,11 +203,16 @@ class RedisService:
             return
             
         try:
-            # Decodificar el mensaje
+            # Procesar el mensaje (manejar tanto bytes como strings)
             try:
-                event = json.loads(message['data'].decode('utf-8'))
+                if isinstance(message['data'], bytes):
+                    # Si es bytes, decodificar
+                    event = json.loads(message['data'].decode('utf-8'))
+                else:
+                    # Si ya es string, usar directamente
+                    event = json.loads(message['data'])
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
-                logger.error(f"Error decodificando mensaje: {e}")
+                logger.error(f"Error procesando mensaje: {e}")
                 return
                 
             event_type = event.get('type')

@@ -4,3 +4,15 @@
 2025-10-01 21:21:39,185 - main - INFO - ✅ Servicio de usuarios listo para recibir eventos
 2025-10-01 21:21:39,185 - services.event_service - INFO - Suscribiéndose al canal: users_events
 2025-10-01 21:21:39,185 - services.event_service - INFO - ✅ Suscrito exitosamente al canal: users_events
+2025-10-02 12:27:28,203 - main - INFO - ==================================================
+2025-10-02 12:27:28,203 - main - INFO - 🚀 Iniciando servicio de usuarios (Event-Driven)
+2025-10-02 12:27:28,203 - main - INFO - ✅ Conexión a Redis verificada
+2025-10-02 12:27:28,203 - main - INFO - ✅ Servicio de usuarios listo para recibir eventos
+2025-10-02 12:27:28,203 - services.event_service - INFO - Suscribiéndose al canal: users_events
+2025-10-02 12:27:28,203 - services.event_service - INFO - ✅ Suscrito exitosamente al canal: users_events
+2025-10-02 12:46:23,133 - main - INFO - ==================================================
+2025-10-02 12:46:23,134 - main - INFO - 🚀 Iniciando servicio de usuarios (Event-Driven)
+2025-10-02 12:46:23,134 - main - INFO - ✅ Conexión a Redis verificada
+2025-10-02 12:46:23,134 - main - INFO - ✅ Servicio de usuarios listo para recibir eventos
+2025-10-02 12:46:23,134 - services.event_service - INFO - Suscribiéndose al canal: users_events
+2025-10-02 12:46:23,134 - services.event_service - INFO - ✅ Suscrito exitosamente al canal: users_events
