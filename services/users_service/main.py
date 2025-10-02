@@ -25,7 +25,8 @@ try:
     # Importar dependencias después de configurar el logging
     from database import engine, SessionLocal
     import models
-    from services.event_service import RedisService
+    from services.event_service import redis_service
+    from services.user_event_handler import user_event_handler  # ✅ Importar manejador de eventos
 
     # Crear tablas en la base de datos
     models.Base.metadata.create_all(bind=engine)
@@ -51,7 +52,7 @@ service_state = {
 }
 
 # Instancia global del servicio de Redis
-redis_service = None
+# redis_service = None
 
 def get_redis_service():
     """Obtener instancia de Redis"""
@@ -60,9 +61,12 @@ def get_redis_service():
     if redis_service is None:
         try:
             redis_service = RedisService(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB)
-            logger.info("✅ Servicio Redis inicializado correctamente")
+            logger.info("✅ Servicio Redis creado correctamente")
         except Exception as e:
             redis_service = None
+    else:
+        logger.info("✅ Servicio Redis inicializado correctamente")
+
 
     return redis_service
 
@@ -207,4 +211,4 @@ async def shutdown_event():
 # Ejecutar la aplicación con uvicorn cuando se ejecute este archivo directamente
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main_final:app", host="0.0.0.0", port=8001, reload=True)
+    uvicorn.run("main:app", host="0.0.0.0", port=8001, reload=True)

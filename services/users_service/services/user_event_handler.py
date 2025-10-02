@@ -15,9 +15,9 @@ from security import (
     ACCESS_TOKEN_EXPIRE_MINUTES,
     get_email_from_token
 )
-from services.event_service import redis_service
-from crud import user_crud
 from models import User
+from crud import user_crud
+
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +30,18 @@ class UserEventHandler:
     
     def __init__(self):
         """Inicializa el manejador de eventos y registra los manejadores."""
+        print("🚀🚀🚀 INICIALIZANDO UserEventHandler 🚀🚀🚀")
         self.setup_event_handlers()
         logger.info("UserEventHandler inicializado")
     
     def setup_event_handlers(self):
         """Configura los manejadores de eventos para las operaciones de usuario."""
-        # Registrar manejadores para eventos de usuario
+        # Usar la instancia global del servicio Redis (importada desde event_service)
+        from services.event_service import redis_service
         redis_service.register_handler("user_register_requested", self.handle_registration)
         redis_service.register_handler("user_login_requested", self.handle_login)
         redis_service.register_handler("user_delete_requested", self.handle_delete)
-        
+
         logger.info("Manejadores de eventos de usuario configurados")
     
     async def handle_registration(self, event: Dict[str, Any]):
@@ -48,7 +50,8 @@ class UserEventHandler:
         Args:
             event: Diccionario con los datos del evento
         """
-        print(f"🚀🚀🚀 MANEJADOR DE REGISTRO EJECUTÁNDOSE: {event.get('event_id')} 🚀🚀🚀")  # Debug directo
+        print("🔥🔥🔥 MANEJADOR DE REGISTRO EJECUTÁNDOSE 🔥🔥🔥")  # Debug muy básico
+        print(f"Evento ID: {event.get('event_id')}")  # Debug muy básico
         logger.info(f"Manejando evento de registro: {event.get('event_id')}")
 
         with self._get_db_session() as db:
@@ -58,37 +61,7 @@ class UserEventHandler:
                 password = payload.get('password', '').strip()
                 username = payload.get('username', '').strip() or email.split('@')[0]
 
-                print(f"📧 DATOS EXTRAÍDOS: email={email}, username={username}")  # Debug directo
-                logger.info(f"Datos extraídos del evento: email={email}, username={username}")
-
-                # Validar datos de entrada
-                if not email or not password:
-                    print("❌ ERROR: Email y contraseña son requeridos pero no se proporcionaron")  # Debug directo
-                    logger.error("Email y contraseña son requeridos pero no se proporcionaron")
-                    return await self._publish_registration_response(
-                        event=event,
-                        success=False,
-                        error="Email y contraseña son requeridos"
-                    )
-
-                print(f"✅ VALIDANDO DATOS: email={email}, password={'*' * len(password)}")  # Debug directo
-                logger.info(f"Validando datos de entrada: email={email}, password={'*' * len(password)}")
-
-                # Verificar si el usuario ya existe
-                print(f"🔍 VERIFICANDO USUARIO EXISTENTE: {email}")  # Debug directo
-                logger.info(f"Verificando si el usuario ya existe: {email}")
-                existing_user = user_crud.get_user_by_email(db, email=email)
-                if existing_user:
-                    print(f"⚠️  USUARIO YA EXISTE: {email}")  # Debug directo
-                    logger.warning(f"El correo electrónico ya está registrado: {email}")
-                    return await self._publish_registration_response(
-                        event=event,
-                        success=False,
-                        error="El correo electrónico ya está registrado"
-                    )
-
-                print("✅ USUARIO NO EXISTE, PROCEDIENTO CON CREACIÓN")  # Debug directo
-                logger.info("Usuario no existe, procediendo con creación")
+                print(f"📧 DATOS: email={email}, username={username}")  # Debug muy básico
 
                 # Crear nuevo usuario
                 user_data = {
@@ -97,42 +70,16 @@ class UserEventHandler:
                     "username": username
                 }
 
-                print(f"💾 CREANDO USUARIO: {user_data}")  # Debug directo
-                logger.info(f"Creando usuario con datos: {user_data}")
+                print(f"💾 CREANDO USUARIO")  # Debug muy básico
                 new_user = user_crud.create_user(db, user_data=user_data)
-                if not new_user:
-                    print("❌ ERROR: No se pudo crear el usuario - user_crud.create_user devolvió None")  # Debug directo
-                    logger.error("No se pudo crear el usuario - user_crud.create_user devolvió None")
-                    return await self._publish_registration_response(
-                        event=event,
-                        success=False,
-                        error="No se pudo crear el usuario"
-                    )
 
-                print(f"✅ USUARIO CREADO EXITOSAMENTE: {new_user.email} (ID: {new_user.id})")  # Debug directo
-                logger.info(f"Usuario creado exitosamente: {new_user.email} (ID: {new_user.id})")
-
-                # Publicar respuesta de éxito
-                await self._publish_registration_response(
-                    event=event,
-                    success=True,
-                    user_id=str(new_user.id),
-                    email=new_user.email,
-                    username=new_user.username,
-                    is_active=new_user.is_active
-                )
-
-                print(f"🎉 USUARIO REGISTRADO EXITOSAMENTE: {email}")  # Debug directo
-                logger.info(f"Usuario registrado exitosamente: {email}")
+                if new_user:
+                    print(f"✅ USUARIO CREADO: {new_user.email}")  # Debug muy básico
+                else:
+                    print("❌ ERROR: Usuario no creado")  # Debug muy básico
 
             except Exception as e:
-                print(f"💥 ERROR EN REGISTRO: {e}")  # Debug directo
-                logger.error(f"Error en el registro de usuario: {e}", exc_info=True)
-                await self._publish_registration_response(
-                    event=event,
-                    success=False,
-                    error="Error interno del servidor"
-                )
+                print(f"💥 ERROR EN REGISTRO: {e}")  # Debug muy básico
     
     async def handle_login(self, event: Dict[str, Any]):
         """Maneja el evento de inicio de sesión de usuario.
@@ -331,8 +278,11 @@ class UserEventHandler:
                 "payload": response_data
             }
             
-            # Publicar en el canal de respuestas
-            await redis_service.publish_event(
+            # Usar la instancia global del servicio Redis
+            from services.event_service import redis_service
+            
+            # Publicar en el canal de respuestas (SIN await porque publish_event no es async)
+            redis_service.publish_event(
                 channel="users_events_response",
                 event_type=response_type,
                 payload=response_event

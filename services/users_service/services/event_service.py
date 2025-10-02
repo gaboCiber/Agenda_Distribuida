@@ -223,35 +223,48 @@ class RedisService:
                 return
 
             logger.info(f"Procesando evento de tipo: {event_type}")  # Logging detallado
-                
+
+            print(f"🔍 DEBUG: Tipo de evento obtenido: {event_type}")  # Debug directo
+            print(f"🔍 DEBUG: Evento completo: {event}")  # Debug directo
+
             # Obtener manejadores para este tipo de evento
             handlers = self.handlers.get(event_type, [])
+            print(f"🔍 DEBUG: Handlers encontrados: {len(handlers)} para evento {event_type}")  # Debug directo
+
             if not handlers:
                 logger.debug(f"No hay manejadores para el evento: {event_type}")
+                print(f"⚠️ DEBUG: No hay manejadores para el evento: {event_type}")  # Debug directo
                 return
+            else:
+                logger.info(f"Handlers: {handlers} ")
+                print(f"✅ DEBUG: Handlers encontrados: {handlers}")  # Debug directo
                 
             # Ejecutar manejadores en el ThreadPool
             loop = asyncio.get_event_loop()
             for handler in handlers:
                 try:
-                    logger.info(f"Ejecutando manejador para evento {event_type}: {handler}")
-                    logger.info(f"Evento completo que se pasa al manejador: {event}")
+                    logger.info(f"🚀🚀🚀 EJECUTANDO MANEJADOR: {handler} 🚀🚀🚀")
+                    logger.info(f"📦 EVENTO COMPLETO: {event}")
 
                     # Verificar si el manejador es una función asíncrona
                     if asyncio.iscoroutinefunction(handler):
-                        logger.info("Manejador es una función asíncrona, ejecutando directamente")
+                        logger.info("✅ Manejador es función asíncrona")
                         # Si el manejador es una corutina, esperar directamente
-                        await handler(event)
+                        result = await handler(event)
+                        logger.info(f"✅ Manejador asíncrono ejecutado exitosamente: {result}")
                     else:
-                        logger.info("Manejador es una función síncrona, ejecutando en hilo separado")
+                        logger.info("✅ Manejador es función síncrona")
                         # Si es síncrono, ejecutar en un hilo separado
-                        await loop.run_in_executor(
+                        result = await loop.run_in_executor(
                             self.executor,
                             lambda: handler(event)
                         )
-                    logger.info(f"Manejador ejecutado exitosamente para evento {event_type}")
+                        logger.info(f"✅ Manejador síncrono ejecutado exitosamente: {result}")
+                    logger.info(f"✅✅✅ MANEJADOR EJECUTADO EXITOSAMENTE para evento {event_type}")
                 except Exception as e:
-                    logger.error(f"Error ejecutando manejador para {event_type}: {e}", exc_info=True)
+                    logger.error(f"❌❌❌ ERROR EJECUTANDO MANEJADOR para {event_type}: {e}", exc_info=True)
+                    logger.error(f"Handler que falló: {handler}")
+                    logger.error(f"Evento que causó el error: {event}")
                     
         except Exception as e:
             logger.error(f"Error procesando mensaje: {e}", exc_info=True)
