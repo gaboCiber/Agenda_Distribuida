@@ -64,7 +64,7 @@ func Migrate(db *sql.DB) error {
 					created_at TIMESTAMP NOT NULL,
 					responded_at TIMESTAMP,
 					FOREIGN KEY (group_id) REFERENCES groups (id) ON DELETE CASCADE,
-					UNIQUE(group_id, user_id) WHERE status = 'pending'
+					UNIQUE(group_id, user_id, status)
 				);
 
 				-- Create indexes for better performance

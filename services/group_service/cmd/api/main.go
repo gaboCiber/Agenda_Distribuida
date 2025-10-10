@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	_ "database/sql" // Required for database drivers
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+
+	_ "github.com/mattn/go-sqlite3" // SQLite driver
 
 	"github.com/agenda-distribuida/group-service/internal/api/handlers"
 	"github.com/agenda-distribuida/group-service/internal/config"
@@ -98,12 +101,22 @@ func main() {
 }
 
 // setupRouter configures the HTTP routes
+// healthCheckHandler handles the health check endpoint
+func healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(`{"status": "ok", "service": "group-service"}`))
+}
+
 func setupRouter(
 	groupHandler *handlers.GroupHandler,
 	memberHandler *handlers.MemberHandler,
 	invitationHandler *handlers.InvitationHandler,
 ) *mux.Router {
 	r := mux.NewRouter()
+
+	// Health check endpoint
+	r.HandleFunc("/health", healthCheckHandler).Methods("GET")
 
 	// Group routes
 	groupRouter := r.PathPrefix("/groups").Subrouter()
