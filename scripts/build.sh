@@ -30,12 +30,13 @@ SERVICES=(
     "events_service"
     "groups_service"
     "notifications_service"
+    "streamlit_app"
 )
 
 # Construir cada imagen
 echo "Construyendo imágenes con etiqueta: $TAG"
 for service in "${SERVICES[@]}"; do
-    service_name="${service%_service}"  # Elimina el sufijo _service si existe
+    service_name="${service%_service}"  
     image_name="agenda-${service_name}"
     
     echo "\n--- Construyendo $image_name:$TAG ---"

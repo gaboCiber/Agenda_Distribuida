@@ -5,6 +5,9 @@ WORKDIR /app
 # Instalar dependencias del sistema para SQLite
 RUN apk add --no-cache gcc musl-dev sqlite
 
+# Crear directorio para la BD
+RUN mkdir -p /app/data && chmod 755 /app/data
+
 # Copiar go.mod y go.sum primero para cache de dependencias
 COPY go.mod go.sum ./
 RUN go mod download

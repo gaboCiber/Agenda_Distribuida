@@ -8,6 +8,7 @@ CONTAINERS=(
     "agenda-groups-service"
     "agenda-notifications-service"
     "agenda-bus-redis"
+    "agenda-streamlit-app"
 )
 
 # Nombre de la red
