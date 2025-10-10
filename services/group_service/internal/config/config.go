@@ -9,15 +9,15 @@ import (
 
 type Config struct {
 	// Server configuration
-	ServerAddress    string
-	ShutdownTimeout  time.Duration
-	Environment      string
+	ServerAddress   string
+	ShutdownTimeout time.Duration
+	Environment     string
 
 	// Database configuration
-	DatabasePath     string
+	DatabasePath string
 
 	// Redis configuration
-	RedisURL         string
+	RedisURL string
 }
 
 // Load loads configuration from environment variables

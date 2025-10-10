@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	_ "github.com/mattn/go-sqlite3"
 )
 
 // Database wraps the SQL database connection
@@ -58,7 +56,7 @@ func runMigrations(db *sql.DB) error {
 			parent_group_id TEXT REFERENCES groups(id) ON DELETE CASCADE,
 			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 			updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-		)`, 
+		)`,
 		`CREATE TABLE IF NOT EXISTS group_members (
 			group_id TEXT NOT NULL REFERENCES groups(id) ON DELETE CASCADE,
 			user_id TEXT NOT NULL,

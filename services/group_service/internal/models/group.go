@@ -3,8 +3,6 @@ package models
 import (
 	"database/sql"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // Group represents a user group in the system
@@ -19,20 +17,20 @@ type Group struct {
 
 // GroupMember represents a member of a group
 type GroupMember struct {
-	ID        string    `json:"id"`
-	GroupID   string    `json:"group_id"`
-	UserID    string    `json:"user_id"`
-	Role      string    `json:"role"` // e.g., "admin", "member"
-	JoinedAt  time.Time `json:"joined_at"`
+	ID       string    `json:"id"`
+	GroupID  string    `json:"group_id"`
+	UserID   string    `json:"user_id"`
+	Role     string    `json:"role"` // e.g., "admin", "member"
+	JoinedAt time.Time `json:"joined_at"`
 }
 
 // GroupEvent represents an event associated with a group
 type GroupEvent struct {
-	ID        string    `json:"id"`
-	GroupID   string    `json:"group_id"`
-	EventID   string    `json:"event_id"`
-	AddedBy   string    `json:"added_by"`
-	AddedAt   time.Time `json:"added_at"`
+	ID      string    `json:"id"`
+	GroupID string    `json:"group_id"`
+	EventID string    `json:"event_id"`
+	AddedBy string    `json:"added_by"`
+	AddedAt time.Time `json:"added_at"`
 }
 
 // GroupInvitation represents an invitation to join a group

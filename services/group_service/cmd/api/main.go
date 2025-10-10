@@ -2,14 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/api/handlers"
 	"github.com/agenda-distribuida/group-service/internal/config"
@@ -114,20 +111,20 @@ func setupRouter(
 	groupRouter.HandleFunc("/{id}", groupHandler.GetGroup).Methods("GET")
 	groupRouter.HandleFunc("/{id}", groupHandler.UpdateGroup).Methods("PUT")
 	groupRouter.HandleFunc("/{id}", groupHandler.DeleteGroup).Methods("DELETE")
-	groupRouter.HandleFunc("/user/{userID}", groupHandler.GetUserGroups).Methods("GET")
+	groupRouter.HandleFunc("/user/{userID}", groupHandler.ListUserGroups).Methods("GET")
 
 	// Member routes
 	memberRouter := r.PathPrefix("/groups/{groupID}/members").Subrouter()
 	memberRouter.HandleFunc("", memberHandler.AddMember).Methods("POST")
 	memberRouter.HandleFunc("/{userID}", memberHandler.RemoveMember).Methods("DELETE")
 	memberRouter.HandleFunc("", memberHandler.ListMembers).Methods("GET")
-	memberRouter.HandleFunc("/admins", memberHandler.GetAdmins).Methods("GET")
+	memberRouter.HandleFunc("/admins", memberHandler.GetGroupAdmins).Methods("GET")
 
 	// Invitation routes
 	invitationRouter := r.PathPrefix("/invitations").Subrouter()
 	invitationRouter.HandleFunc("", invitationHandler.CreateInvitation).Methods("POST")
 	invitationRouter.HandleFunc("/{invitationID}", invitationHandler.RespondToInvitation).Methods("POST")
-	invitationRouter.HandleFunc("/user/{userID}", invitationHandler.GetUserInvitations).Methods("GET")
+	invitationRouter.HandleFunc("/user/{userID}", invitationHandler.ListUserInvitations).Methods("GET")
 	invitationRouter.HandleFunc("/{invitationID}", invitationHandler.GetInvitation).Methods("GET")
 
 	// Add request logging middleware

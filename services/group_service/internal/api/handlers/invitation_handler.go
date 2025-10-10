@@ -3,9 +3,12 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
+	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
+	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 )
 

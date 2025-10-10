@@ -4,12 +4,14 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // CreateGroup creates a new group
 func (d *Database) CreateGroup(group *Group) error {
 	group.ID = uuid.New().String()
-	group.CreatedAt = time.Now().UTC()w
+	group.CreatedAt = time.Now().UTC()
 	group.UpdatedAt = group.CreatedAt
 
 	query := `
@@ -214,6 +216,44 @@ func (d *Database) AddGroupMember(member *GroupMember) error {
 	)
 
 	return err
+}
+
+// GetGroupAdmins returns all admin members of a group
+func (d *Database) GetGroupAdmins(groupID string) ([]*GroupMember, error) {
+	var admins []*GroupMember
+
+	rows, err := d.db.Query(
+		`SELECT id, group_id, user_id, role, joined_at 
+		FROM group_members 
+		WHERE group_id = ? AND role = ?`, 
+		groupID, "admin",
+	)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var member GroupMember
+		err := rows.Scan(
+			&member.ID,
+			&member.GroupID,
+			&member.UserID,
+			&member.Role,
+			&member.JoinedAt,
+		)
+		if err != nil {
+			return nil, err
+		}
+		admins = append(admins, &member)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return admins, nil
 }
 
 // RemoveGroupMember removes a user from a group

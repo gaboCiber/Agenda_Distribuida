@@ -1,6 +1,7 @@
 package api
 
 import (
+	"log"
 	"net/http"
 
 	"github.com/agenda-distribuida/group-service/internal/api/handlers"
