@@ -8,19 +8,27 @@ import (
 	"github.com/google/uuid"
 )
 
-// CreateGroup creates a new group
+// CreateGroup creates a new group and adds the creator as an admin
 func (d *Database) CreateGroup(group *Group) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
 	group.ID = uuid.New().String()
 	group.CreatedAt = time.Now().UTC()
 	group.UpdatedAt = group.CreatedAt
 
-	query := `
-		INSERT INTO groups (id, name, description, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)
-	`
-
-	_, err := d.db.Exec(
-		query,
+	// Insert the group
+	_, err = tx.Exec(
+		`INSERT INTO groups (id, name, description, created_by, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
 		group.ID,
 		group.Name,
 		group.Description,
@@ -30,17 +38,27 @@ func (d *Database) CreateGroup(group *Group) error {
 	)
 
 	if err != nil {
+		tx.Rollback()
 		return err
 	}
 
 	// Add the creator as an admin member
-	return d.AddGroupMember(&GroupMember{
-		ID:       uuid.New().String(),
-		GroupID:  group.ID,
-		UserID:   group.CreatedBy,
-		Role:     "admin",
-		JoinedAt: time.Now().UTC(),
-	})
+	_, err = tx.Exec(
+		`INSERT INTO group_members (id, group_id, user_id, role, joined_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		uuid.New().String(),
+		group.ID,
+		group.CreatedBy,
+		"admin",
+		time.Now().UTC(),
+	)
+
+	if err != nil {
+		tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
 }
 
 // GetGroupByID retrieves a group by its ID

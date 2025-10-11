@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -38,20 +39,52 @@ type AddMemberRequest struct {
 
 // AddMember adds a user to a group
 func (h *MemberHandler) AddMember(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener el ID del grupo de los parámetros de la ruta
 	vars := mux.Vars(r)
-	groupID := vars["id"]
+	groupID, exists := vars["groupID"]
+	if !exists || groupID == "" {
+		// Intentar con 'id' como respaldo (para compatibilidad)
+		groupID, exists = vars["id"]
+		if !exists || groupID == "" {
+			log.Printf("Error: No se pudo obtener el ID del grupo de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Group ID is required")
+			return
+		}
+	}
 
-	// Check if the requesting user is an admin of the group
+	log.Printf("Solicitud para añadir miembro - GroupID: '%s', UserID: '%s', URL: %s", 
+		groupID, userID, r.URL.String())
+
+	// Verificar si el usuario es administrador del grupo
+	log.Printf("Verificando permisos de administrador para grupo: %s, usuario: %s", groupID, userID)
 	isAdmin, err := h.db.IsGroupAdmin(groupID, userID)
 	if err != nil {
+		log.Printf("Error al verificar permisos de administrador: %v", err)
 		RespondWithError(w, http.StatusInternalServerError, "Failed to verify permissions")
 		return
+	}
+
+	log.Printf("Resultado de IsGroupAdmin para grupo %s y usuario %s: isAdmin=%v", 
+		groupID, userID, isAdmin)
+	
+	// Si no es administrador, verificar si el grupo existe para dar un mensaje más específico
+	if !isAdmin {
+		_, err := h.db.GetGroupByID(groupID)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				log.Printf("El grupo con ID %s no existe", groupID)
+				RespondWithError(w, http.StatusNotFound, "Group not found")
+				return
+			}
+			log.Printf("Error al verificar la existencia del grupo: %v", err)
+		}
 	}
 
 	if !isAdmin {
@@ -104,15 +137,43 @@ func (h *MemberHandler) AddMember(w http.ResponseWriter, r *http.Request) {
 
 // RemoveMember removes a user from a group
 func (h *MemberHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener los parámetros de la ruta
 	vars := mux.Vars(r)
-	groupID := vars["id"]
-	memberID := vars["member_id"]
+	
+	// Obtener el ID del grupo
+	groupID, exists := vars["groupID"]
+	if !exists || groupID == "" {
+		// Intentar con 'id' como respaldo (para compatibilidad)
+		groupID, exists = vars["id"]
+		if !exists || groupID == "" {
+			log.Printf("Error: No se pudo obtener el ID del grupo de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Group ID is required")
+			return
+		}
+	}
+
+	// Obtener el ID del miembro a eliminar
+	memberID, exists := vars["userID"] // Según la ruta definida en main.go
+	if !exists || memberID == "" {
+		// Intentar con 'member_id' como respaldo (para compatibilidad)
+		memberID, exists = vars["member_id"]
+		if !exists || memberID == "" {
+			log.Printf("Error: No se pudo obtener el ID del miembro de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Member ID is required")
+			return
+		}
+	}
+
+	log.Printf("Solicitud para eliminar miembro - GroupID: '%s', UserID: '%s', MemberID: '%s', URL: %s", 
+		groupID, userID, memberID, r.URL.String())
 
 	// Check if the requesting user is an admin or the member themselves
 	isAdmin, err := h.db.IsGroupAdmin(groupID, userID)
@@ -165,23 +226,40 @@ func (h *MemberHandler) RemoveMember(w http.ResponseWriter, r *http.Request) {
 
 // ListMembers returns all members of a group
 func (h *MemberHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener el ID del grupo de los parámetros de la ruta
 	vars := mux.Vars(r)
-	groupID := vars["id"]
+	groupID, exists := vars["groupID"]
+	if !exists || groupID == "" {
+		// Intentar con 'id' como respaldo (para compatibilidad)
+		groupID, exists = vars["id"]
+		if !exists || groupID == "" {
+			log.Printf("Error: No se pudo obtener el ID del grupo de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Group ID is required")
+			return
+		}
+	}
 
-	// Check if the user is a member of the group
+	log.Printf("Solicitud para listar miembros - GroupID: '%s', UserID: '%s', URL: %s", 
+		groupID, userID, r.URL.String())
+
+	// Verificar si el usuario es miembro del grupo
 	isMember, err := h.db.IsGroupMember(groupID, userID)
 	if err != nil {
+		log.Printf("Error al verificar membresía del grupo: %v", err)
 		RespondWithError(w, http.StatusInternalServerError, "Failed to verify group membership")
 		return
 	}
 
 	if !isMember {
+		log.Printf("Usuario %s no es miembro del grupo %s", userID, groupID)
 		RespondWithError(w, http.StatusForbidden, "You are not a member of this group")
 		return
 	}
@@ -200,21 +278,28 @@ func (h *MemberHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 		pageSize = 20
 	}
 
-	// In a real implementation, you would use pagination in the database query
+	// Obtener los miembros del grupo
+	log.Printf("Obteniendo miembros del grupo: %s", groupID)
 	members, err := h.db.GetGroupMembers(groupID)
 	if err != nil {
+		log.Printf("Error al obtener miembros del grupo: %v", err)
 		RespondWithError(w, http.StatusInternalServerError, "Failed to retrieve group members")
 		return
 	}
 
-	// Convert to response format
+	log.Printf("Miembros encontrados: %d", len(members))
+
+	// Convertir al formato de respuesta
 	var response []MemberResponse
 	for _, member := range members {
+		log.Printf("Procesando miembro: %+v", member)
 		response = append(response, *toMemberResponse(member))
 	}
 
-	// In a real implementation, you would return paginated results
+	// Retornar la lista de miembros
 	RespondWithJSON(w, http.StatusOK, map[string]interface{}{
+		"group_id": groupID,
+		"count":    len(response),
 		"members": response,
 		"page":    page,
 		"total":   len(response),
@@ -223,14 +308,29 @@ func (h *MemberHandler) ListMembers(w http.ResponseWriter, r *http.Request) {
 
 // GetGroupAdmins returns all admin members of a group
 func (h *MemberHandler) GetGroupAdmins(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener el ID del grupo de los parámetros de la ruta
 	vars := mux.Vars(r)
-	groupID := vars["id"]
+	groupID, exists := vars["groupID"]
+	if !exists || groupID == "" {
+		// Intentar con 'id' como respaldo (para compatibilidad)
+		groupID, exists = vars["id"]
+		if !exists || groupID == "" {
+			log.Printf("Error: No se pudo obtener el ID del grupo de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Group ID is required")
+			return
+		}
+	}
+
+	log.Printf("Solicitud para listar administradores - GroupID: '%s', UserID: '%s', URL: %s", 
+		groupID, userID, r.URL.String())
 
 	// Check if the user is a member of the group
 	isMember, err := h.db.IsGroupMember(groupID, userID)

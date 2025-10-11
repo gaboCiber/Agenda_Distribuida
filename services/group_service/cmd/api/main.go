@@ -121,9 +121,9 @@ func setupRouter(
 	// Group routes
 	groupRouter := r.PathPrefix("/groups").Subrouter()
 	groupRouter.HandleFunc("", groupHandler.CreateGroup).Methods("POST")
-	groupRouter.HandleFunc("/{id}", groupHandler.GetGroup).Methods("GET")
-	groupRouter.HandleFunc("/{id}", groupHandler.UpdateGroup).Methods("PUT")
-	groupRouter.HandleFunc("/{id}", groupHandler.DeleteGroup).Methods("DELETE")
+	groupRouter.HandleFunc("/{groupID}", groupHandler.GetGroup).Methods("GET")
+	groupRouter.HandleFunc("/{groupID}", groupHandler.UpdateGroup).Methods("PUT")
+	groupRouter.HandleFunc("/{groupID}", groupHandler.DeleteGroup).Methods("DELETE")
 	groupRouter.HandleFunc("/user/{userID}", groupHandler.ListUserGroups).Methods("GET")
 
 	// Member routes
