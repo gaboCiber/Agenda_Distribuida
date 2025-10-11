@@ -3,6 +3,7 @@ package handlers
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -36,7 +37,8 @@ type InvitationResponse struct {
 
 // CreateInvitationRequest represents the request body for creating an invitation
 type CreateInvitationRequest struct {
-	UserID string `json:"user_id"`
+	GroupID string `json:"group_id"`
+	UserID  string `json:"user_id"`
 }
 
 // RespondToInvitationRequest represents the request body for responding to an invitation
@@ -46,33 +48,48 @@ type RespondToInvitationRequest struct {
 
 // CreateInvitation creates a new group invitation
 func (h *InvitationHandler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
-	vars := mux.Vars(r)
-	groupID := vars["id"]
+	// Obtener el ID del grupo del cuerpo de la solicitud
+	var req CreateInvitationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		log.Printf("Error al decodificar la solicitud: %v", err)
+		RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
+		return
+	}
+	defer r.Body.Close()
 
-	// Check if the requesting user is an admin of the group
+	// Verificar que se proporcionó un ID de grupo
+	if req.GroupID == "" {
+		log.Println("Error: No se proporcionó el ID del grupo en la solicitud")
+		RespondWithError(w, http.StatusBadRequest, "Group ID is required in the request body")
+		return
+	}
+
+	groupID := req.GroupID
+
+	log.Printf("Solicitud para crear invitación - GroupID: '%s', UserID: '%s', InvitedUserID: '%s', URL: %s",
+		groupID, userID, req.UserID, r.URL.String())
+
+	// Verificar si el usuario es administrador del grupo
 	isAdmin, err := h.db.IsGroupAdmin(groupID, userID)
 	if err != nil {
+		log.Printf("Error al verificar permisos de administrador: %v", err)
 		RespondWithError(w, http.StatusInternalServerError, "Failed to verify permissions")
 		return
 	}
 
 	if !isAdmin {
+		log.Printf("Usuario %s no es administrador del grupo %s", userID, groupID)
 		RespondWithError(w, http.StatusForbidden, "Only group admins can invite members")
 		return
 	}
-
-	var req CreateInvitationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		RespondWithError(w, http.StatusBadRequest, "Invalid request payload")
-		return
-	}
-	defer r.Body.Close()
 
 	if req.UserID == "" {
 		RespondWithError(w, http.StatusBadRequest, "User ID is required")
@@ -127,14 +144,29 @@ func (h *InvitationHandler) CreateInvitation(w http.ResponseWriter, r *http.Requ
 
 // RespondToInvitation handles a user's response to a group invitation
 func (h *InvitationHandler) RespondToInvitation(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener el ID de la invitación de los parámetros de la ruta
 	vars := mux.Vars(r)
-	invitationID := vars["invitation_id"]
+	invitationID, exists := vars["invitationID"]
+	if !exists || invitationID == "" {
+		// Intentar con 'invitation_id' como respaldo (para compatibilidad)
+		invitationID, exists = vars["invitation_id"]
+		if !exists || invitationID == "" {
+			log.Printf("Error: No se pudo obtener el ID de la invitación de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Invitation ID is required")
+			return
+		}
+	}
+
+	log.Printf("Solicitud para responder a invitación - InvitationID: '%s', UserID: '%s', URL: %s",
+		invitationID, userID, r.URL.String())
 
 	// Get the invitation
 	invitation, err := h.db.GetInvitationByID(invitationID)
@@ -211,18 +243,26 @@ func (h *InvitationHandler) RespondToInvitation(w http.ResponseWriter, r *http.R
 
 // ListUserInvitations returns all invitations for the authenticated user
 func (h *InvitationHandler) ListUserInvitations(w http.ResponseWriter, r *http.Request) {
-	userID := GetUserIDFromContext(r)
-	if userID == "" {
-		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
+	// Obtener el ID del usuario de la URL
+	vars := mux.Vars(r)
+	userID, exists := vars["userID"]
+	if !exists || userID == "" {
+		log.Printf("Error: No se proporcionó userID en la URL")
+		RespondWithError(w, http.StatusBadRequest, "User ID is required")
 		return
 	}
+
+	log.Printf("Listando invitaciones para el usuario: %s", userID)
 
 	// Get all invitations for the user
 	invitations, err := h.db.GetUserInvitations(userID)
 	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, "Failed to retrieve invitations")
+		log.Printf("Error al obtener invitaciones para el usuario %s: %v", userID, err)
+		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve invitations: %v", err))
 		return
 	}
+
+	log.Printf("Se encontraron %d invitaciones para el usuario %s", len(invitations), userID)
 
 	// Convert to response format
 	var response []InvitationResponse
@@ -230,6 +270,7 @@ func (h *InvitationHandler) ListUserInvitations(w http.ResponseWriter, r *http.R
 		// Get group name for each invitation
 		group, err := h.db.GetGroupByID(inv.GroupID)
 		if err != nil {
+			log.Printf("Error al obtener el grupo %s para la invitación %s: %v", inv.GroupID, inv.ID, err)
 			continue // Skip invitations with invalid groups
 		}
 
@@ -247,19 +288,35 @@ func (h *InvitationHandler) ListUserInvitations(w http.ResponseWriter, r *http.R
 		response = append(response, resp)
 	}
 
+	log.Printf("Enviando respuesta con %d invitaciones", len(response))
 	RespondWithJSON(w, http.StatusOK, response)
 }
 
 // GetInvitation retrieves a specific invitation
 func (h *InvitationHandler) GetInvitation(w http.ResponseWriter, r *http.Request) {
+	// Obtener el ID del usuario autenticado
 	userID := GetUserIDFromContext(r)
 	if userID == "" {
+		log.Println("Error: No se pudo obtener el ID del usuario del contexto")
 		RespondWithError(w, http.StatusUnauthorized, "Authentication required")
 		return
 	}
 
+	// Obtener el ID de la invitación de los parámetros de la ruta
 	vars := mux.Vars(r)
-	invitationID := vars["invitation_id"]
+	invitationID, exists := vars["invitationID"]
+	if !exists || invitationID == "" {
+		// Intentar con 'invitation_id' como respaldo (para compatibilidad)
+		invitationID, exists = vars["invitation_id"]
+		if !exists || invitationID == "" {
+			log.Printf("Error: No se pudo obtener el ID de la invitación de la ruta. Vars: %+v", vars)
+			RespondWithError(w, http.StatusBadRequest, "Invitation ID is required")
+			return
+		}
+	}
+
+	log.Printf("Solicitud para obtener invitación - InvitationID: '%s', UserID: '%s', URL: %s",
+		invitationID, userID, r.URL.String())
 
 	// Get the invitation
 	invitation, err := h.db.GetInvitationByID(invitationID)

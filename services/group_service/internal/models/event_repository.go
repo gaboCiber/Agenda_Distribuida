@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -154,6 +155,8 @@ func (d *Database) CreateInvitation(invitation *GroupInvitation) error {
 // GetInvitationByID retrieves an invitation by its ID
 func (d *Database) GetInvitationByID(id string) (*GroupInvitation, error) {
 	invitation := &GroupInvitation{}
+	var respondedAt sql.NullTime // Usar sql.NullTime para manejar valores NULL
+
 	err := d.db.QueryRow(
 		`SELECT id, group_id, user_id, invited_by, status, created_at, responded_at
 		FROM group_invitations 
@@ -166,14 +169,22 @@ func (d *Database) GetInvitationByID(id string) (*GroupInvitation, error) {
 		&invitation.InvitedBy,
 		&invitation.Status,
 		&invitation.CreatedAt,
-		&invitation.RespondedAt,
+		&respondedAt, // Escanear a sql.NullTime
 	)
 
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("error retrieving invitation: %v", err)
+	}
+
+	// Asignar el valor de respondedAt si no es NULL
+	if respondedAt.Valid {
+		invitation.RespondedAt = respondedAt.Time
+	} else {
+		// Si es NULL, asignar el valor cero de time.Time
+		invitation.RespondedAt = time.Time{}
 	}
 
 	return invitation, nil
@@ -219,7 +230,7 @@ func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error)
 	)
 
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error querying invitations: %v", err)
 	}
 	defer rows.Close()
 
@@ -227,6 +238,8 @@ func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error)
 	for rows.Next() {
 		var invitation GroupInvitation
 		var groupName string
+		var respondedAt sql.NullTime // Usar sql.NullTime para manejar valores NULL
+
 		err := rows.Scan(
 			&invitation.ID,
 			&invitation.GroupID,
@@ -234,17 +247,26 @@ func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error)
 			&invitation.InvitedBy,
 			&invitation.Status,
 			&invitation.CreatedAt,
-			&invitation.RespondedAt,
+			&respondedAt, // Escanear a sql.NullTime
 			&groupName,
 		)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("error scanning invitation row: %v", err)
 		}
+
+		// Asignar el valor de respondedAt si no es NULL
+		if respondedAt.Valid {
+			invitation.RespondedAt = respondedAt.Time
+		} else {
+			// Si es NULL, asignar el valor cero de time.Time
+			invitation.RespondedAt = time.Time{}
+		}
+
 		invitations = append(invitations, &invitation)
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("error iterating invitation rows: %v", err)
 	}
 
 	return invitations, nil

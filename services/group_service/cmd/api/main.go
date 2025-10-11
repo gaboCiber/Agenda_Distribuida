@@ -136,7 +136,7 @@ func setupRouter(
 	// Invitation routes
 	invitationRouter := r.PathPrefix("/invitations").Subrouter()
 	invitationRouter.HandleFunc("", invitationHandler.CreateInvitation).Methods("POST")
-	invitationRouter.HandleFunc("/{invitationID}", invitationHandler.RespondToInvitation).Methods("POST")
+	invitationRouter.HandleFunc("/{invitationID}/respond", invitationHandler.RespondToInvitation).Methods("POST")
 	invitationRouter.HandleFunc("/user/{userID}", invitationHandler.ListUserInvitations).Methods("GET")
 	invitationRouter.HandleFunc("/{invitationID}", invitationHandler.GetInvitation).Methods("GET")
 
