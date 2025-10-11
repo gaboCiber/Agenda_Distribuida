@@ -47,7 +47,6 @@ func main() {
 
 	// Initialize event publisher
 	eventPublisher := events.NewPublisher(redisClient)
-	_ = eventPublisher // Use the publisher if needed
 
 	// Initialize database models
 	dbModels := models.NewDatabase(db)
@@ -56,9 +55,10 @@ func main() {
 	groupHandler := handlers.NewGroupHandler(dbModels)
 	memberHandler := handlers.NewMemberHandler(dbModels)
 	invitationHandler := handlers.NewInvitationHandler(dbModels)
+	eventHandler := handlers.NewEventHandler(dbModels, eventPublisher) // Initialize event handler
 
 	// Set up router
-	router := setupRouter(groupHandler, memberHandler, invitationHandler)
+	router := setupRouter(groupHandler, memberHandler, invitationHandler, eventHandler)
 
 	// Add CORS middleware
 	handler := cors.New(cors.Options{
@@ -112,6 +112,7 @@ func setupRouter(
 	groupHandler *handlers.GroupHandler,
 	memberHandler *handlers.MemberHandler,
 	invitationHandler *handlers.InvitationHandler,
+	eventHandler *handlers.EventHandler,
 ) *mux.Router {
 	r := mux.NewRouter()
 
@@ -139,6 +140,12 @@ func setupRouter(
 	invitationRouter.HandleFunc("/{invitationID}/respond", invitationHandler.RespondToInvitation).Methods("POST")
 	invitationRouter.HandleFunc("/user/{userID}", invitationHandler.ListUserInvitations).Methods("GET")
 	invitationRouter.HandleFunc("/{invitationID}", invitationHandler.GetInvitation).Methods("GET")
+
+	// Event routes
+	eventRouter := r.PathPrefix("/groups/{groupID}/events").Subrouter()
+	eventRouter.HandleFunc("", eventHandler.AddEventToGroup).Methods("POST")
+	eventRouter.HandleFunc("/{eventID}", eventHandler.RemoveEventFromGroup).Methods("DELETE")
+	eventRouter.HandleFunc("", eventHandler.ListGroupEvents).Methods("GET")
 
 	// Add request logging middleware
 	r.Use(func(next http.Handler) http.Handler {

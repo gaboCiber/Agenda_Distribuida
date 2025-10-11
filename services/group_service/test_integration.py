@@ -177,7 +177,7 @@ def test_invitation_operations(group_ids):
         invite_id, invitee = invitation_ids[0]
         response = requests.post(
             f"{BASE_URL}/invitations/{invite_id}/respond",
-            json={"status": "accepted"},
+            json={"action": "accept"},  # Cambiado de 'status' a 'action' para coincidir con el manejador
             headers=get_auth_headers(invitee)
         )
         print_response(response, f"{invitee} accepted the invitation")
@@ -188,48 +188,64 @@ def test_event_operations(group_ids):
     print("=" * 50)
     
     # Create events in both groups
-    now = datetime.utcnow()
     events = [
-        create_test_event(
-            non_hier_group_id,
-            "Team Meeting",
-            now + timedelta(days=1),
-            now + timedelta(days=1, hours=1)
-        ),
-        create_test_event(
-            hier_group_id,
-            "Project Review",
-            now + timedelta(days=2),
-            now + timedelta(days=2, hours=2)
-        )
+        {
+            "event_id": "event-1",
+            "added_by": "test-user-123"
+        },
+        {
+            "event_id": "event-2",
+            "added_by": "test-admin-456"
+        },
     ]
     
-    event_ids = []
+    # Add events to the non-hierarchical group
     for event in events:
         response = requests.post(
-            f"{BASE_URL}/events",
-            json=event,
-            headers=get_auth_headers(event["created_by"])
+            f"{BASE_URL}/groups/{non_hier_group_id}/events",
+            json={"event_id": event["event_id"], "added_by": event["added_by"]},
+            headers=get_auth_headers(event["added_by"])
         )
-        print_response(response, f"Created event: {event['title']}")
-        
-        if response.status_code == 201:
-            event_ids.append(response.json()["id"])
+        print_response(response, f"Added event {event['event_id']} to non-hierarchical group")
     
-    # List events for a group
+    # Add events to the hierarchical group
+    for event in events:
+        response = requests.post(
+            f"{BASE_URL}/groups/{hier_group_id}/events",
+            json={"event_id": event["event_id"], "added_by": event["added_by"]},
+            headers=get_auth_headers(event["added_by"])
+        )
+        print_response(response, f"Added event {event['event_id']} to hierarchical group")
+    
+    # List events for the non-hierarchical group
     response = requests.get(
         f"{BASE_URL}/groups/{non_hier_group_id}/events",
-        headers=get_auth_headers(TEST_USER)
+        headers=get_auth_headers("test-user-123")
     )
     print_response(response, f"Events in non-hierarchical group {non_hier_group_id}")
     
-    # Get event details
-    if event_ids:
-        response = requests.get(
-            f"{BASE_URL}/events/{event_ids[0]}",
-            headers=get_auth_headers(TEST_USER)
+    # List events for the hierarchical group
+    response = requests.get(
+        f"{BASE_URL}/groups/{hier_group_id}/events",
+        headers=get_auth_headers("test-user-123")
+    )
+    print_response(response, f"Events in hierarchical group {hier_group_id}")
+    
+    # Remove an event from the non-hierarchical group
+    if events:
+        event_id = events[0]["event_id"]
+        response = requests.delete(
+            f"{BASE_URL}/groups/{non_hier_group_id}/events/{event_id}",
+            headers=get_auth_headers("test-user-123")
         )
-        print_response(response, f"Details for event {event_ids[0]}")
+        print_response(response, f"Removed event {event_id} from non-hierarchical group {non_hier_group_id}")
+        
+        # Verify the event was removed by listing events again
+        response = requests.get(
+            f"{BASE_URL}/groups/{non_hier_group_id}/events",
+            headers=get_auth_headers("test-user-123")
+        )
+        print_response(response, f"Events in non-hierarchical group {non_hier_group_id} after removal")
 
 def test_group_hierarchy():
     print("\n🌳 Testing Group Hierarchy")
