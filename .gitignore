@@ -3,4 +3,5 @@ __pycache__/
 *.py[cod]
 *$py.class
 
-services/users_service/agenda_users.db
+services/users_service/data
+services/group_service/data

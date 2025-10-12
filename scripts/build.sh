@@ -28,7 +28,7 @@ SERVICES=(
     "api_gateway"
     "users_service"
     "events_service"
-    "groups_service"
+    "group_service"
     "notifications_service"
 )
 

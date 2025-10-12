@@ -41,8 +41,12 @@ case "$1" in
         ;;
     "groups")
         echo "Iniciando Groups Service..."
-        docker run -d --name agenda-groups-service --network $NETWORK_NAME -p 8003:8003 \
-          -v "$CURRENT_DIR/services/groups_service:/app" agenda-groups:latest
+        docker run -d --name agenda-groups-service --network agenda-net -p 8003:8003 \
+        -e ENVIRONMENT=development \
+        -e DATABASE_PATH=/app/data/groups.db \
+        -e REDIS_URL=redis://agenda-bus-redis:6379/0 \
+        -v "$CURRENT_DIR/services/group_service/data:/app/data" \
+        agenda-group:latest       
         ;;
     "notifications")
         echo "Iniciando Notifications Service..."

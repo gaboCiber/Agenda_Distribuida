@@ -34,18 +34,21 @@ docker run -d --name agenda-users-service --network $NETWORK_NAME -p 8001:8001 \
   agenda-users:latest
 
 # 4. Events Service
-echo "Starting Events Service..."
 docker run -d --name agenda-events-service --network $NETWORK_NAME -p 8002:8002 \
   -v "$CURRENT_DIR/services/events_service:/app" agenda-events:latest
 
 # 5. Groups Service
 echo "Starting Groups Service..."
-docker run -d --name agenda-groups-service --network $NETWORK_NAME -p 8003:8003 \
-  -v "$CURRENT_DIR/services/groups_service:/app" agenda-groups:latest
+# Start the container
+docker run -d --name agenda-groups-service --network agenda-net -p 8003:8003 \
+  -e ENVIRONMENT=development \
+  -e DATABASE_PATH=/app/data/groups.db \
+  -e REDIS_URL=redis://agenda-bus-redis:6379/0 \
+  -v "$CURRENT_DIR/services/group_service/data:/app/data" \
+  agenda-group:latest
 
 # 6. Notifications Service
 echo "Starting Notifications Service..."
 docker run -d --name agenda-notifications-service --network $NETWORK_NAME -p 8004:8004 \
-  -v "$CURRENT_DIR/services/notifications_service:/app" agenda-notifications:latest
 
 echo "\nAll services are starting. Use 'docker ps' to check their status."
