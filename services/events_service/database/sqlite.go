@@ -5,7 +5,6 @@ import (
 	"events-service/models"
 	"fmt"
 	"log"
-	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -15,28 +14,27 @@ type Database struct {
 }
 
 func NewDB(dbPath string) (*Database, error) {
-
 	db, err := sql.Open("sqlite3", dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("error opening database: %v", err)
 	}
 
-	// Crear tabla de eventos
+	// Crear tabla de eventos (si no existe)
 	createTableSQL := `
-    CREATE TABLE IF NOT EXISTS events (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        description TEXT,
-        start_time DATETIME NOT NULL,
-        end_time DATETIME NOT NULL,
-        user_id TEXT NOT NULL,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    );
-    
-    CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id);
-    CREATE INDEX IF NOT EXISTS idx_events_time_range ON events(start_time, end_time);
-    `
+	CREATE TABLE IF NOT EXISTS events (
+		id TEXT PRIMARY KEY,
+		title TEXT NOT NULL,
+		description TEXT,
+		start_time DATETIME NOT NULL,
+		end_time DATETIME NOT NULL,
+		user_id TEXT NOT NULL,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
+	
+	CREATE INDEX IF NOT EXISTS idx_events_user_id ON events(user_id);
+	CREATE INDEX IF NOT EXISTS idx_events_time_range ON events(start_time, end_time);
+	`
 
 	if _, err := db.Exec(createTableSQL); err != nil {
 		return nil, fmt.Errorf("error creating table: %v", err)
@@ -46,49 +44,69 @@ func NewDB(dbPath string) (*Database, error) {
 	return &Database{DB: db}, nil
 }
 
+// ✅ MÉTODO EXISTENTE: Crear evento
 func (d *Database) CreateEvent(event *models.Event) error {
 	query := `INSERT INTO events (id, title, description, start_time, end_time, user_id, created_at, updated_at) 
 			  VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
 
-	_, err := d.DB.Exec(query,
-		event.ID,
-		event.Title,
-		event.Description,
-		event.StartTime,
-		event.EndTime,
-		event.UserID,
-		event.CreatedAt,
-		event.UpdatedAt,
-	)
+	_, err := d.DB.Exec(query, event.ID, event.Title, event.Description,
+		event.StartTime, event.EndTime, event.UserID, event.CreatedAt, event.UpdatedAt)
 	return err
 }
 
-func (d *Database) CheckTimeConflict(userID string, startTime, endTime time.Time) (bool, error) {
-	query := `SELECT COUNT(*) FROM events 
-              WHERE user_id = ? AND 
-              ((start_time BETWEEN ? AND ?) OR 
-               (end_time BETWEEN ? AND ?) OR
-               (start_time <= ? AND end_time >= ?))`
+// ✅ NUEVO MÉTODO: Obtener evento por ID
+func (d *Database) GetEventByID(eventID string) (*models.Event, error) {
+	query := `SELECT id, title, description, start_time, end_time, user_id, created_at, updated_at 
+			  FROM events WHERE id = ?`
 
-	var count int
-	err := d.DB.QueryRow(query, userID,
-		startTime, endTime, // BETWEEN para start_time
-		startTime, endTime, // BETWEEN para end_time
-		startTime, endTime).Scan(&count) // Evento que contiene el rango completo
+	row := d.DB.QueryRow(query, eventID)
 
+	var event models.Event
+	err := row.Scan(
+		&event.ID,
+		&event.Title,
+		&event.Description,
+		&event.StartTime,
+		&event.EndTime,
+		&event.UserID,
+		&event.CreatedAt,
+		&event.UpdatedAt,
+	)
+
+	if err == sql.ErrNoRows {
+		return nil, nil // Evento no encontrado
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+// ✅ NUEVO MÉTODO: Eliminar evento
+func (d *Database) DeleteEvent(eventID string) (bool, error) {
+	query := `DELETE FROM events WHERE id = ?`
+
+	result, err := d.DB.Exec(query, eventID)
 	if err != nil {
 		return false, err
 	}
 
-	return count > 0, nil
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+
+	return rowsAffected > 0, nil
 }
 
+// ✅ MÉTODO EXISTENTE: Obtener eventos con paginación
 func (d *Database) GetEvents(userID string, limit, offset int) ([]models.Event, int, error) {
 	var events []models.Event
 	var total int
 
 	// Construir query base
-	baseQuery := "SELECT id, title, description, start_time, end_time, user_id, created_at, updated_at FROM events"
+	baseQuery := "SELECT * FROM events"
 	countQuery := "SELECT COUNT(*) FROM events"
 
 	// Agregar filtro por user_id si se especifica
@@ -107,7 +125,7 @@ func (d *Database) GetEvents(userID string, limit, offset int) ([]models.Event, 
 	}
 
 	if err != nil {
-		return nil, 0, fmt.Errorf("error counting events: %v", err)
+		return nil, 0, err
 	}
 
 	// Obtener eventos con paginación
@@ -121,7 +139,7 @@ func (d *Database) GetEvents(userID string, limit, offset int) ([]models.Event, 
 	}
 
 	if err != nil {
-		return nil, 0, fmt.Errorf("error querying events: %v", err)
+		return nil, 0, err
 	}
 	defer rows.Close()
 
@@ -139,20 +157,16 @@ func (d *Database) GetEvents(userID string, limit, offset int) ([]models.Event, 
 			&event.UpdatedAt,
 		)
 		if err != nil {
-			return nil, 0, fmt.Errorf("error scanning event: %v", err)
+			return nil, 0, err
 		}
 		events = append(events, event)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("error iterating events: %v", err)
 	}
 
 	return events, total, nil
 }
 
-// ✅ FUNCIÓN CORREGIDA para verificar conflictos con detalles
-func (d *Database) CheckTimeConflictWithDetails(userID string, startTime, endTime time.Time) (bool, []models.Event, error) {
+// ✅ MÉTODO EXISTENTE: Verificar conflictos con detalles
+func (d *Database) CheckTimeConflictWithDetails(userID string, startTime, endTime interface{}) (bool, []models.Event, error) {
 	var conflictingEvents []models.Event
 
 	query := `SELECT id, title, description, start_time, end_time, user_id, created_at, updated_at 
@@ -163,9 +177,9 @@ func (d *Database) CheckTimeConflictWithDetails(userID string, startTime, endTim
                (end_time BETWEEN ? AND ?))`
 
 	rows, err := d.DB.Query(query, userID,
-		endTime, startTime, // start_time < new_end AND end_time > new_start
-		startTime, endTime, // start_time BETWEEN new_start AND new_end
-		startTime, endTime) // end_time BETWEEN new_start AND new_end
+		endTime, startTime,
+		startTime, endTime,
+		startTime, endTime)
 
 	if err != nil {
 		return false, nil, err

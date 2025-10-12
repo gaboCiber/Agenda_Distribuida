@@ -17,7 +17,7 @@ st.set_page_config(
 API_GATEWAY_URL = "http://agenda-api-gateway:8000"
 
 def init_session_state():
-    """Inicializar el estado de la sesión"""
+    """Inicializar el estado de la sesión - ACTUALIZADA"""
     if 'user_id' not in st.session_state:
         st.session_state.user_id = None
     if 'user_email' not in st.session_state:
@@ -36,9 +36,11 @@ def init_session_state():
         st.session_state.last_submission_time = 0
     if 'pending_events' not in st.session_state:
         st.session_state.pending_events = {}
+    if 'deleting_event' not in st.session_state:
+        st.session_state.deleting_event = None
 
 def make_api_request(endpoint, method="GET", data=None):
-    """Realizar peticiones al API Gateway con mejor manejo de errores"""
+    """Realizar peticiones al API Gateway con mejor manejo de errores - CORREGIDA"""
     url = f"{API_GATEWAY_URL}{endpoint}"
     headers = {"Content-Type": "application/json"}
     
@@ -51,22 +53,32 @@ def make_api_request(endpoint, method="GET", data=None):
             response = requests.get(url, headers=headers, timeout=10)
         elif method == "POST":
             response = requests.post(url, json=data, headers=headers, timeout=10)
+        elif method == "DELETE":  # 🔥 NUEVO: Manejar método DELETE
+            response = requests.delete(url, headers=headers, timeout=10)
         
-        # ✅ DEBUG: Ver respuestas del API
-        print(f"🔧 DEBUG: {method} {endpoint} - Status: {response.status_code}")
-        if response.status_code != 200 and response.status_code != 202:
-            print(f"🔧 DEBUG: Response Text: {response.text}")
-        else:
-            try:
-                response_data = response.json()
-                print(f"🔧 DEBUG: Response Data: {response_data}")
-            except:
+        # ✅ CORREGIDO: Verificar que response no es None antes de acceder
+        if response is not None:
+            print(f"🔧 DEBUG: {method} {endpoint} - Status: {response.status_code}")
+            if response.status_code != 200 and response.status_code != 202:
                 print(f"🔧 DEBUG: Response Text: {response.text}")
+            else:
+                try:
+                    response_data = response.json()
+                    print(f"🔧 DEBUG: Response Data: {response_data}")
+                except:
+                    print(f"🔧 DEBUG: Response Text: {response.text}")
+        else:
+            print(f"🔧 DEBUG: {method} {endpoint} - Response es None")
         
         return response
+        
     except requests.exceptions.RequestException as e:
         print(f"🔧 DEBUG: Connection Error: {e}")
         st.error(f"Error de conexión: {e}")
+        return None
+    except Exception as e:
+        print(f"🔧 DEBUG: Unexpected Error: {e}")
+        st.error(f"Error inesperado: {e}")
         return None
 
 def load_events():
@@ -241,7 +253,7 @@ def get_events_for_day(date: datetime) -> List[Dict]:
     return day_events
 
 def render_selected_day_events():
-    """Mostrar eventos del día seleccionado y opción para crear evento"""
+    """Mostrar eventos del día seleccionado con opción para eliminar - CORREGIDA"""
     import time
     
     if not st.session_state.selected_date:
@@ -252,22 +264,55 @@ def render_selected_day_events():
     
     day_events = get_events_for_day(st.session_state.selected_date)
     
-    if not day_events:
-        st.info("📭 No hay eventos programados para este día")
+    if st.session_state.get('deleting_event'):
+        event_to_delete = st.session_state.deleting_event
+        st.markdown("---")
+        st.warning(f"⚠️ ¿Estás seguro de que quieres eliminar el evento **'{event_to_delete['title']}'**?")
+        
+        confirm_col1, confirm_col2 = st.columns(2)
+        
+        with confirm_col1:
+            if st.button("✅ Sí, eliminar", key="final_confirm_yes", use_container_width=True, type="primary"):
+                success = delete_event(event_to_delete['id'])
+                st.session_state.deleting_event = None
+                if success:
+                    st.success("✅ Eliminación completada")
+                    load_events()
+        
+        with confirm_col2:
+            if st.button("❌ Cancelar", key="final_confirm_no", use_container_width=True):
+                st.session_state.deleting_event = None
+
+        
+        if not day_events:
+            st.info("📭 No hay eventos programados para este día")
     else:
         for i, event in enumerate(day_events):
-            with st.expander(f"📅 {event['title']}", expanded=True):
-                start_time = datetime.fromisoformat(event['start_time'].replace('Z', '+00:00'))
-                end_time = datetime.fromisoformat(event['end_time'].replace('Z', '+00:00'))
+            # Usar un expander para cada evento
+            with st.expander(f"📅 {event['title']}", expanded=False):
+                col1, col2, col3 = st.columns([3, 1, 1])
                 
-                col1, col2 = st.columns([3, 1])
                 with col1:
                     st.write(f"**Descripción:** {event['description'] or 'Sin descripción'}")
+                    
+                    # Mostrar horas
+                    start_time = datetime.fromisoformat(event['start_time'].replace('Z', '+00:00'))
+                    end_time = datetime.fromisoformat(event['end_time'].replace('Z', '+00:00'))
                     st.write(f"**Horario:** {start_time.strftime('%H:%M')} - {end_time.strftime('%H:%M')}")
+                
                 with col2:
-                    st.write(f"**Duración:** {(end_time - start_time).total_seconds() / 3600:.1f} horas")
+                    duration = (end_time - start_time).total_seconds() / 3600
+                    st.write(f"**Duración:** {duration:.1f} h")
+                
+                with col3:
+                    # 🔥 CORREGIDO: Botón que actualiza estado y hace rerun inmediato
+                    delete_key = f"delete_{event['id']}_{i}"
+                    if st.button("🗑️ Eliminar", key=delete_key, use_container_width=True):
+                        # Guardar evento a eliminar y hacer rerun inmediato
+                        st.session_state.deleting_event = event
+                        st.rerun()
     
-    # Opción para crear nuevo evento en este día
+    # Sección para crear nuevo evento (mantener existente)
     st.markdown("---")
     st.subheader("➕ Crear Nuevo Evento")
     
@@ -275,22 +320,32 @@ def render_selected_day_events():
         event_title = st.text_input("Título del evento*", placeholder="Reunión, Cita, Recordatorio...")
         event_description = st.text_area("Descripción", placeholder="Detalles del evento...")
         
+
         col1, col2 = st.columns(2)
         with col1:
-            event_start_time = st.time_input("Hora de inicio", value=datetime.strptime("00:00", "%H:%M").time())
+            event_start_time = st.time_input(
+                "Hora de inicio*", 
+                value=datetime.strptime("00:00", "%H:%M").time(),
+                step=60,  
+                help="Puede escribir cualquier hora o usar los controles"
+            )
         with col2:
-            event_end_time = st.time_input("Hora de fin", value=datetime.strptime("00:15", "%H:%M").time())
+            event_end_time = st.time_input(
+                "Hora de fin*", 
+                value=datetime.strptime("00:15", "%H:%M").time(),
+                step=60, 
+                help="Puede escribir cualquier hora o usar los controles"
+            )
         
         event_start_datetime = datetime.combine(st.session_state.selected_date.date(), event_start_time)
         event_end_datetime = datetime.combine(st.session_state.selected_date.date(), event_end_time)
         
-        create_button = st.form_submit_button("🎯 Crear Evento", use_container_width=True)
+        create_button = st.form_submit_button("Crear Evento", use_container_width=True)
         
         if create_button:
             current_time = time.time()
             if (st.session_state.form_submitted or 
                 current_time - st.session_state.last_submission_time < 3):
-                st.warning("⏳ Procesando evento anterior...")
                 return
                 
             st.session_state.form_submitted = True
@@ -348,7 +403,7 @@ def render_selected_day_events():
                         st.session_state.form_submitted = False
                     
                     else:
-                        st.info("⏳ " + response_data.get("message", "Evento en proceso..."))
+                        #st.info("⏳ " + response_data.get("message", "Evento en proceso..."))
                         time.sleep(2)
                         load_events()
                         st.session_state.form_submitted = False
@@ -366,7 +421,7 @@ def render_selected_day_events():
                     st.session_state.form_submitted = False
 
 def render_sidebar():
-    """Renderizar sidebar mínimo"""
+    """Renderizar sidebar mínimo - ACTUALIZADA"""
     st.sidebar.title("📅 Agenda Distribuida")
     st.sidebar.markdown("---")
     
@@ -381,6 +436,13 @@ def render_sidebar():
     else:
         st.sidebar.info("🔐 No has iniciado sesión")
         st.sidebar.write("Usando modo de prueba con user_test")
+    
+    # 🔥 NUEVO: Información de debug
+    if st.sidebar.checkbox("🔧 Mostrar información de debug"):
+        st.sidebar.write(f"**Eventos cargados:** {len(st.session_state.events)}")
+        st.sidebar.write(f"**Usuario ID:** {st.session_state.user_id or 'user_test'}")
+        if st.session_state.selected_date:
+            st.sidebar.write(f"**Día seleccionado:** {st.session_state.selected_date.strftime('%d/%m/%Y')}")
 
 def create_event_with_conflict_check(event_data):
     """Crear evento con verificación de conflictos en tiempo real"""
@@ -449,6 +511,75 @@ def create_event_with_conflict_check(event_data):
                 print(f"🔧 DEBUG: Error text: {error_detail}")
         return False, f"❌ Error al enviar el evento: {error_detail}"
 
+def delete_event(event_id):
+    """Eliminar un evento específico - CORREGIDA"""
+    user_id = st.session_state.user_id or "user_test"
+    
+    print(f"🔧 DEBUG: Eliminando evento {event_id} para usuario {user_id}")
+    
+    with st.spinner("🗑️ Eliminando evento..."):
+        response = make_api_request(f"/api/v1/events/{event_id}?user_id={user_id}", "DELETE")
+    
+    if response is None:
+        st.error("❌ No se pudo conectar al servidor para eliminar el evento")
+        return False
+    
+    if response.status_code == 200:
+        response_data = response.json()
+        status = response_data.get("status")
+        
+        if status == "processing":
+            # ✅ EN PUB/SUB: La eliminación es asíncrona
+            st.success("✅ Solicitud de eliminación enviada correctamente")
+            st.info("🔄 La eliminación se está procesando en segundo plano...")
+            
+            # Esperar un poco para que el Events Service procese
+            time.sleep(2)
+            load_events()  # Recargar eventos para reflejar los cambios
+            return True
+            
+        elif status == "success":
+            st.success("✅ Evento eliminado exitosamente")
+            load_events()
+            return True
+            
+        else:
+            # ❌ Error específico del servidor
+            error_msg = response_data.get('message', 'Error desconocido')
+            st.error(f"❌ Error al eliminar evento: {error_msg}")
+            return False
+    
+    else:
+        # ❌ Error HTTP
+        try:
+            error_data = response.json()
+            error_message = error_data.get("error", "Error desconocido")
+            st.error(f"❌ Error al eliminar evento: {error_message}")
+        except:
+            st.error(f"❌ Error al eliminar evento: {response.text}")
+        return False
+
+def confirm_event_deletion(event_title):
+    """Mostrar diálogo de confirmación para eliminar evento - CORREGIDA"""
+    # Usar un contenedor en lugar de columns anidados
+    container = st.container()
+    
+    with container:
+        st.warning(f"⚠️ ¿Estás seguro de que quieres eliminar el evento **'{event_title}'**?")
+        
+        # Usar buttons sin columns anidados
+        confirm_col1, confirm_col2 = st.columns(2)
+        
+        with confirm_col1:
+            if st.button("✅ Sí, eliminar", key=f"confirm_yes_{event_title}", use_container_width=True, type="primary"):
+                return True
+        
+        with confirm_col2:
+            if st.button("❌ Cancelar", key=f"confirm_no_{event_title}", use_container_width=True):
+                return False
+    
+    return False
+
 def main():
     """Función principal"""
     init_session_state()
@@ -486,3 +617,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

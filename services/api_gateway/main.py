@@ -64,9 +64,10 @@ class EventDeleteRequest(BaseModel):
 
 # Función para procesar respuestas de eventos
 def process_event_response(message):
-    """Procesar respuestas del Events Service"""
+    """Procesar respuestas del Events Service - ACTUALIZADA"""
     try:
         event_data = json.loads(message['data'])
+        event_type = event_data.get('type')
         correlation_id = event_data.get('payload', {}).get('correlation_id')
         response_data = event_data.get('payload', {}).get('response', {})
         
@@ -75,9 +76,10 @@ def process_event_response(message):
                 'success': response_data.get('success', False),
                 'message': response_data.get('message', ''),
                 'data': response_data,
-                'timestamp': datetime.now()
+                'timestamp': datetime.now(),
+                'type': event_type  # 🔥 NUEVO: Guardar tipo de evento
             }
-            print(f"✅ Respuesta procesada para evento {correlation_id}: {response_data}")
+            print(f"✅ Respuesta procesada para {event_type} {correlation_id}: {response_data}")
     except Exception as e:
         print(f"❌ Error procesando respuesta de evento: {e}")
 
@@ -137,7 +139,7 @@ async def create_event(event_data: EventCreateRequest):
         if events_response.status_code == 200:
             events_data = events_response.json()
             existing_events = events_data.get('events', [])
-            print(f"🔍 Eventos existentes: {len(existing_events)}")
+            if existing_events: print(f"🔍 Eventos existentes: {len(existing_events)}")
             
             # ✅ CORRECCIÓN: Convertir las fechas del nuevo evento a UTC para comparar
             new_start_utc = event_data.start_time.replace(tzinfo=timezone.utc) if event_data.start_time.tzinfo is None else event_data.start_time
@@ -229,6 +231,42 @@ async def create_event(event_data: EventCreateRequest):
         "event_id": result["event_id"],
         "timestamp": result["timestamp"]
     }
+
+
+
+
+
+
+# Agregar después del endpoint POST /api/v1/events
+@app.delete("/api/v1/events/{event_id}")
+async def delete_event(event_id: str, user_id: str):
+    """Eliminar un evento específico"""
+    print(f"🔍 Solicitando eliminación del evento {event_id} para usuario {user_id}")
+    
+    # Publicar evento de eliminación en Redis
+    result = event_service.publish_event(
+        channel="events_events",
+        event_type="event_deletion_requested", 
+        payload={
+            "event_id": event_id,
+            "user_id": user_id
+        }
+    )
+    
+    if not result.get("published", False):
+        raise HTTPException(
+            status_code=503, 
+            detail=result.get("error", "Message bus unavailable")
+        )
+    
+    return {
+        "status": "processing",
+        "message": "Event deletion request received and queued",
+        "event_id": event_id,
+        "timestamp": datetime.now().isoformat()
+    }
+
+
 
 
 # Endpoint para verificar estado de evento

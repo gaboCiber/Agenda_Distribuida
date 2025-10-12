@@ -63,7 +63,7 @@ func (h *EventsHandler) HandleEventCreation(eventData string) {
 	if hasConflict {
 		log.Printf("⚠️ Conflicto de horario detectado para usuario %s - %d eventos conflictivos", userID, len(conflictingEvents))
 
-		// ✅ CORRECCIÓN: Convertir eventos conflictivos a formato para JSON
+		// Convertir eventos conflictivos a formato para JSON
 		conflictingEventsData := make([]map[string]interface{}, len(conflictingEvents))
 		for i, event := range conflictingEvents {
 			conflictingEventsData[i] = map[string]interface{}{
@@ -105,7 +105,69 @@ func (h *EventsHandler) HandleEventCreation(eventData string) {
 	})
 }
 
-// ✅ FUNCIÓN CORREGIDA para publicar respuestas
+// NUEVO MÉTODO: Manejar eliminación de eventos
+func (h *EventsHandler) HandleEventDeletion(eventData string) {
+	var redisEvent models.RedisEvent
+	if err := json.Unmarshal([]byte(eventData), &redisEvent); err != nil {
+		log.Printf("❌ Error parsing deletion event: %v", err)
+		return
+	}
+
+	log.Printf("🔄 Procesando eliminación de evento: %s", redisEvent.EventID)
+
+	// Extraer datos del payload
+	payload := redisEvent.Payload
+	eventID, _ := payload["event_id"].(string)
+	userID, _ := payload["user_id"].(string)
+	correlationID, _ := payload["correlation_id"].(string)
+
+	if eventID == "" || userID == "" {
+		log.Printf("❌ Datos incompletos para eliminación: event_id=%s, user_id=%s", eventID, userID)
+		h.publishDeletionResponse(correlationID, false, "Missing event_id or user_id", nil)
+		return
+	}
+
+	// Verificar que el evento existe y pertenece al usuario
+	event, err := h.DB.GetEventByID(eventID)
+	if err != nil {
+		log.Printf("❌ Error verificando evento: %v", err)
+		h.publishDeletionResponse(correlationID, false, "Error verifying event", nil)
+		return
+	}
+
+	if event == nil {
+		log.Printf("❌ Evento no encontrado: %s", eventID)
+		h.publishDeletionResponse(correlationID, false, "Event not found", nil)
+		return
+	}
+
+	if event.UserID != userID {
+		log.Printf("❌ Usuario %s no es propietario del evento %s", userID, eventID)
+		h.publishDeletionResponse(correlationID, false, "Unauthorized - Event does not belong to user", nil)
+		return
+	}
+
+	// Eliminar evento
+	deleted, err := h.DB.DeleteEvent(eventID)
+	if err != nil {
+		log.Printf("❌ Error eliminando evento: %v", err)
+		h.publishDeletionResponse(correlationID, false, "Error deleting event", nil)
+		return
+	}
+
+	if !deleted {
+		log.Printf("❌ No se pudo eliminar el evento: %s", eventID)
+		h.publishDeletionResponse(correlationID, false, "Event could not be deleted", nil)
+		return
+	}
+
+	log.Printf("✅ Evento eliminado exitosamente: %s", eventID)
+	h.publishDeletionResponse(correlationID, true, "Event deleted successfully", map[string]interface{}{
+		"event_id": eventID,
+	})
+}
+
+// FUNCIÓN para publicar respuestas de creación
 func (h *EventsHandler) publishEventResponse(correlationID string, success bool, message string, data map[string]interface{}) {
 	responseData := map[string]interface{}{
 		"success": success,
@@ -128,8 +190,37 @@ func (h *EventsHandler) publishEventResponse(correlationID string, success bool,
 	}
 
 	if err := h.RedisService.PublishEvent("events_events_response", responseEvent); err != nil {
-		log.Printf("❌ Error publishing response: %v", err)
+		log.Printf("❌ Error publishing creation response: %v", err)
 	} else {
-		log.Printf("✅ Respuesta publicada para correlation_id %s: %s", correlationID, message)
+		log.Printf("✅ Respuesta de creación publicada para correlation_id %s: %s", correlationID, message)
+	}
+}
+
+// NUEVA FUNCIÓN: Publicar respuestas de eliminación
+func (h *EventsHandler) publishDeletionResponse(correlationID string, success bool, message string, data map[string]interface{}) {
+	responseData := map[string]interface{}{
+		"success": success,
+		"message": message,
+	}
+
+	for key, value := range data {
+		responseData[key] = value
+	}
+
+	responseEvent := models.RedisEvent{
+		EventID:   uuid.New().String(),
+		Type:      "event_deletion_response",
+		Timestamp: time.Now().Format(time.RFC3339),
+		Version:   "1.0",
+		Payload: map[string]interface{}{
+			"correlation_id": correlationID,
+			"response":       responseData,
+		},
+	}
+
+	if err := h.RedisService.PublishEvent("events_events_response", responseEvent); err != nil {
+		log.Printf("❌ Error publishing deletion response: %v", err)
+	} else {
+		log.Printf("✅ Respuesta de eliminación publicada para correlation_id %s: %s", correlationID, message)
 	}
 }
