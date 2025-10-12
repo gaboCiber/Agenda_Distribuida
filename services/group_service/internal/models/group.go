@@ -49,6 +49,24 @@ type Database struct {
 	db *sql.DB
 }
 
+// Begin starts a new transaction
+func (d *Database) Begin() (*sql.Tx, error) {
+	return d.db.Begin()
+}
+
+// Commit commits a transaction
+func (d *Database) Commit(tx *sql.Tx) error {
+	return tx.Commit()
+}
+
+// Rollback rolls back a transaction
+func (d *Database) Rollback(tx *sql.Tx) error {
+	if tx != nil {
+		return tx.Rollback()
+	}
+	return nil
+}
+
 // NewDatabase creates a new Database instance
 func NewDatabase(db *sql.DB) *Database {
 	return &Database{db: db}

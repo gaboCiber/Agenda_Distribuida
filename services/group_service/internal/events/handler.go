@@ -3,6 +3,7 @@ package events
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
@@ -563,63 +564,189 @@ func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
 }
 
 // handleInvitationCreated handles invitation_created events
-func (h *EventHandler) handleInvitationCreated(payload interface{}) {
-	data, ok := payload.(map[string]interface{})
-	if !ok {
-		log.Printf("❌ Invalid payload format for invitation_created event")
+func (h *EventHandler) handleInvitationCreated(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		InvitationID   string `json:"invitation_id"`
+		GroupID        string `json:"group_id"`
+		UserID         string `json:"user_id"`
+		InvitedBy      string `json:"invited_by"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse invitation_created payload: %v", err)
 		return
 	}
 
-	invitationID, _ := data["invitation_id"].(string)
-	groupID, _ := data["group_id"].(string)
-	userID, _ := data["user_id"].(string)
+	// Extract data from payload
+	invitationID := data.InvitationID
+	groupID := data.GroupID
+	userID := data.UserID
+	invitedBy := data.InvitedBy
+	responseChannel := data.ResponseChannel
 
-	if invitationID == "" || groupID == "" || userID == "" {
-		log.Printf("❌ Missing required fields in invitation_created event")
+	// Validate required fields
+	if invitationID == "" || groupID == "" || userID == "" || invitedBy == "" {
+		errMsg := "❌ Missing required fields in invitation_created event"
+		log.Println(errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
+	// Create the invitation
 	invitation := &models.GroupInvitation{
-		ID:      invitationID,
-		GroupID: groupID,
-		UserID:  userID,
+		ID:        invitationID,
+		GroupID:   groupID,
+		UserID:    userID,
+		InvitedBy: invitedBy,
+		Status:    "pending",
+		CreatedAt: time.Now(),
 	}
 
+	// Save the invitation
 	if err := h.groupService.CreateInvitation(invitation); err != nil {
-		log.Printf("❌ Failed to create invitation: %v", err)
+		errMsg := fmt.Sprintf("Failed to create invitation: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
-	log.Printf("✅ Created invitation %s for user %s to group %s",
-		invitationID, userID, groupID)
+	log.Printf("✅ Created invitation %s for user %s to group %s", invitationID, userID, groupID)
+
+	// Publish success response if response channel is provided
+	if responseChannel != "" {
+		h.publisher.Publish(responseChannel, "invitation_created_response", map[string]interface{}{
+			"status": "success",
+			"invitation": map[string]interface{}{
+				"id":         invitation.ID,
+				"group_id":   invitation.GroupID,
+				"user_id":    invitation.UserID,
+				"invited_by": invitation.InvitedBy,
+				"status":     invitation.Status,
+				"created_at": invitation.CreatedAt,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "invitation_created", map[string]interface{}{
+		"invitation_id": invitation.ID,
+		"group_id":      invitation.GroupID,
+		"user_id":       invitation.UserID,
+		"invited_by":    invitation.InvitedBy,
+	})
 }
 
 // handleInvitationAccepted handles invitation_accepted events
-func (h *EventHandler) handleInvitationAccepted(payload interface{}) {
-	data, ok := payload.(map[string]interface{})
-	if !ok {
-		log.Printf("❌ Invalid payload format for invitation_accepted event")
+func (h *EventHandler) handleInvitationAccepted(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		InvitationID   string `json:"invitation_id"`
+		UserID         string `json:"user_id"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse invitation_accepted payload: %v", err)
 		return
 	}
 
-	invitationID, _ := data["invitation_id"].(string)
-	userID, _ := data["user_id"].(string)
+	// Extract data from payload
+	invitationID := data.InvitationID
+	userID := data.UserID
+	responseChannel := data.ResponseChannel
 
+	// Validate required fields
 	if invitationID == "" || userID == "" {
-		log.Printf("❌ Missing required fields in invitation_accepted event")
+		errMsg := "❌ Missing required fields in invitation_accepted event"
+		log.Println(errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Get the invitation
 	invitation, err := h.groupService.GetInvitation(invitationID)
 	if err != nil {
-		log.Printf("❌ Failed to get invitation %s: %v", invitationID, err)
+		errMsg := fmt.Sprintf("Failed to get invitation %s: %v", invitationID, err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Only the invited user can accept the invitation
 	if invitation.UserID != userID {
-		log.Printf("❌ User %s is not authorized to accept invitation %s", userID, invitationID)
+		errMsg := fmt.Sprintf("User %s is not authorized to accept invitation %s", userID, invitationID)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "forbidden",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Check if invitation is already processed
+	if invitation.Status != "pending" {
+		errMsg := fmt.Sprintf("Invitation %s is already %s", invitationID, invitation.Status)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Start a transaction to ensure data consistency
+	tx, err := h.groupService.BeginTx()
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to start transaction: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Update invitation status to accepted
+	invitation.Status = "accepted"
+	invitation.RespondedAt = time.Now()
+	if err := h.groupService.UpdateInvitation(invitation); err != nil {
+		tx.Rollback()
+		errMsg := fmt.Sprintf("Failed to update invitation status: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
@@ -632,43 +759,163 @@ func (h *EventHandler) handleInvitationAccepted(payload interface{}) {
 	}
 
 	if err := h.groupService.AddGroupMember(member); err != nil {
-		log.Printf("❌ Failed to add user %s to group %s: %v", userID, invitation.GroupID, err)
+		tx.Rollback()
+		errMsg := fmt.Sprintf("Failed to add user %s to group %s: %v", userID, invitation.GroupID, err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		errMsg := fmt.Sprintf("Failed to commit transaction: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	log.Printf("✅ User %s accepted invitation to group %s", userID, invitation.GroupID)
+
+	// Publish success response if response channel is provided
+	if responseChannel != "" {
+		h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+			"status": "success",
+			"member": map[string]interface{}{
+				"group_id":  member.GroupID,
+				"user_id":   member.UserID,
+				"role":      member.Role,
+				"joined_at": member.JoinedAt,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "invitation_accepted", map[string]interface{}{
+		"invitation_id": invitation.ID,
+		"group_id":      invitation.GroupID,
+		"user_id":       invitation.UserID,
+	})
 }
 
 // handleInvitationRejected handles invitation_rejected events
-func (h *EventHandler) handleInvitationRejected(payload interface{}) {
-	data, ok := payload.(map[string]interface{})
-	if !ok {
-		log.Printf("❌ Invalid payload format for invitation_rejected event")
+func (h *EventHandler) handleInvitationRejected(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		InvitationID   string `json:"invitation_id"`
+		UserID         string `json:"user_id"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse invitation_rejected payload: %v", err)
 		return
 	}
 
-	invitationID, _ := data["invitation_id"].(string)
-	userID, _ := data["user_id"].(string)
+	// Extract data from payload
+	invitationID := data.InvitationID
+	userID := data.UserID
+	responseChannel := data.ResponseChannel
 
+	// Validate required fields
 	if invitationID == "" || userID == "" {
-		log.Printf("❌ Missing required fields in invitation_rejected event")
+		errMsg := "❌ Missing required fields in invitation_rejected event"
+		log.Println(errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Get the invitation
 	invitation, err := h.groupService.GetInvitation(invitationID)
 	if err != nil {
-		log.Printf("❌ Failed to get invitation %s: %v", invitationID, err)
+		errMsg := fmt.Sprintf("Failed to get invitation %s: %v", invitationID, err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Only the invited user can reject the invitation
 	if invitation.UserID != userID {
-		log.Printf("❌ User %s is not authorized to reject invitation %s", userID, invitationID)
+		errMsg := fmt.Sprintf("User %s is not authorized to reject invitation %s", userID, invitationID)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "forbidden",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Check if invitation is already processed
+	if invitation.Status != "pending" {
+		errMsg := fmt.Sprintf("Invitation %s is already %s", invitationID, invitation.Status)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Update invitation status to rejected
+	invitation.Status = "rejected"
+	invitation.RespondedAt = time.Now()
+	if err := h.groupService.UpdateInvitation(invitation); err != nil {
+		errMsg := fmt.Sprintf("Failed to update invitation status: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	log.Printf("✅ User %s rejected invitation to group %s", userID, invitation.GroupID)
+
+	// Publish success response if response channel is provided
+	if responseChannel != "" {
+		h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+			"status": "success",
+			"invitation": map[string]interface{}{
+				"id":           invitation.ID,
+				"group_id":     invitation.GroupID,
+				"user_id":      invitation.UserID,
+				"status":       invitation.Status,
+				"responded_at": invitation.RespondedAt,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "invitation_rejected", map[string]interface{}{
+		"invitation_id": invitation.ID,
+		"group_id":      invitation.GroupID,
+		"user_id":       invitation.UserID,
+	})
 }
 
 // handleEventAddedToGroup handles event_added_to_group events

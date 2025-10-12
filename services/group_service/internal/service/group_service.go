@@ -1,7 +1,9 @@
 package service
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -34,6 +36,11 @@ type GroupService interface {
 	RemoveEventFromGroup(groupID, eventID string) error
 	RemoveEventFromAllGroups(eventID string) error
 
+	// Transaction management
+	BeginTx() (*sql.Tx, error)
+	CommitTx(tx *sql.Tx) error
+	RollbackTx(tx *sql.Tx) error
+
 	// Event handlers
 	HandleUserDeleted(userID string) error
 	HandleEventDeleted(eventID string) error
@@ -60,7 +67,7 @@ func (s *groupService) CreateGroup(group *models.Group) (*models.Group, error) {
 	if err := s.db.CreateGroup(group); err != nil {
 		return nil, err
 	}
-	
+
 	// Get the created group to return with the database-generated ID
 	return s.db.GetGroupByID(group.ID)
 }
@@ -194,6 +201,33 @@ func (s *groupService) HandleUserDeleted(userID string) error {
 
 // HandleEventDeleted handles the event_deleted event
 func (s *groupService) HandleEventDeleted(eventID string) error {
-	// Remove event from all groups
+	// Remove the event from all groups
 	return s.RemoveEventFromAllGroups(eventID)
+}
+
+// BeginTx starts a new database transaction
+func (s *groupService) BeginTx() (*sql.Tx, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %v", err)
+	}
+	return tx, nil
+}
+
+// CommitTx commits a transaction
+func (s *groupService) CommitTx(tx *sql.Tx) error {
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+	return nil
+}
+
+// RollbackTx rolls back a transaction
+func (s *groupService) RollbackTx(tx *sql.Tx) error {
+	if tx != nil {
+		if err := tx.Rollback(); err != nil {
+			return fmt.Errorf("failed to rollback transaction: %v", err)
+		}
+	}
+	return nil
 }
