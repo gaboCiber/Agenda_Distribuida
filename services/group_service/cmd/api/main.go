@@ -16,6 +16,7 @@ import (
 	"github.com/agenda-distribuida/group-service/internal/database"
 	"github.com/agenda-distribuida/group-service/internal/events"
 	"github.com/agenda-distribuida/group-service/internal/models"
+	"github.com/agenda-distribuida/group-service/internal/service"
 	"github.com/gorilla/mux"
 	"github.com/rs/cors"
 )
@@ -41,24 +42,33 @@ func main() {
 		}
 	}()
 
+	// Initialize database models
+	dbModels := models.NewDatabase(db)
+
 	// Initialize Redis client for event publishing
 	redisClient := events.NewRedisClient(cfg.RedisURL)
 	defer redisClient.Close()
 
+	// Initialize service layer for event handling
+	groupService := service.NewGroupService(dbModels)
+
 	// Initialize event publisher
 	eventPublisher := events.NewPublisher(redisClient)
 
-	// Initialize database models
-	dbModels := models.NewDatabase(db)
+	// Initialize HTTP event handler
+	httpEventHandler := handlers.NewEventHandler(dbModels, eventPublisher)
 
-	// Initialize handlers
+	// Initialize event listener for incoming events
+	eventListener := events.NewEventHandler(groupService, eventPublisher)
+	go eventListener.StartListening(redisClient, "groups")
+
+	// Initialize HTTP handlers with the original database models
 	groupHandler := handlers.NewGroupHandler(dbModels)
 	memberHandler := handlers.NewMemberHandler(dbModels)
 	invitationHandler := handlers.NewInvitationHandler(dbModels)
-	eventHandler := handlers.NewEventHandler(dbModels, eventPublisher) // Initialize event handler
 
 	// Set up router
-	router := setupRouter(groupHandler, memberHandler, invitationHandler, eventHandler)
+	router := setupRouter(groupHandler, memberHandler, invitationHandler, httpEventHandler)
 
 	// Add CORS middleware
 	handler := cors.New(cors.Options{

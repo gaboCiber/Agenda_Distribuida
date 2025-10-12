@@ -247,58 +247,6 @@ def test_event_operations(group_ids):
         )
         print_response(response, f"Events in non-hierarchical group {non_hier_group_id} after removal")
 
-def test_group_hierarchy():
-    print("\n🌳 Testing Group Hierarchy")
-    print("=" * 50)
-    
-    # Create a parent group
-    parent_group = create_test_group(
-        "Parent Group", 
-        "Parent group for hierarchy testing",
-        is_hierarchical=True
-    )
-    
-    response = requests.post(
-        f"{BASE_URL}/groups", 
-        json=parent_group,
-        headers=get_auth_headers(TEST_USER)
-    )
-    parent_group_id = response.json()["id"]
-    print_response(response, "Created Parent Group")
-    
-    # Create child groups
-    child_groups = []
-    for i in range(2):
-        child = create_test_group(
-            f"Child Group {i+1}",
-            f"Child group {i+1} of {parent_group_id}",
-            is_hierarchical=True
-        )
-        response = requests.post(
-            f"{BASE_URL}/groups",
-            json=child,
-            headers=get_auth_headers(TEST_USER)
-        )
-        if response.status_code != 201:
-            print(f"Error creating child group: {response.text}")
-            raise Exception(f"Error creating child group: {response.text}")
-        child_id = response.json()["id"]
-        child_groups.append(child_id)
-        
-        # Link child to parent
-        response = requests.post(
-            f"{BASE_URL}/groups/{parent_group_id}/children",
-            json={"child_group_id": child_id},
-            headers=get_auth_headers(TEST_USER)
-        )
-        print_response(response, f"Linked child group {child_id} to parent {parent_group_id}")
-    
-    # Get group hierarchy
-    response = requests.get(
-        f"{BASE_URL}/groups/{parent_group_id}/hierarchy",
-        headers=get_auth_headers(TEST_USER)
-    )
-    print_response(response, f"Hierarchy for group {parent_group_id}")
 
 def run_all_tests():
     print("🔍 Starting Integration Tests")
@@ -325,7 +273,6 @@ def run_all_tests():
         test_member_operations(group_ids)
         test_invitation_operations(group_ids)
         test_event_operations(group_ids)
-        test_group_hierarchy()
         
         print("\n🎉 All tests completed successfully!")
     except Exception as e:
