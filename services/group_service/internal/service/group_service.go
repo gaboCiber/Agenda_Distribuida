@@ -33,6 +33,7 @@ type GroupService interface {
 
 	// Group-Event operations
 	AddGroupEvent(groupEvent *models.GroupEvent) error
+	GetGroupEvents(groupID string) ([]*models.GroupEvent, error)
 	RemoveEventFromGroup(groupID, eventID string) error
 	RemoveEventFromAllGroups(eventID string) error
 
@@ -168,6 +169,11 @@ func (s *groupService) AddGroupEvent(groupEvent *models.GroupEvent) error {
 // RemoveEventFromGroup removes an event from a specific group
 func (s *groupService) RemoveEventFromGroup(groupID, eventID string) error {
 	return s.db.RemoveGroupEvent(groupID, eventID)
+}
+
+// GetGroupEvents returns all events for a specific group
+func (s *groupService) GetGroupEvents(groupID string) ([]*models.GroupEvent, error) {
+	return s.db.GetGroupEvents(groupID)
 }
 
 // RemoveEventFromAllGroups removes an event from all groups

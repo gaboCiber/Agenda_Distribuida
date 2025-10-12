@@ -96,6 +96,8 @@ func (h *EventHandler) HandleMessage(channel, payload string) {
 		h.handleEventAddedToGroup(event.Payload)
 	case "event_removed_from_group":
 		h.handleEventRemovedFromGroup(event.Payload)
+	case "list_group_events":
+		h.handleListGroupEvents(event.Payload)
 	default:
 		log.Printf("⚠️ Unhandled event type: %s", event.Type)
 	}
@@ -919,74 +921,223 @@ func (h *EventHandler) handleInvitationRejected(payload json.RawMessage) {
 }
 
 // handleEventAddedToGroup handles event_added_to_group events
-func (h *EventHandler) handleEventAddedToGroup(payload interface{}) {
-	data, ok := payload.(map[string]interface{})
-	if !ok {
-		log.Printf("❌ Invalid payload format for event_added_to_group event")
+func (h *EventHandler) handleEventAddedToGroup(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		GroupID string `json:"group_id"`
+		EventID string `json:"event_id"`
+		AddedBy string `json:"added_by"`
+		ResponseChannel string `json:"response_channel,omitempty"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse event_added_to_group payload: %v", err)
 		return
 	}
 
-	groupID, _ := data["group_id"].(string)
-	eventID, _ := data["event_id"].(string)
-	addedBy, _ := data["added_by"].(string)
-
-	if groupID == "" || eventID == "" || addedBy == "" {
-		log.Printf("❌ Missing required fields in event_added_to_group event")
+	if data.GroupID == "" || data.EventID == "" || data.AddedBy == "" {
+		errMsg := "❌ Missing required fields in event_added_to_group event"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_added_to_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Check if the user has permission to add events to the group
-	isMember, err := h.groupService.IsGroupMember(groupID, addedBy)
+	isMember, err := h.groupService.IsGroupMember(data.GroupID, data.AddedBy)
 	if err != nil || !isMember {
-		log.Printf("❌ User %s is not a member of group %s", addedBy, groupID)
+		errMsg := fmt.Sprintf("User %s is not a member of group %s", data.AddedBy, data.GroupID)
+		log.Printf("❌ %s", errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_added_to_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	groupEvent := &models.GroupEvent{
-		GroupID: groupID,
-		EventID: eventID,
-		AddedBy: addedBy,
+		GroupID: data.GroupID,
+		EventID: data.EventID,
+		AddedBy: data.AddedBy,
 		AddedAt: time.Now(),
 	}
 
 	if err := h.groupService.AddGroupEvent(groupEvent); err != nil {
-		log.Printf("❌ Failed to add event %s to group %s: %v", eventID, groupID, err)
+		errMsg := fmt.Sprintf("Failed to add event %s to group %s: %v", data.EventID, data.GroupID, err)
+		log.Printf("❌ %s", errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_added_to_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
-	log.Printf("✅ Added event %s to group %s", eventID, groupID)
+	log.Printf("✅ Added event %s to group %s", data.EventID, data.GroupID)
+
+	// Publish success response if response channel is provided
+	if data.ResponseChannel != "" {
+		h.publisher.Publish(data.ResponseChannel, "event_added_to_group_response", map[string]interface{}{
+			"status": "success",
+			"event": map[string]interface{}{
+				"group_id": groupEvent.GroupID,
+				"event_id":  groupEvent.EventID,
+				"added_by":  groupEvent.AddedBy,
+				"added_at":  groupEvent.AddedAt,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "event_added_to_group", map[string]interface{}{
+		"group_id": groupEvent.GroupID,
+		"event_id":  groupEvent.EventID,
+		"added_by":  groupEvent.AddedBy,
+	})
 }
 
 // handleEventRemovedFromGroup handles event_removed_from_group events
-func (h *EventHandler) handleEventRemovedFromGroup(payload interface{}) {
-	data, ok := payload.(map[string]interface{})
-	if !ok {
-		log.Printf("❌ Invalid payload format for event_removed_from_group event")
+func (h *EventHandler) handleEventRemovedFromGroup(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		GroupID    string `json:"group_id"`
+		EventID    string `json:"event_id"`
+		RemovedBy  string `json:"removed_by"`
+		ResponseChannel string `json:"response_channel,omitempty"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse event_removed_from_group payload: %v", err)
 		return
 	}
 
-	groupID, _ := data["group_id"].(string)
-	eventID, _ := data["event_id"].(string)
-	removedBy, _ := data["removed_by"].(string)
-
-	if groupID == "" || eventID == "" || removedBy == "" {
-		log.Printf("❌ Missing required fields in event_removed_from_group event")
+	if data.GroupID == "" || data.EventID == "" || data.RemovedBy == "" {
+		errMsg := "❌ Missing required fields in event_removed_from_group event"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_removed_from_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
 	// Check if the user has permission to remove events from the group
-	isMember, err := h.groupService.IsGroupMember(groupID, removedBy)
+	isMember, err := h.groupService.IsGroupMember(data.GroupID, data.RemovedBy)
 	if err != nil || !isMember {
-		log.Printf("❌ User %s is not a member of group %s", removedBy, groupID)
+		errMsg := fmt.Sprintf("User %s is not a member of group %s", data.RemovedBy, data.GroupID)
+		log.Printf("❌ %s", errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_removed_from_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
-	if err := h.groupService.RemoveEventFromGroup(groupID, eventID); err != nil {
-		log.Printf("❌ Failed to remove event %s from group %s: %v", eventID, groupID, err)
+	if err := h.groupService.RemoveEventFromGroup(data.GroupID, data.EventID); err != nil {
+		errMsg := fmt.Sprintf("Failed to remove event %s from group %s: %v", data.EventID, data.GroupID, err)
+		log.Printf("❌ %s", errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "event_removed_from_group_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
 		return
 	}
 
-	log.Printf("✅ Removed event %s from group %s", eventID, groupID)
+	log.Printf("✅ Removed event %s from group %s", data.EventID, data.GroupID)
+
+	// Publish success response if response channel is provided
+	if data.ResponseChannel != "" {
+		h.publisher.Publish(data.ResponseChannel, "event_removed_from_group_response", map[string]interface{}{
+			"status": "success",
+			"event": map[string]interface{}{
+				"group_id": data.GroupID,
+				"event_id":  data.EventID,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "event_removed_from_group", map[string]interface{}{
+		"group_id": data.GroupID,
+		"event_id":  data.EventID,
+		"removed_by": data.RemovedBy,
+	})
+}
+
+// handleListGroupEvents handles list_group_events events
+func (h *EventHandler) handleListGroupEvents(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		GroupID         string `json:"group_id"`
+		UserID          string `json:"user_id"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse list_group_events payload: %v", err)
+		return
+	}
+
+	if data.GroupID == "" || data.UserID == "" || data.ResponseChannel == "" {
+		log.Printf("❌ Missing required fields in list_group_events event")
+		return
+	}
+
+	// Check if the user is a member of the group
+	isMember, err := h.groupService.IsGroupMember(data.GroupID, data.UserID)
+	if err != nil || !isMember {
+		errMsg := fmt.Sprintf("User %s is not a member of group %s", data.UserID, data.GroupID)
+		log.Printf("❌ %s", errMsg)
+		h.publisher.Publish(data.ResponseChannel, "list_group_events_response", map[string]interface{}{
+			"status":  "error",
+			"message": errMsg,
+		})
+		return
+	}
+
+	// Get the group events
+	events, err := h.groupService.GetGroupEvents(data.GroupID)
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to get events for group %s: %v", data.GroupID, err)
+		log.Printf("❌ %s", errMsg)
+		h.publisher.Publish(data.ResponseChannel, "list_group_events_response", map[string]interface{}{
+			"status":  "error",
+			"message": errMsg,
+		})
+		return
+	}
+
+	// Convert events to a slice of maps for JSON serialization
+	eventList := make([]map[string]interface{}, len(events))
+	for i, event := range events {
+		eventList[i] = map[string]interface{}{
+			"event_id": event.EventID,
+			"group_id": event.GroupID,
+			"added_by": event.AddedBy,
+			"added_at": event.AddedAt,
+		}
+	}
+
+	// Publish the response
+	h.publisher.Publish(data.ResponseChannel, "list_group_events_response", map[string]interface{}{
+		"status": "success",
+		"events": eventList,
+	})
+
+	log.Printf("✅ Listed %d events for group %s", len(events), data.GroupID)
 }
 
 // StartListening starts listening for events on the specified channels
