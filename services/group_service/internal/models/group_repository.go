@@ -3,6 +3,7 @@ package models
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -35,14 +36,16 @@ func (d *Database) CreateGroup(group *Group) error {
 
 	// Insert the group
 	_, err = tx.Exec(
-		`INSERT INTO groups (id, name, description, created_by, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO groups (id, name, description, created_by, created_at, updated_at, is_hierarchical, parent_group_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
 		group.ID,
 		group.Name,
 		group.Description,
 		group.CreatedBy,
 		group.CreatedAt,
 		group.UpdatedAt,
+		group.IsHierarchical,
+		sql.NullString{String: *group.ParentGroupID, Valid: group.ParentGroupID != nil},
 	)
 
 	if err != nil {
@@ -329,7 +332,7 @@ func (d *Database) AddGroupMember(member *GroupMember) error {
 	if member.ID == "" {
 		member.ID = uuid.New().String()
 	}
-	
+
 	if member.JoinedAt.IsZero() {
 		member.JoinedAt = time.Now().UTC()
 	}
@@ -352,7 +355,7 @@ func (d *Database) AddGroupMember(member *GroupMember) error {
 		return err
 	}
 
-	// If this is a hierarchical group and not an inherited member, 
+	// If this is a hierarchical group and not an inherited member,
 	// add the member to all child groups as inherited
 	if !member.IsInherited {
 		// First, check if the group is hierarchical
@@ -404,7 +407,7 @@ func (d *Database) GetGroupAdmins(groupID string) ([]*GroupMember, error) {
 	rows, err := d.db.Query(
 		`SELECT id, group_id, user_id, role, joined_at 
 		FROM group_members 
-		WHERE group_id = ? AND role = ?`, 
+		WHERE group_id = ? AND role = ?`,
 		groupID, "admin",
 	)
 
@@ -675,7 +678,7 @@ func (d *Database) GetGroupMember(groupID, userID string) (*GroupMember, error) 
 		if err != nil {
 			return nil, err
 		}
-		
+
 		if isAdmin {
 			// Return a virtual member representing the inherited membership
 			return &GroupMember{
@@ -699,7 +702,7 @@ func (d *Database) IsGroupAdmin(groupID, userID string) (bool, error) {
 	var count int
 	err := d.db.QueryRow(
 		`SELECT COUNT(*) FROM group_members 
-		WHERE group_id = ? AND user_id = ? AND role = 'admin' AND is_inherited = false`,
+		WHERE group_id = ? AND user_id = ? AND role = 'admin' AND is_inherited = 0`,
 		groupID, userID,
 	).Scan(&count)
 
@@ -708,4 +711,53 @@ func (d *Database) IsGroupAdmin(groupID, userID string) (bool, error) {
 	}
 
 	return count > 0, nil
+}
+
+// RemoveParentFromChildren removes the parent reference from all child groups
+func (d *Database) RemoveParentFromChildren(parentID string) error {
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+
+	defer func() {
+		if r := recover(); r != nil {
+			tx.Rollback()
+		}
+	}()
+
+	// Update all groups that have this group as parent
+	_, err = tx.Exec(
+		`UPDATE groups 
+		SET parent_group_id = NULL, updated_at = ? 
+		WHERE parent_group_id = ?`,
+		time.Now().UTC(),
+		parentID,
+	)
+
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to update child groups: %v", err)
+	}
+
+	// Remove any inherited memberships that came from this parent group
+	_, err = tx.Exec(
+		`DELETE FROM group_members 
+		WHERE is_inherited = 1 AND group_id IN (
+			SELECT id FROM groups WHERE parent_group_id = ?
+		)`,
+		parentID,
+	)
+
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to clean up inherited memberships: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("failed to commit transaction: %v", err)
+	}
+
+	return nil
 }

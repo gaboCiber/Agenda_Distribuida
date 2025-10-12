@@ -9,6 +9,7 @@ import (
 
 	"github.com/agenda-distribuida/group-service/internal/models"
 	"github.com/agenda-distribuida/group-service/internal/service"
+	"github.com/google/uuid"
 )
 
 // EventHandler handles incoming events from Redis
@@ -44,6 +45,13 @@ func (h *EventHandler) HandleMessage(channel, payload string) {
 
 	// Route the event to the appropriate handler
 	switch event.Type {
+	// Hierarchical group events
+	case "hierarchical_group_updated":
+		h.handleHierarchicalGroupUpdated(event.Payload)
+	case "parent_group_updated":
+		h.handleParentGroupUpdated(event.Payload)
+	case "member_inheritance_updated":
+		h.handleMemberInheritance(event.Payload)
 	case "group_created":
 		h.handleGroupCreated(event.Payload)
 	case "group_updated":
@@ -303,35 +311,79 @@ func (h *EventHandler) handleEventDeleted(payload interface{}) {
 
 // handleGroupCreated handles group_created events
 func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
-	// Parse payload to map
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		log.Printf("❌ Failed to parse group_created payload: %v", err)
+	log.Printf("Raw payload: %s", string(payload))
+
+	// First, try to parse the payload as a raw string that needs to be unmarshaled
+	var payloadStr string
+	if err := json.Unmarshal(payload, &payloadStr); err == nil {
+		// If we successfully unmarshaled a string, try to unmarshal it as JSON
+		log.Printf("Received string payload, attempting to unmarshal: %s", payloadStr)
+		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+			log.Printf("❌ Failed to parse payload as JSON: %v", err)
+			return
+		}
+	}
+
+	// Now try to parse the payload as a structured event
+	var event struct {
+		EventID   string          `json:"event_id"`
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(payload, &event); err != nil {
+		log.Printf("❌ Failed to parse event structure: %v", err)
+		// Try to parse as direct payload if the event structure doesn't match
+		h.handleDirectPayload(payload)
+		return
+	}
+
+	// If we have a nested payload, use it
+	if len(event.Payload) > 0 {
+		payload = event.Payload
+	}
+
+	// Parse the actual group data
+	var payloadData struct {
+		Name            string `json:"name"`
+		Description     string `json:"description"`
+		CreatedBy       string `json:"created_by"`
+		IsHierarchical  bool   `json:"is_hierarchical"`
+		ResponseChannel string `json:"response_channel"`
+		Source          string `json:"source"`
+	}
+
+	if err := json.Unmarshal(payload, &payloadData); err != nil {
+		log.Printf("❌ Failed to parse payload data: %v", err)
 		return
 	}
 
 	// Skip if this is a system-generated event (to prevent loops)
-	if source, ok := data["source"].(string); ok && source == "group-service" {
+	if payloadData.Source == "group-service" {
 		log.Printf("ℹ️  Ignoring system-generated group_created event")
 		return
 	}
 
-	// Extract group data
-	groupID, _ := data["group_id"].(string)
-	name, _ := data["name"].(string)
-	createdBy, _ := data["created_by"].(string)
-	responseChannel, _ := data["response_channel"].(string)
+	// Generate a new UUID for the group
+	groupID := uuid.New().String()
 
-	if groupID == "" || name == "" || createdBy == "" {
+	log.Printf("Processing group creation - Name: %s, CreatedBy: %s, ResponseChannel: %s",
+		payloadData.Name, payloadData.CreatedBy, payloadData.ResponseChannel)
+
+	// Validate required fields
+	if payloadData.Name == "" || payloadData.CreatedBy == "" {
+		log.Printf("❌ Missing required fields in group_created event")
 		return
 	}
 
 	// Create the group using the service
 	group := &models.Group{
-		ID:          groupID,
-		Name:        name,
-		Description: data["description"].(string),
-		CreatedBy:   createdBy,
+		ID:             groupID,
+		Name:           payloadData.Name,
+		Description:    payloadData.Description,
+		CreatedBy:      payloadData.CreatedBy,
+		IsHierarchical: payloadData.IsHierarchical,
 	}
 
 	// Create the group and get the created group with its database ID
@@ -339,8 +391,8 @@ func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
 	if err != nil {
 		log.Printf("❌ Failed to create group: %v", err)
 		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_created_response", map[string]interface{}{
+		if payloadData.ResponseChannel != "" {
+			h.publisher.Publish(payloadData.ResponseChannel, "group_created_response", map[string]interface{}{
 				"status":  "error",
 				"message": "Failed to create group",
 				"error":   err.Error(),
@@ -350,56 +402,163 @@ func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
 	}
 
 	log.Printf("✅ Created group %s (ID: %s, DB ID: %s) created by %s",
-		name, groupID, createdGroup.ID, createdBy)
+		group.Name, groupID, createdGroup.ID, group.CreatedBy)
 
 	// Publish success response if response channel is provided
-	if responseChannel != "" {
-		h.publisher.Publish(responseChannel, "group_created_response", map[string]interface{}{
-			"id":     createdGroup.ID, // Include the database ID
+	if payloadData.ResponseChannel != "" {
+		log.Printf("Sending success response to channel: %s", payloadData.ResponseChannel)
+		response := map[string]interface{}{
+			"event_id": event.EventID,
+			"status":   "success",
+			"payload": map[string]interface{}{
+				"id":          createdGroup.ID, // The database ID
+				"group_id":    groupID,         // The generated group ID
+				"name":        group.Name,
+				"description": group.Description,
+				"created_by":  group.CreatedBy,
+			},
+		}
+
+		// Convert response to JSON for logging
+		responseJSON, _ := json.MarshalIndent(response, "", "  ")
+		log.Printf("Sending response: %s", responseJSON)
+
+		h.publisher.Publish(payloadData.ResponseChannel, "group_created_response", response)
+	}
+}
+
+// handleDirectPayload handles cases where the payload is the group data directly
+func (h *EventHandler) handleDirectPayload(payload json.RawMessage) {
+	log.Printf("Handling direct payload: %s", string(payload))
+
+	var groupData struct {
+		Name            string  `json:"name"`
+		Description     string  `json:"description"`
+		CreatedBy       string  `json:"created_by"`
+		IsHierarchical  bool    `json:"is_hierarchical"`
+		ResponseChannel string  `json:"response_channel"`
+		ParentGroupID   *string `json:"parent_group_id,omitempty"`
+	}
+
+	if err := json.Unmarshal(payload, &groupData); err != nil {
+		log.Printf("❌ Failed to parse direct payload: %v", err)
+		return
+	}
+
+	// Generate a new UUID for the group
+	groupID := uuid.New().String()
+
+	// Create the group
+	group := &models.Group{
+		ID:             groupID,
+		Name:           groupData.Name,
+		Description:    groupData.Description,
+		CreatedBy:      groupData.CreatedBy,
+		IsHierarchical: groupData.IsHierarchical,
+		ParentGroupID:  groupData.ParentGroupID,
+	}
+
+	// Create the group and get the created group with its database ID
+	createdGroup, err := h.groupService.CreateGroup(group)
+	if err != nil {
+		log.Printf("❌ Failed to create group from direct payload: %v", err)
+		if groupData.ResponseChannel != "" {
+			h.publisher.Publish(groupData.ResponseChannel, "group_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Failed to create group",
+				"error":   err.Error(),
+			})
+		}
+		return
+	}
+
+	log.Printf("✅ Created group %s (ID: %s, DB ID: %s) created by %s",
+		group.Name, groupID, createdGroup.ID, group.CreatedBy)
+
+	// Publish success response if response channel is provided
+	if groupData.ResponseChannel != "" {
+		log.Printf("Sending success response to channel: %s", groupData.ResponseChannel)
+		response := map[string]interface{}{
 			"status": "success",
 			"payload": map[string]interface{}{
-				"group_id":   groupID,
-				"name":       name,
-				"created_by": createdBy,
+				"id":          createdGroup.ID,
+				"group_id":    groupID,
+				"name":        group.Name,
+				"description": group.Description,
+				"created_by":  group.CreatedBy,
 			},
-		})
+		}
+		h.publisher.Publish(groupData.ResponseChannel, "group_created_response", response)
 	}
 }
 
 // handleGroupUpdated handles group_updated events
 func (h *EventHandler) handleGroupUpdated(payload json.RawMessage) {
-	// Parse payload to map
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		log.Printf("❌ Failed to parse group_updated payload: %v", err)
+	log.Printf("Raw update payload: %s", string(payload))
+
+	// First, try to parse the payload as a raw string that needs to be unmarshaled
+	var payloadStr string
+	if err := json.Unmarshal(payload, &payloadStr); err == nil {
+		// If we successfully unmarshaled a string, try to unmarshal it as JSON
+		log.Printf("Received string payload in update, attempting to unmarshal: %s", payloadStr)
+		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+			log.Printf("❌ Failed to parse update payload as JSON: %v", err)
+			return
+		}
+	}
+
+	// Now try to parse the payload as a structured event
+	var event struct {
+		EventID   string          `json:"event_id"`
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(payload, &event); err != nil {
+		log.Printf("❌ Failed to parse update event structure: %v", err)
+		h.handleDirectUpdate(payload)
+		return
+	}
+
+	// If we have a nested payload, use it
+	if len(event.Payload) > 0 {
+		payload = event.Payload
+	}
+
+	// Parse the actual group data
+	var payloadData struct {
+		GroupID         string `json:"group_id"`
+		Name            string `json:"name"`
+		Description     string `json:"description"`
+		UpdatedBy       string `json:"updated_by"`
+		ResponseChannel string `json:"response_channel"`
+		Source          string `json:"source"`
+	}
+
+	if err := json.Unmarshal(payload, &payloadData); err != nil {
+		log.Printf("❌ Failed to parse update payload data: %v", err)
 		return
 	}
 
 	// Skip if this is a system-generated event (to prevent loops)
-	if source, ok := data["source"].(string); ok && source == "group-service" {
+	if payloadData.Source == "group-service" {
 		log.Printf("ℹ️  Ignoring system-generated group_updated event")
 		return
 	}
 
-	// Extract group data
-	groupID, _ := data["group_id"].(string)
-	name, _ := data["name"].(string)
-	description, _ := data["description"].(string)
-	updatedBy, _ := data["updated_by"].(string)
-	responseChannel, _ := data["response_channel"].(string)
-
-	if groupID == "" || name == "" || updatedBy == "" {
+	if payloadData.GroupID == "" || payloadData.Name == "" || payloadData.UpdatedBy == "" {
 		log.Printf("❌ Missing required fields in group_updated event")
 		return
 	}
 
 	// Get the existing group
-	existingGroup, err := h.groupService.GetGroup(groupID)
+	existingGroup, err := h.groupService.GetGroup(payloadData.GroupID)
 	if err != nil {
-		log.Printf("❌ Failed to get group %s: %v", groupID, err)
+		log.Printf("❌ Failed to get group %s: %v", payloadData.GroupID, err)
 		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_updated_response", map[string]interface{}{
+		if payloadData.ResponseChannel != "" {
+			h.publisher.Publish(payloadData.ResponseChannel, "group_updated_response", map[string]interface{}{
 				"status":  "error",
 				"message": "Failed to get group",
 				"error":   err.Error(),
@@ -409,10 +568,10 @@ func (h *EventHandler) handleGroupUpdated(payload json.RawMessage) {
 	}
 
 	if existingGroup == nil {
-		log.Printf("❌ Group %s not found", groupID)
+		log.Printf("❌ Group %s not found", payloadData.GroupID)
 		// Publish not found response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_updated_response", map[string]interface{}{
+		if payloadData.ResponseChannel != "" {
+			h.publisher.Publish(payloadData.ResponseChannel, "group_updated_response", map[string]interface{}{
 				"status":  "not_found",
 				"message": "Group not found",
 			})
@@ -421,16 +580,16 @@ func (h *EventHandler) handleGroupUpdated(payload json.RawMessage) {
 	}
 
 	// Update group fields
-	existingGroup.Name = name
-	existingGroup.Description = description
+	existingGroup.Name = payloadData.Name
+	existingGroup.Description = payloadData.Description
 	existingGroup.UpdatedAt = time.Now()
 
 	// Update the group in the database
 	if err := h.groupService.UpdateGroup(existingGroup); err != nil {
-		log.Printf("❌ Failed to update group %s: %v", groupID, err)
+		log.Printf("❌ Failed to update group %s: %v", payloadData.GroupID, err)
 		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_updated_response", map[string]interface{}{
+		if payloadData.ResponseChannel != "" {
+			h.publisher.Publish(payloadData.ResponseChannel, "group_updated_response", map[string]interface{}{
 				"status":  "error",
 				"message": "Failed to update group",
 				"error":   err.Error(),
@@ -440,17 +599,17 @@ func (h *EventHandler) handleGroupUpdated(payload json.RawMessage) {
 	}
 
 	log.Printf("✅ Successfully updated group %s (ID: %s) updated by %s",
-		name, groupID, updatedBy)
+		payloadData.Name, payloadData.GroupID, payloadData.UpdatedBy)
 
 	// Publish success response if response channel is provided
-	if responseChannel != "" {
-		h.publisher.Publish(responseChannel, "group_updated_response", map[string]interface{}{
+	if payloadData.ResponseChannel != "" {
+		h.publisher.Publish(payloadData.ResponseChannel, "group_updated_response", map[string]interface{}{
 			"status": "success",
 			"payload": map[string]interface{}{
-				"group_id":    groupID,
-				"name":        name,
-				"description": description,
-				"updated_by":  updatedBy,
+				"group_id":    existingGroup.ID,
+				"name":        existingGroup.Name,
+				"description": existingGroup.Description,
+				"updated_by":  payloadData.UpdatedBy,
 				"updated_at":  existingGroup.UpdatedAt,
 			},
 		})
@@ -458,47 +617,231 @@ func (h *EventHandler) handleGroupUpdated(payload json.RawMessage) {
 
 	// Publish group updated event with source marker
 	h.publisher.Publish("groups", "group_updated", map[string]interface{}{
-		"group_id":    groupID,
-		"name":        name,
-		"description": description,
-		"updated_by":  updatedBy,
+		"group_id":    existingGroup.ID,
+		"name":        existingGroup.Name,
+		"description": existingGroup.Description,
+		"updated_by":  payloadData.UpdatedBy,
 		"updated_at":  existingGroup.UpdatedAt,
 		"source":      "group-service", // Mark as system-generated
 	})
 }
 
+// handleInvitationCreated handles invitation_created events
+func (h *EventHandler) handleInvitationCreated(payload json.RawMessage) {
+	log.Printf("Handling invitation_created event: %s", string(payload))
+
+	// Parse the payload
+	var data struct {
+		InvitationID    string `json:"invitation_id"`
+		GroupID         string `json:"group_id"`
+		UserID          string `json:"user_id"`
+		InvitedBy       string `json:"invited_by"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse invitation_created payload: %v", err)
+		return
+	}
+
+	// Validate required fields
+	if data.InvitationID == "" || data.GroupID == "" || data.UserID == "" || data.InvitedBy == "" {
+		errMsg := "❌ Missing required fields in invitation_created event"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Create the invitation
+	invitation := &models.GroupInvitation{
+		ID:        data.InvitationID,
+		GroupID:   data.GroupID,
+		UserID:    data.UserID,
+		InvitedBy: data.InvitedBy,
+		Status:    "pending",
+		CreatedAt: time.Now(),
+	}
+
+	// Save the invitation
+	if err := h.groupService.CreateInvitation(invitation); err != nil {
+		errMsg := fmt.Sprintf("Failed to create invitation: %v", err)
+		log.Printf("❌ %s", errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	log.Printf("✅ Created invitation %s for user %s to group %s",
+		data.InvitationID, data.UserID, data.GroupID)
+
+	// Publish success response if response channel is provided
+	if data.ResponseChannel != "" {
+		h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+			"status": "success",
+			"invitation": map[string]interface{}{
+				"id":         invitation.ID,
+				"group_id":   invitation.GroupID,
+				"user_id":    invitation.UserID,
+				"invited_by": invitation.InvitedBy,
+				"status":     invitation.Status,
+				"created_at": invitation.CreatedAt,
+			},
+		})
+	}
+
+	// Publish notification event
+	h.publisher.Publish("notifications", "invitation_created", map[string]interface{}{
+		"invitation_id": invitation.ID,
+		"group_id":      invitation.GroupID,
+		"user_id":       invitation.UserID,
+		"invited_by":    invitation.InvitedBy,
+	})
+}
+
+// handleDirectUpdate handles direct update payloads (without the event wrapper)
+// This function is used when the payload is not wrapped in an event structure
+func (h *EventHandler) handleDirectUpdate(payload json.RawMessage) {
+	log.Printf("Handling direct update payload: %s", string(payload))
+
+	var updateData struct {
+		GroupID         string `json:"group_id"`
+		Name            string `json:"name"`
+		Description     string `json:"description"`
+		UpdatedBy       string `json:"updated_by"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &updateData); err != nil {
+		log.Printf("❌ Failed to parse direct update payload: %v", err)
+		return
+	}
+
+	// Get the existing group
+	existingGroup, err := h.groupService.GetGroup(updateData.GroupID)
+	if err != nil {
+		log.Printf("❌ Failed to get group %s: %v", updateData.GroupID, err)
+		if updateData.ResponseChannel != "" {
+			h.publisher.Publish(updateData.ResponseChannel, "group_updated_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Group not found",
+			})
+		}
+		return
+	}
+
+	// Update group fields if provided
+	if updateData.Name != "" {
+		existingGroup.Name = updateData.Name
+	}
+	if updateData.Description != "" {
+		existingGroup.Description = updateData.Description
+	}
+	existingGroup.UpdatedAt = time.Now().UTC()
+
+	// Save the updated group
+	if err := h.groupService.UpdateGroup(existingGroup); err != nil {
+		log.Printf("❌ Failed to update group %s: %v", updateData.GroupID, err)
+		if updateData.ResponseChannel != "" {
+			h.publisher.Publish(updateData.ResponseChannel, "group_updated_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Failed to update group",
+				"error":   err.Error(),
+			})
+		}
+		return
+	}
+
+	log.Printf("✅ Updated group %s (ID: %s) by %s (direct)",
+		existingGroup.Name, existingGroup.ID, updateData.UpdatedBy)
+
+	// Publish success response if response channel is provided
+	if updateData.ResponseChannel != "" {
+		h.publisher.Publish(updateData.ResponseChannel, "group_updated_response", map[string]interface{}{
+			"status": "success",
+			"payload": map[string]interface{}{
+				"id":          existingGroup.ID,
+				"name":        existingGroup.Name,
+				"description": existingGroup.Description,
+				"updated_by":  updateData.UpdatedBy,
+			},
+		})
+	}
+}
+
 // handleGroupDeleted handles group_deleted events
 func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
-	// Parse payload to map
-	var data map[string]interface{}
-	if err := json.Unmarshal(payload, &data); err != nil {
-		log.Printf("❌ Failed to parse group_deleted payload: %v", err)
+	log.Printf("Raw delete payload: %s", string(payload))
+
+	// First, try to parse the payload as a raw string that needs to be unmarshaled
+	var payloadStr string
+	if err := json.Unmarshal(payload, &payloadStr); err == nil {
+		// If we successfully unmarshaled a string, try to unmarshal it as JSON
+		log.Printf("Received string payload in delete, attempting to unmarshal: %s", payloadStr)
+		if err := json.Unmarshal([]byte(payloadStr), &payload); err != nil {
+			log.Printf("❌ Failed to parse delete payload as JSON: %v", err)
+			return
+		}
+	}
+
+	// Now try to parse the payload as a structured event
+	var event struct {
+		EventID   string          `json:"event_id"`
+		Type      string          `json:"type"`
+		Timestamp string          `json:"timestamp"`
+		Payload   json.RawMessage `json:"payload"`
+	}
+
+	if err := json.Unmarshal(payload, &event); err != nil {
+		log.Printf("❌ Failed to parse delete event structure: %v", err)
+		h.handleDirectDelete(payload)
+		return
+	}
+
+	// If we have a nested payload, use it
+	if len(event.Payload) > 0 {
+		payload = event.Payload
+	}
+
+	// Parse the actual delete data
+	var deleteData struct {
+		GroupID         string `json:"group_id"`
+		DeletedBy       string `json:"deleted_by"`
+		ResponseChannel string `json:"response_channel"`
+		Source          string `json:"source"`
+	}
+
+	if err := json.Unmarshal(payload, &deleteData); err != nil {
+		log.Printf("❌ Failed to parse delete payload data: %v", err)
 		return
 	}
 
 	// Skip if this is a system-generated event (to prevent loops)
-	if source, ok := data["source"].(string); ok && source == "group-service" {
+	if deleteData.Source == "group-service" {
 		log.Printf("ℹ️  Ignoring system-generated group_deleted event")
 		return
 	}
 
-	// Extract group data
-	groupID, _ := data["group_id"].(string)
-	deletedBy, _ := data["deleted_by"].(string)
-	responseChannel, _ := data["response_channel"].(string)
-
-	if groupID == "" || deletedBy == "" {
+	if deleteData.GroupID == "" || deleteData.DeletedBy == "" {
 		log.Printf("❌ Missing required fields in group_deleted event")
 		return
 	}
 
 	// Get the group before deleting it (for the response)
-	group, err := h.groupService.GetGroup(groupID)
+	group, err := h.groupService.GetGroup(deleteData.GroupID)
 	if err != nil {
-		log.Printf("❌ Failed to get group %s: %v", groupID, err)
+		log.Printf("❌ Failed to get group %s: %v", deleteData.GroupID, err)
 		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_deleted_response", map[string]interface{}{
+		if deleteData.ResponseChannel != "" {
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
 				"status":  "error",
 				"message": "Failed to get group",
 				"error":   err.Error(),
@@ -508,10 +851,10 @@ func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
 	}
 
 	if group == nil {
-		log.Printf("❌ Group %s not found", groupID)
+		log.Printf("❌ Group %s not found", deleteData.GroupID)
 		// Publish not found response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "group_deleted_response", map[string]interface{}{
+		if deleteData.ResponseChannel != "" {
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
 				"status":  "not_found",
 				"message": "Group not found",
 			})
@@ -520,17 +863,17 @@ func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
 	}
 
 	// Delete the group
-	if err := h.groupService.DeleteGroup(groupID, deletedBy); err != nil {
-		log.Printf("❌ Failed to delete group %s: %v", groupID, err)
+	if err := h.groupService.DeleteGroup(deleteData.GroupID, deleteData.DeletedBy); err != nil {
+		log.Printf("❌ Failed to delete group %s: %v", deleteData.GroupID, err)
 		// Publish error response if response channel is provided
-		if responseChannel != "" {
+		if deleteData.ResponseChannel != "" {
 			status := "error"
 			message := "Failed to delete group"
 			if err == sql.ErrNoRows {
 				status = "not_found"
 				message = "Group not found"
 			}
-			h.publisher.Publish(responseChannel, "group_deleted_response", map[string]interface{}{
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
 				"status":  status,
 				"message": message,
 				"error":   err.Error(),
@@ -540,16 +883,16 @@ func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
 	}
 
 	log.Printf("✅ Successfully deleted group %s (ID: %s) by user %s",
-		group.Name, groupID, deletedBy)
+		group.Name, deleteData.GroupID, deleteData.DeletedBy)
 
 	// Publish success response if response channel is provided
-	if responseChannel != "" {
-		h.publisher.Publish(responseChannel, "group_deleted_response", map[string]interface{}{
+	if deleteData.ResponseChannel != "" {
+		h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
 			"status": "success",
 			"payload": map[string]interface{}{
-				"group_id":   groupID,
+				"group_id":   deleteData.GroupID,
 				"name":       group.Name,
-				"deleted_by": deletedBy,
+				"deleted_by": deleteData.DeletedBy,
 				"deleted_at": time.Now(),
 			},
 		})
@@ -557,22 +900,116 @@ func (h *EventHandler) handleGroupDeleted(payload json.RawMessage) {
 
 	// Publish group deleted event with source marker
 	h.publisher.Publish("groups", "group_deleted", map[string]interface{}{
-		"group_id":   groupID,
+		"group_id":   deleteData.GroupID,
 		"name":       group.Name,
-		"deleted_by": deletedBy,
+		"deleted_by": deleteData.DeletedBy,
 		"deleted_at": time.Now(),
 		"source":     "group-service", // Mark as system-generated
 	})
 }
 
-// handleInvitationCreated handles invitation_created events
-func (h *EventHandler) handleInvitationCreated(payload json.RawMessage) {
+// handleDirectDelete handles direct delete payloads (without the event wrapper)
+func (h *EventHandler) handleDirectDelete(payload json.RawMessage) {
+	log.Printf("Handling direct delete payload: %s", string(payload))
+
+	var deleteData struct {
+		GroupID         string `json:"group_id"`
+		DeletedBy       string `json:"deleted_by"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &deleteData); err != nil {
+		log.Printf("❌ Failed to parse direct delete payload: %v", err)
+		return
+	}
+
+	// Validate required fields
+	if deleteData.GroupID == "" || deleteData.DeletedBy == "" {
+		log.Printf("❌ Missing required fields in direct delete payload")
+		if deleteData.ResponseChannel != "" {
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Missing required fields (group_id and deleted_by are required)",
+			})
+		}
+		return
+	}
+
+	// Get the group before deleting it (for the response)
+	group, err := h.groupService.GetGroup(deleteData.GroupID)
+	if err != nil {
+		log.Printf("❌ Failed to get group %s: %v", deleteData.GroupID, err)
+		if deleteData.ResponseChannel != "" {
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Failed to get group",
+				"error":   err.Error(),
+			})
+		}
+		return
+	}
+
+	if group == nil {
+		log.Printf("❌ Group %s not found", deleteData.GroupID)
+		if deleteData.ResponseChannel != "" {
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
+				"status":  "not_found",
+				"message": "Group not found",
+			})
+		}
+		return
+	}
+
+	// Delete the group
+	err = h.groupService.DeleteGroup(deleteData.GroupID, deleteData.DeletedBy)
+	if err != nil {
+		log.Printf("❌ Failed to delete group %s: %v", deleteData.GroupID, err)
+		if deleteData.ResponseChannel != "" {
+			status := "error"
+			message := "Failed to delete group"
+			if err == sql.ErrNoRows {
+				status = "not_found"
+				message = "Group not found"
+			}
+			h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
+				"status":  status,
+				"message": message,
+				"error":   err.Error(),
+			})
+		}
+		return
+	}
+
+	log.Printf("✅ Successfully deleted group %s (ID: %s) by user %s",
+		group.Name, deleteData.GroupID, deleteData.DeletedBy)
+
+	// Publish success response if response channel is provided
+	if deleteData.ResponseChannel != "" {
+		h.publisher.Publish(deleteData.ResponseChannel, "group_deleted_response", map[string]interface{}{
+			"status": "success",
+			"payload": map[string]interface{}{
+				"group_id":   deleteData.GroupID,
+				"name":       group.Name,
+				"deleted_by": deleteData.DeletedBy,
+				"deleted_at": time.Now(),
+			},
+		})
+	}
+
+	// Publish group deleted event with source marker
+	h.publisher.Publish("groups", "group_deleted", map[string]interface{}{
+		"group_id":   deleteData.GroupID,
+		"name":       group.Name,
+		"deleted_by": deleteData.DeletedBy,
+		"deleted_at": time.Now(),
+		"source":     "group-service", // Mark as system-generated
+	})
 	// Parse the payload
 	var data struct {
-		InvitationID   string `json:"invitation_id"`
-		GroupID        string `json:"group_id"`
-		UserID         string `json:"user_id"`
-		InvitedBy      string `json:"invited_by"`
+		InvitationID    string `json:"invitation_id"`
+		GroupID         string `json:"group_id"`
+		UserID          string `json:"user_id"`
+		InvitedBy       string `json:"invited_by"`
 		ResponseChannel string `json:"response_channel"`
 	}
 
@@ -654,8 +1091,8 @@ func (h *EventHandler) handleInvitationCreated(payload json.RawMessage) {
 func (h *EventHandler) handleInvitationAccepted(payload json.RawMessage) {
 	// Parse the payload
 	var data struct {
-		InvitationID   string `json:"invitation_id"`
-		UserID         string `json:"user_id"`
+		InvitationID    string `json:"invitation_id"`
+		UserID          string `json:"user_id"`
 		ResponseChannel string `json:"response_channel"`
 	}
 
@@ -813,8 +1250,8 @@ func (h *EventHandler) handleInvitationAccepted(payload json.RawMessage) {
 func (h *EventHandler) handleInvitationRejected(payload json.RawMessage) {
 	// Parse the payload
 	var data struct {
-		InvitationID   string `json:"invitation_id"`
-		UserID         string `json:"user_id"`
+		InvitationID    string `json:"invitation_id"`
+		UserID          string `json:"user_id"`
 		ResponseChannel string `json:"response_channel"`
 	}
 
@@ -924,9 +1361,9 @@ func (h *EventHandler) handleInvitationRejected(payload json.RawMessage) {
 func (h *EventHandler) handleEventAddedToGroup(payload json.RawMessage) {
 	// Parse the payload
 	var data struct {
-		GroupID string `json:"group_id"`
-		EventID string `json:"event_id"`
-		AddedBy string `json:"added_by"`
+		GroupID         string `json:"group_id"`
+		EventID         string `json:"event_id"`
+		AddedBy         string `json:"added_by"`
 		ResponseChannel string `json:"response_channel,omitempty"`
 	}
 
@@ -988,9 +1425,9 @@ func (h *EventHandler) handleEventAddedToGroup(payload json.RawMessage) {
 			"status": "success",
 			"event": map[string]interface{}{
 				"group_id": groupEvent.GroupID,
-				"event_id":  groupEvent.EventID,
-				"added_by":  groupEvent.AddedBy,
-				"added_at":  groupEvent.AddedAt,
+				"event_id": groupEvent.EventID,
+				"added_by": groupEvent.AddedBy,
+				"added_at": groupEvent.AddedAt,
 			},
 		})
 	}
@@ -998,8 +1435,8 @@ func (h *EventHandler) handleEventAddedToGroup(payload json.RawMessage) {
 	// Publish notification event
 	h.publisher.Publish("notifications", "event_added_to_group", map[string]interface{}{
 		"group_id": groupEvent.GroupID,
-		"event_id":  groupEvent.EventID,
-		"added_by":  groupEvent.AddedBy,
+		"event_id": groupEvent.EventID,
+		"added_by": groupEvent.AddedBy,
 	})
 }
 
@@ -1007,9 +1444,9 @@ func (h *EventHandler) handleEventAddedToGroup(payload json.RawMessage) {
 func (h *EventHandler) handleEventRemovedFromGroup(payload json.RawMessage) {
 	// Parse the payload
 	var data struct {
-		GroupID    string `json:"group_id"`
-		EventID    string `json:"event_id"`
-		RemovedBy  string `json:"removed_by"`
+		GroupID         string `json:"group_id"`
+		EventID         string `json:"event_id"`
+		RemovedBy       string `json:"removed_by"`
 		ResponseChannel string `json:"response_channel,omitempty"`
 	}
 
@@ -1064,15 +1501,15 @@ func (h *EventHandler) handleEventRemovedFromGroup(payload json.RawMessage) {
 			"status": "success",
 			"event": map[string]interface{}{
 				"group_id": data.GroupID,
-				"event_id":  data.EventID,
+				"event_id": data.EventID,
 			},
 		})
 	}
 
 	// Publish notification event
 	h.publisher.Publish("notifications", "event_removed_from_group", map[string]interface{}{
-		"group_id": data.GroupID,
-		"event_id":  data.EventID,
+		"group_id":   data.GroupID,
+		"event_id":   data.EventID,
 		"removed_by": data.RemovedBy,
 	})
 }
