@@ -47,9 +47,9 @@ docker run -d --name agenda-groups-service --network agenda-net -p 8003:8003 \
   -v "$CURRENT_DIR/services/group_service/data:/app/data" \
   agenda-group:latest
 
-# 6. Notifications Service
-echo "Starting Notifications Service..."
-docker run -d --name agenda-notifications-service --network $NETWORK_NAME -p 8004:8004 \
+# # 6. Notifications Service
+# echo "Starting Notifications Service..."
+# docker run -d --name agenda-notifications-service --network $NETWORK_NAME -p 8004:8004 \
 
 # 7. Streamlit App
 echo "Starting Streamlit App..."
