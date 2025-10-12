@@ -51,4 +51,9 @@ docker run -d --name agenda-groups-service --network agenda-net -p 8003:8003 \
 echo "Starting Notifications Service..."
 docker run -d --name agenda-notifications-service --network $NETWORK_NAME -p 8004:8004 \
 
+# 7. Streamlit App
+echo "Starting Streamlit App..."
+docker run -d --name agenda-streamlit-app --network $NETWORK_NAME -p 8501:8501 \
+  -v "$CURRENT_DIR/services/streamlit_app:/app" agenda-streamlit_app:latest
+
 echo "\nAll services are starting. Use 'docker ps' to check their status."
