@@ -75,13 +75,51 @@ func Migrate(db *sql.DB) error {
 				CREATE INDEX IF NOT EXISTS idx_group_invitations_group ON group_invitations(group_id);
 			`,
 		},
-		// Add future migrations here:
-		// {
-		// 	Name: "add_new_feature",
-		// 	Up: `
-		// 		ALTER TABLE groups ADD COLUMN new_column TEXT;
-		// 	`,
-		// },
+		// Add hierarchical support
+		{
+			Name: "add_hierarchical_support",
+			Up: `
+				-- Add new columns to groups table
+				ALTER TABLE groups ADD COLUMN is_hierarchical BOOLEAN NOT NULL DEFAULT FALSE;
+				ALTER TABLE groups ADD COLUMN parent_group_id TEXT REFERENCES groups(id) ON DELETE SET NULL;
+
+				-- Add new columns to group_members table
+				ALTER TABLE group_members ADD COLUMN is_inherited BOOLEAN NOT NULL DEFAULT FALSE;
+
+				-- Add new column to group_events table
+				ALTER TABLE group_events ADD COLUMN is_hierarchical BOOLEAN NOT NULL DEFAULT FALSE;
+
+				-- Create indexes for better performance
+				CREATE INDEX IF NOT EXISTS idx_groups_parent ON groups(parent_group_id);
+				CREATE INDEX IF NOT EXISTS idx_group_members_inherited ON group_members(is_inherited);
+
+				-- Create a view for hierarchical groups
+				CREATE VIEW IF NOT EXISTS hierarchical_groups AS
+				SELECT 
+				    g1.id AS parent_group_id,
+				    g1.name AS parent_group_name,
+				    g2.id AS child_group_id,
+				    g2.name AS child_group_name
+				FROM 
+				    groups g1
+				JOIN 
+				    groups g2 ON g2.parent_group_id = g1.id
+				WHERE 
+				    g1.is_hierarchical = TRUE;
+
+				-- Create a view for inherited members
+				CREATE VIEW IF NOT EXISTS inherited_members AS
+				SELECT 
+				    gm.*,
+				    g.parent_group_id AS inherited_from_group_id
+				FROM 
+				    group_members gm
+				JOIN 
+				    groups g ON gm.group_id = g.id
+				WHERE 
+				    gm.is_inherited = TRUE;
+			`,
+		},
 	}
 
 	// Run each migration in a transaction
