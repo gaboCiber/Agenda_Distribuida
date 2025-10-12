@@ -382,6 +382,32 @@ func (d *Database) IsGroupMember(groupID, userID string) (bool, error) {
 	return count > 0, nil
 }
 
+// GetGroupMember retrieves a specific group member by group ID and user ID
+func (d *Database) GetGroupMember(groupID, userID string) (*GroupMember, error) {
+	member := &GroupMember{}
+	err := d.db.QueryRow(
+		`SELECT id, group_id, user_id, role, joined_at 
+		FROM group_members 
+		WHERE group_id = ? AND user_id = ?`,
+		groupID, userID,
+	).Scan(
+		&member.ID,
+		&member.GroupID,
+		&member.UserID,
+		&member.Role,
+		&member.JoinedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return member, nil
+}
+
 // IsGroupAdmin checks if a user is an admin of a group
 func (d *Database) IsGroupAdmin(groupID, userID string) (bool, error) {
 	var count int

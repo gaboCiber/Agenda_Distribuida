@@ -18,6 +18,7 @@ type GroupService interface {
 	// Member operations
 	AddGroupMember(member *models.GroupMember) error
 	RemoveGroupMember(groupID, userID string) error
+	GetGroupMember(groupID, userID string) (*models.GroupMember, error)
 	IsGroupMember(groupID, userID string) (bool, error)
 	IsGroupAdmin(groupID, userID string) (bool, error)
 	GetGroupMembers(groupID string) ([]*models.GroupMember, error)
@@ -95,6 +96,11 @@ func (s *groupService) AddGroupMember(member *models.GroupMember) error {
 // RemoveGroupMember removes a user from a group
 func (s *groupService) RemoveGroupMember(groupID, userID string) error {
 	return s.db.RemoveGroupMember(groupID, userID)
+}
+
+// GetGroupMember retrieves a specific group member by group ID and user ID
+func (s *groupService) GetGroupMember(groupID, userID string) (*models.GroupMember, error) {
+	return s.db.GetGroupMember(groupID, userID)
 }
 
 // IsGroupMember checks if a user is a member of a group
