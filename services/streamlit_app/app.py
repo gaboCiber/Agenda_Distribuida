@@ -38,6 +38,14 @@ def init_session_state():
         st.session_state.pending_events = {}
     if 'deleting_event' not in st.session_state:
         st.session_state.deleting_event = None
+    if 'groups' not in st.session_state:
+        st.session_state.groups = []
+    if 'selected_group' not in st.session_state:
+        st.session_state.selected_group = None
+    if 'group_invitations' not in st.session_state:
+        st.session_state.group_invitations = []
+    if 'show_group_management' not in st.session_state:
+        st.session_state.show_group_management = False
 
 def make_api_request(endpoint, method="GET", data=None):
     """Realizar peticiones al API Gateway con mejor manejo de errores - CORREGIDA"""
@@ -311,7 +319,20 @@ def render_selected_day_events():
                         # Guardar evento a eliminar y hacer rerun inmediato
                         st.session_state.deleting_event = event
                         st.rerun()
+        
+                    # Nuevo botón para agregar evento a grupo
+                    if st.button("👥 Grupo", key=f"group_{event['id']}_{i}", use_container_width=True, help="Agregar a grupo"):
+                        st.session_state.adding_to_group = event
+                        st.rerun()
     
+    # Agregar evento a grupo si está seleccionado
+    if st.session_state.get('adding_to_group'):
+        render_add_to_group_form(st.session_state.adding_to_group)
+
+    # Crear evento de grupo si está seleccionado
+    if st.session_state.get('creating_group_event'):
+        render_create_group_event_form()
+
     # Sección para crear nuevo evento (mantener existente)
     st.markdown("---")
     st.subheader("➕ Crear Nuevo Evento")
@@ -333,7 +354,7 @@ def render_selected_day_events():
             event_end_time = st.time_input(
                 "Hora de fin*", 
                 value=datetime.strptime("00:15", "%H:%M").time(),
-                step=60, 
+                step=60,  # 🔥 Paso de 1 minuto (60 segundos)
                 help="Puede escribir cualquier hora o usar los controles"
             )
         
@@ -420,30 +441,114 @@ def render_selected_day_events():
                     st.error(f"❌ Error al crear el evento: {error_detail}")
                     st.session_state.form_submitted = False
 
+def load_groups():
+    """Cargar grupos del usuario actual"""
+    if st.session_state.user_id:
+        user_id_to_use = st.session_state.user_id or "user_test"
+        response = make_api_request(f"/api/v1/groups", "GET")
+
+        if response and response.status_code == 200:
+            data = response.json()
+            st.session_state.groups = data.get('groups', [])
+            print(f"🔧 DEBUG: Se cargaron {len(st.session_state.groups)} grupos para usuario {user_id_to_use}")
+        else:
+            st.session_state.groups = []
+            print(f"🔧 DEBUG: Error cargando grupos - Status: {response.status_code if response else 'No response'}")
+
+def load_group_invitations():
+    """Cargar invitaciones de grupo del usuario actual"""
+    if st.session_state.user_id:
+        response = make_api_request(f"/api/v1/groups/invitations", "GET")
+
+        if response and response.status_code == 200:
+            st.session_state.group_invitations = response.json()
+            print(f"🔧 DEBUG: Se cargaron {len(st.session_state.group_invitations)} invitaciones")
+        else:
+            st.session_state.group_invitations = []
+            print(f"🔧 DEBUG: Error cargando invitaciones - Status: {response.status_code if response else 'No response'}")
+
 def render_sidebar():
-    """Renderizar sidebar mínimo - ACTUALIZADA"""
-    st.sidebar.title("📅 Agenda Distribuida")
+    """Renderizar sidebar con gestión de grupos - ACTUALIZADA"""
     st.sidebar.markdown("---")
-    
+
     # Estado de autenticación
     if st.session_state.user_id:
         st.sidebar.write(f"**Usuario:** {st.session_state.user_username or st.session_state.user_email}")
-        
-        # Botón para recargar eventos
-        if st.sidebar.button("🔄 Actualizar Eventos", use_container_width=True):
-            load_events()
-            st.sidebar.success("Eventos actualizados")
+
+        # Toggle para mostrar/ocultar gestión de grupos
+        if st.sidebar.button(
+            "### 👥 Gestión de Grupos" if not st.session_state.show_group_management else "📅 Ver Agenda",
+            use_container_width=True
+        ):
+            if st.session_state.show_group_management:
+                st.session_state.show_group_management = False
+                load_events()
+                st.sidebar.success("Eventos actualizados")
+            else:
+                st.session_state.show_group_management = True
+                load_groups()
+                load_group_invitations()
+                st.sidebar.success("Grupos cargados")
+
+        # Mostrar gestión de grupos si está activada
+        if st.session_state.show_group_management:
+            render_group_management_sidebar()
+
     else:
         st.sidebar.info("🔐 No has iniciado sesión")
-        st.sidebar.write("Usando modo de prueba con user_test")
-    
-    # 🔥 NUEVO: Información de debug
-    if st.sidebar.checkbox("🔧 Mostrar información de debug"):
-        st.sidebar.write(f"**Eventos cargados:** {len(st.session_state.events)}")
-        st.sidebar.write(f"**Usuario ID:** {st.session_state.user_id or 'user_test'}")
-        if st.session_state.selected_date:
-            st.sidebar.write(f"**Día seleccionado:** {st.session_state.selected_date.strftime('%d/%m/%Y')}")
 
+def render_group_management_sidebar():
+    """Renderizar sección de gestión de grupos en el sidebar"""
+    # Mis Grupos
+    if st.session_state.groups:
+        st.sidebar.markdown("#### Mis Grupos")
+        for group in st.session_state.groups:
+            group_name = group.get('name', 'Sin nombre')
+            member_count = group.get('member_count', 0)
+
+            if st.sidebar.button(
+                f"📋 {group_name} ({member_count} miembros)",
+                key=f"group_{group['id']}",
+                use_container_width=True
+            ):
+                st.session_state.selected_group = group
+                st.session_state.show_group_management = False
+                st.rerun()
+
+    # Invitaciones pendientes
+    if st.session_state.group_invitations:
+        st.sidebar.markdown("#### 📨 Invitaciones")
+        for invitation in st.session_state.group_invitations:
+            if invitation.get('status') == 'pending':
+                group_name = invitation.get('group_name', 'Grupo desconocido')
+                invited_by = invitation.get('invited_by', 'Desconocido')
+
+                col1, col2 = st.sidebar.columns([3, 1])
+                with col1:
+                    st.sidebar.write(f"📋 {group_name}")
+                    st.sidebar.caption(f"Invitado por: {invited_by}")
+                with col2:
+                    if st.sidebar.button("✅", key=f"accept_{invitation['id']}", help="Aceptar"):
+                        respond_to_invitation(invitation['id'], 'accept')
+                    if st.sidebar.button("❌", key=f"reject_{invitation['id']}", help="Rechazar"):
+                        respond_to_invitation(invitation['id'], 'reject')
+
+    # Crear nuevo grupo
+    st.sidebar.markdown("#### ➕ Nuevo Grupo")
+    if st.sidebar.button("Crear Grupo", use_container_width=True):
+        st.session_state.show_create_group = True
+
+def respond_to_invitation(invitation_id: str, action: str):
+    """Responder a una invitación de grupo"""
+    data = {"action": action}
+    response = make_api_request(f"/api/v1/groups/invitations/{invitation_id}/respond", "POST", data)
+
+    if response and response.status_code == 200:
+        st.sidebar.success(f"Invitación {action}ada correctamente")
+        load_group_invitations()  # Recargar invitaciones
+    else:
+        st.sidebar.error("Error al procesar la invitación")
+   
 def create_event_with_conflict_check(event_data):
     """Crear evento con verificación de conflictos en tiempo real"""
     import time
@@ -588,32 +693,432 @@ def main():
     # Título principal
     st.title("📅 Mi Agenda")
     
-    # Si el usuario está autenticado, mostrar calendario
-    if st.session_state.user_id or True:  # Temporal: siempre mostrar para pruebas
-        # Recargar eventos si es necesario
-        if not st.session_state.events:
-            load_events()
-        
-        # Layout principal
-        col1, col2 = st.columns([2, 1])
-        
-        with col1:
-            # Calendario principal
-            render_calendar()
-        
-        with col2:
-            # Eventos del día seleccionado y formulario de creación
-            render_selected_day_events()
-            
+    # Si el usuario está autenticado, mostrar calendario o gestión de grupos
+    if st.session_state.user_id:  # Temporal: siempre mostrar para pruebas
+        # Mostrar gestión de grupos si está activada
+        if st.session_state.show_group_management:
+            render_group_management()
+        elif st.session_state.selected_group:
+            render_group_detail()
+        else:
+            # Recargar eventos si es necesario
+            if not st.session_state.events:
+                load_events()
+
+            # Layout principal
+            col1, col2 = st.columns([2, 1])
+
+            with col1:
+                # Calendario principal
+                render_calendar()
+
+            with col2:
+                # Eventos del día seleccionado y formulario de creación
+                render_selected_day_events()
+
     else:
         # Pantalla de bienvenida para usuarios no autenticados
         st.markdown("""
-        ## 🎯 Bienvenido a tu Agenda Distribuida
-        
+        ## Bienvenido a tu Agenda
+
         **Organiza tus eventos y mantente sincronizado**
-        
+
         👈 **Usa el sidebar para ir a la página de autenticación**
         """)
+
+def render_group_management():
+    """Renderizar interfaz de gestión de grupos"""
+    st.title("👥 Gestión de Grupos")
+
+    # Botón para volver a la agenda
+    if st.button("⬅️ Volver a Agenda", use_container_width=True):
+        st.session_state.show_group_management = False
+        st.session_state.selected_group = None
+        st.rerun()
+
+    # Crear nuevo grupo
+    if st.session_state.get('show_create_group', False):
+        render_create_group_form()
+
+    # Listar grupos existentes
+    st.markdown("### 📋 Mis Grupos")
+
+    if not st.session_state.groups:
+        st.info("No tienes grupos aún. ¡Crea tu primer grupo!")
+    else:
+        for group in st.session_state.groups:
+            with st.expander(f"📋 {group['name']}", expanded=False):
+                col1, col2, col3 = st.columns([2, 1, 1])
+
+                with col1:
+                    st.write(f"**Descripción:** {group.get('description', 'Sin descripción')}")
+                    st.write(f"**Miembros:** {group.get('member_count', 0)}")
+                    st.write(f"**Creado:** {group['created_at'][:10]}")
+
+                with col2:
+                    if st.button("👀 Ver Detalles", key=f"view_{group['id']}", use_container_width=True):
+                        st.session_state.selected_group = group
+                        st.session_state.show_group_management = False
+                        st.rerun()
+
+                with col3:
+                    if st.button("📨 Invitar", key=f"invite_{group['id']}", use_container_width=True):
+                        st.session_state.inviting_to_group = group['id']
+                        st.rerun()
+
+def render_create_group_form():
+    """Renderizar formulario para crear grupo"""
+    st.markdown("### ➕ Crear Nuevo Grupo")
+
+    with st.form("create_group_form"):
+        group_name = st.text_input("Nombre del Grupo*", placeholder="Ej: Equipo de Desarrollo")
+        group_description = st.text_area("Descripción", placeholder="Describe el propósito del grupo...")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            create_btn = st.form_submit_button("🎯 Crear Grupo", use_container_width=True)
+        with col2:
+            cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
+
+        if create_btn and group_name:
+            # Crear grupo
+            group_data = {
+                "name": group_name,
+                "description": group_description
+            }
+
+            response = make_api_request("/api/v1/groups", "POST", group_data)
+
+            if response and response.status_code == 201:
+                st.success("✅ Grupo creado exitosamente!")
+                st.session_state.show_create_group = False
+                load_groups()  # Recargar grupos
+                st.rerun()
+            else:
+                st.error("❌ Error al crear el grupo")
+
+        if cancel_btn:
+            st.session_state.show_create_group = False
+            st.rerun()
+
+def render_group_detail():
+    """Renderizar detalles de un grupo específico"""
+    if not st.session_state.selected_group:
+        return
+
+    group = st.session_state.selected_group
+    st.title(f"📋 {group['name']}")
+
+    # Botón para volver
+    if st.button("⬅️ Volver a Grupos", use_container_width=True):
+        st.session_state.selected_group = None
+        st.session_state.show_group_management = True
+        st.rerun()
+
+    # Información del grupo
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.markdown(f"**Descripción:** {group.get('description', 'Sin descripción')}")
+        st.markdown(f"**Creado por:** {group.get('created_by', 'Desconocido')}")
+        st.markdown(f"**Fecha de creación:** {group['created_at'][:10]}")
+
+    with col2:
+        st.markdown(f"**Miembros:** {group.get('member_count', 0)}")
+
+        # Invitar miembros
+        if st.button("➕ Invitar Miembro", use_container_width=True):
+            st.session_state.inviting_to_group = group['id']
+            st.rerun()
+
+    # Gestión de invitaciones
+    if st.session_state.get('inviting_to_group') == group['id']:
+        render_invite_member_form(group)
+
+    # Lista de miembros
+    st.markdown("### 👥 Miembros del Grupo")
+    render_group_members(group['id'])
+
+    # Eventos del grupo
+    st.markdown("### 📅 Eventos del Grupo")
+    render_group_events(group['id'])
+
+def render_invite_member_form(group):
+    """Renderizar formulario para invitar miembros"""
+    st.markdown("### 📨 Invitar Nuevo Miembro")
+
+    with st.form(f"invite_member_form_{group['id']}"):
+        user_email = st.text_input("Email del usuario a invitar*", placeholder="usuario@email.com")
+
+        col1, col2 = st.columns(2)
+        with col1:
+            invite_btn = st.form_submit_button("📨 Enviar Invitación", use_container_width=True)
+        with col2:
+            cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
+
+        if invite_btn and user_email:
+            # Crear invitación
+            invite_data = {
+                "group_id": group['id'],
+                "user_id": user_email  # Asumiendo que usamos email como user_id por ahora
+            }
+
+            response = make_api_request("/api/v1/groups/invitations", "POST", invite_data)
+
+            if response and response.status_code == 201:
+                st.success("✅ Invitación enviada exitosamente!")
+                st.session_state.inviting_to_group = None
+                st.rerun()
+            else:
+                st.error("❌ Error al enviar la invitación")
+
+        if cancel_btn:
+            st.session_state.inviting_to_group = None
+            st.rerun()
+
+def render_group_members(group_id):
+    """Renderizar lista de miembros del grupo"""
+    response = make_api_request(f"/api/v1/groups/{group_id}/members", "GET")
+
+    if response and response.status_code == 200:
+        members_data = response.json()
+        members = members_data.get('members', [])
+
+        if not members:
+            st.info("Este grupo no tiene miembros aún")
+        else:
+            for member in members:
+                col1, col2, col3 = st.columns([2, 1, 1])
+
+                with col1:
+                    st.write(f"**{member['user_id']}**")
+                    st.caption(f"Rol: {member['role']}")
+
+                with col2:
+                    st.caption(f"Unido: {member['joined_at'][:10]}")
+
+                with col3:
+                    if member['role'] != 'admin':  # No permitir remover admins
+                        if st.button("❌", key=f"remove_{member['id']}", help="Remover miembro"):
+                            remove_member(group_id, member['user_id'])
+    else:
+        st.error("Error al cargar miembros del grupo")
+
+def render_group_events(group_id):
+    """Renderizar eventos del grupo"""
+    response = make_api_request(f"/api/v1/groups/{group_id}/events", "GET")
+
+    if response and response.status_code == 200:
+        events = response.json()
+
+        if not events:
+            st.info("Este grupo no tiene eventos programados")
+        else:
+            for event in events:
+                with st.expander(f"📅 Evento: {event.get('event_id', 'Desconocido')}", expanded=False):
+                    st.write(f"**Agregado por:** {event.get('added_by', 'Desconocido')}")
+                    st.write(f"**Fecha de agregado:** {event.get('added_at', 'Desconocida')[:10]}")
+
+                    if st.button("🗑️ Remover del Grupo", key=f"remove_event_{event['event_id']}", use_container_width=True):
+                        remove_event_from_group(group_id, event['event_id'])
+    else:
+        st.error("Error al cargar eventos del grupo")
+
+def remove_member(group_id: str, member_id: str):
+    """Remover un miembro del grupo"""
+    response = make_api_request(f"/api/v1/groups/{group_id}/members/{member_id}", "DELETE")
+
+    if response and response.status_code == 204:
+        st.success("✅ Miembro removido exitosamente")
+        # Recargar detalles del grupo
+        load_groups()
+    else:
+        st.error("❌ Error al remover miembro")
+
+def remove_event_from_group(group_id: str, event_id: str):
+    """Remover un evento del grupo"""
+    response = make_api_request(f"/api/v1/groups/{group_id}/events/{event_id}", "DELETE")
+
+    if response and response.status_code == 204:
+        st.success("✅ Evento removido del grupo exitosamente")
+        st.rerun()
+    else:
+        st.error("❌ Error al remover evento del grupo")
+
+def render_add_to_group_form(event):
+    """Renderizar formulario para agregar evento a grupo"""
+    st.markdown("---")
+    st.subheader(f"👥 Agregar Evento '{event['title']}' a Grupo")
+
+    # Obtener grupos del usuario
+    if not st.session_state.groups:
+        load_groups()
+
+    if not st.session_state.groups:
+        st.warning("No tienes grupos disponibles. Crea un grupo primero.")
+        if st.button("Crear Grupo", use_container_width=True):
+            st.session_state.show_create_group = True
+            st.session_state.adding_to_group = None
+            st.rerun()
+        return
+
+    with st.form(f"add_to_group_form_{event['id']}"):
+        # Selector de grupo
+        group_options = {group['id']: group['name'] for group in st.session_state.groups}
+        selected_group_id = st.selectbox(
+            "Seleccionar Grupo",
+            options=list(group_options.keys()),
+            format_func=lambda x: group_options[x],
+            help="Elige el grupo al que quieres agregar este evento"
+        )
+
+        col1, col2 = st.columns(2)
+        with col1:
+            add_btn = st.form_submit_button("➕ Agregar a Grupo", use_container_width=True)
+        with col2:
+            cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
+
+        if add_btn and selected_group_id:
+            # Agregar evento al grupo
+            group_event_data = {"event_id": event['id']}
+
+            response = make_api_request(f"/api/v1/groups/{selected_group_id}/events", "POST", group_event_data)
+
+            if response and response.status_code == 201:
+                st.success(f"✅ Evento agregado al grupo '{group_options[selected_group_id]}' exitosamente!")
+                st.session_state.adding_to_group = None
+                st.rerun()
+            else:
+                st.error("❌ Error al agregar evento al grupo")
+
+        if cancel_btn:
+            st.session_state.adding_to_group = None
+            st.rerun()
+
+    # Opción para crear evento de grupo
+    st.markdown("---")
+    st.markdown("### 🎯 O Crear Evento de Grupo")
+    st.info("Los eventos de grupo se crean automáticamente para todos los miembros del grupo, respetando sus horarios individuales.")
+
+    if st.button("Crear Evento de Grupo", use_container_width=True, type="primary"):
+        st.session_state.creating_group_event = True
+        st.rerun()
+
+def render_create_group_event_form():
+    """Renderizar formulario para crear evento de grupo"""
+    st.markdown("---")
+    st.subheader("🎯 Crear Evento de Grupo")
+
+    # Obtener grupos del usuario
+    if not st.session_state.groups:
+        load_groups()
+
+    if not st.session_state.groups:
+        st.warning("No tienes grupos disponibles. Crea un grupo primero.")
+        return
+
+    with st.form("create_group_event_form"):
+        # Información básica del evento
+        event_title = st.text_input("Título del Evento*", placeholder="Reunión de equipo, Evento grupal...")
+        event_description = st.text_area("Descripción", placeholder="Detalles del evento grupal...")
+
+        # Selector de grupo
+        group_options = {group['id']: f"{group['name']} ({group.get('member_count', 0)} miembros)"
+                        for group in st.session_state.groups}
+        selected_group_id = st.selectbox(
+            "Grupo*",
+            options=list(group_options.keys()),
+            format_func=lambda x: group_options[x],
+            help="El evento se creará para todos los miembros de este grupo"
+        )
+
+        # Horarios
+        col1, col2 = st.columns(2)
+        with col1:
+            event_start_time = st.time_input(
+                "Hora de inicio*",
+                value=datetime.strptime("09:00", "%H:%M").time(),
+                step=60,
+                help="Hora de inicio del evento"
+            )
+        with col2:
+            event_end_time = st.time_input(
+                "Hora de fin*",
+                value=datetime.strptime("10:00", "%H:%M").time(),
+                step=60,
+                help="Hora de fin del evento"
+            )
+
+        # Selector de fecha
+        event_date = st.date_input(
+            "Fecha del Evento*",
+            value=datetime.now().date(),
+            help="Fecha en que ocurrirá el evento"
+        )
+
+        # Botones
+        col1, col2 = st.columns(2)
+        with col1:
+            create_btn = st.form_submit_button("🎯 Crear Evento de Grupo", use_container_width=True, type="primary")
+        with col2:
+            cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
+
+        if create_btn:
+            if not event_title or not selected_group_id:
+                st.error("❌ Título del evento y grupo son obligatorios")
+            elif event_end_time <= event_start_time:
+                st.error("❌ La hora de fin debe ser después de la hora de inicio")
+            else:
+                # Crear evento de grupo
+                event_datetime = datetime.combine(event_date, event_start_time)
+                end_datetime = datetime.combine(event_date, event_end_time)
+
+                group_event_data = {
+                    "group_id": selected_group_id,
+                    "title": event_title,
+                    "description": event_description,
+                    "start_time": event_datetime.isoformat(),
+                    "end_time": end_datetime.isoformat(),
+                    "user_id": st.session_state.user_id or "user_test"
+                }
+
+                with st.spinner("🔄 Creando evento de grupo..."):
+                    response = make_api_request("/api/v1/group-events", "POST", group_event_data)
+
+                if response and response.status_code == 200:
+                    response_data = response.json()
+                    status = response_data.get("status")
+
+                    if status == "success":
+                        st.success("✅ Evento de grupo creado exitosamente!")
+                        st.info(f"📊 Evento creado para {len(response_data.get('created_events', []))} miembros del grupo")
+                        load_events()  # Recargar eventos para mostrar los nuevos
+                        st.session_state.creating_group_event = False
+                        st.rerun()
+
+                    elif status == "partial_success":
+                        created_count = len(response_data.get('created_events', []))
+                        failed_count = len(response_data.get('failed_members', []))
+                        st.warning(f"⚠️ Evento creado parcialmente: {created_count} exitosos, {failed_count} fallidos")
+
+                        if response_data.get('failed_members'):
+                            st.error("Miembros con conflictos:")
+                            for failed in response_data['failed_members']:
+                                st.write(f"• {failed['member_id']}: {failed['error']}")
+
+                        load_events()
+                        st.session_state.creating_group_event = False
+
+                    else:
+                        error_msg = response_data.get("message", "Error desconocido")
+                        st.error(f"❌ Error al crear evento de grupo: {error_msg}")
+
+                else:
+                    st.error("❌ Error al crear evento de grupo")
+
+        if cancel_btn:
+            st.session_state.creating_group_event = False
+            st.rerun()
 
 if __name__ == "__main__":
     main()
