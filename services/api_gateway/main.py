@@ -166,9 +166,19 @@ async def create_event(event_data: EventCreateRequest):
             
             print(f"🔍 Nuevo evento - Inicio: {new_start_utc}, Fin: {new_end_utc}")
             
+            # Inicializar lista de eventos existentes si es None
+            if existing_events is None:
+                existing_events = []
+                print("ℹ️  No hay eventos existentes para verificar conflictos")
+            
             conflicting_events = []
             for event in existing_events:
-                # ✅ CORRECCIÓN: Convertir fechas existentes a datetime con zona horaria
+                # Verificar que el evento tenga los campos necesarios
+                if not all(key in event for key in ['start_time', 'end_time']):
+                    print(f"⚠️  Evento inválido: {event}")
+                    continue
+                    
+                # Convertir fechas existentes a datetime con zona horaria
                 existing_start_str = event['start_time'].replace('Z', '+00:00')
                 existing_end_str = event['end_time'].replace('Z', '+00:00')
                 
