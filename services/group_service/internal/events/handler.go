@@ -45,6 +45,10 @@ func (h *EventHandler) HandleMessage(channel, payload string) {
 
 	// Route the event to the appropriate handler
 	switch event.Type {
+	// Invitation events
+	case "invitation_cancelled":
+		h.handleInvitationCancelled(event.Payload)
+
 	// Hierarchical group events
 	case "hierarchical_group_updated":
 		h.handleHierarchicalGroupUpdated(event.Payload)
@@ -106,6 +110,8 @@ func (h *EventHandler) HandleMessage(channel, payload string) {
 		h.handleEventRemovedFromGroup(event.Payload)
 	case "list_group_events":
 		h.handleListGroupEvents(event.Payload)
+	case "list_invitations":
+		h.handleListInvitations(event.Payload)
 	default:
 		log.Printf("⚠️ Unhandled event type: %s", event.Type)
 	}
@@ -701,6 +707,90 @@ func (h *EventHandler) handleInvitationCreated(payload json.RawMessage) {
 		return
 	}
 
+	// Check if the inviter is a member of the group
+	isMember, err := h.groupService.IsGroupMember(data.GroupID, data.InvitedBy)
+	if err != nil || !isMember {
+		errMsg := "❌ Only group members can send invitations"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Get the group to check if it's hierarchical
+	group, err := h.groupService.GetGroup(data.GroupID)
+	if err != nil {
+		errMsg := fmt.Sprintf("❌ Failed to get group: %v", err)
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// If the group is hierarchical, check if the inviter is an admin
+	if group.IsHierarchical {
+		isAdmin, err := h.groupService.IsGroupAdmin(data.GroupID, data.InvitedBy)
+		if err != nil || !isAdmin {
+			errMsg := "❌ Only group admins can send invitations in hierarchical groups"
+			log.Println(errMsg)
+			if data.ResponseChannel != "" {
+				h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+					"status":  "error",
+					"message": errMsg,
+				})
+			}
+			return
+		}
+	}
+
+	// Check if the user is already a member of the group
+	isMember, err = h.groupService.IsGroupMember(data.GroupID, data.UserID)
+	if err == nil && isMember {
+		errMsg := "❌ User is already a member of the group"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Check if there's already a pending invitation for this user and group
+	hasPendingInvitation, err := h.groupService.HasPendingInvitation(data.GroupID, data.UserID)
+	if err != nil {
+		errMsg := fmt.Sprintf("❌ Failed to check for existing invitations: %v", err)
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	if hasPendingInvitation {
+		errMsg := "❌ There is already a pending invitation for this user"
+		log.Println(errMsg)
+		if data.ResponseChannel != "" {
+			h.publisher.Publish(data.ResponseChannel, "invitation_created_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
 	// Create the invitation
 	invitation := &models.GroupInvitation{
 		ID:        data.InvitationID,
@@ -1177,6 +1267,18 @@ func (h *EventHandler) handleInvitationAccepted(payload json.RawMessage) {
 		return
 	}
 
+	if invitation == nil {
+		errMsg := fmt.Sprintf("Invitation %s not found", invitationID)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_accepted_response", map[string]interface{}{
+				"status":  "not_found",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
 	// Only the invited user can accept the invitation
 	if invitation.UserID != userID {
 		errMsg := fmt.Sprintf("User %s is not authorized to accept invitation %s", userID, invitationID)
@@ -1330,6 +1432,18 @@ func (h *EventHandler) handleInvitationRejected(payload json.RawMessage) {
 		if responseChannel != "" {
 			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
 				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	if invitation == nil {
+		errMsg := fmt.Sprintf("Invitation %s not found", invitationID)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "invitation_rejected_response", map[string]interface{}{
+				"status":  "not_found",
 				"message": errMsg,
 			})
 		}
@@ -1558,7 +1672,129 @@ func (h *EventHandler) handleEventRemovedFromGroup(payload json.RawMessage) {
 	})
 }
 
+// handleListInvitations handles list_invitations events
+func (h *EventHandler) handleListInvitations(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		UserID          string `json:"user_id"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		log.Printf("❌ Failed to parse list_invitations payload: %v", err)
+		return
+	}
+
+	userID := data.UserID
+	responseChannel := data.ResponseChannel
+
+	// Validate required fields
+	if userID == "" {
+		errMsg := "❌ Missing required field: user_id"
+		log.Println(errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "list_invitations_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Get user's pending invitations
+	invitations, err := h.groupService.GetUserInvitations(userID, "pending")
+	if err != nil {
+		errMsg := fmt.Sprintf("Failed to get invitations for user %s: %v", userID, err)
+		log.Printf("❌ %s", errMsg)
+		if responseChannel != "" {
+			h.publisher.Publish(responseChannel, "list_invitations_response", map[string]interface{}{
+				"status":  "error",
+				"message": errMsg,
+			})
+		}
+		return
+	}
+
+	// Publish the response
+	if responseChannel != "" {
+		h.publisher.Publish(responseChannel, "list_invitations_response", map[string]interface{}{
+			"status":     "success",
+			"invitations": invitations,
+		})
+	}
+
+	log.Printf("✅ Listed %d pending invitations for user %s", len(invitations), userID)
+}
+
 // handleListGroupEvents handles list_group_events events
+// handleInvitationCancelled handles invitation_cancelled events
+func (h *EventHandler) handleInvitationCancelled(payload json.RawMessage) {
+	// Parse the payload
+	var data struct {
+		InvitationID    string `json:"invitation_id"`
+		CancelledBy     string `json:"cancelled_by"`
+		ResponseChannel string `json:"response_channel"`
+	}
+
+	if err := json.Unmarshal(payload, &data); err != nil {
+		h.sendErrorResponse(data.ResponseChannel, "Invalid invitation cancellation payload", err)
+		return
+	}
+
+	// Get the invitation to verify it exists and get the group ID
+	invitation, err := h.groupService.GetInvitation(data.InvitationID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			h.publisher.Publish(data.ResponseChannel, "invitation_cancelled_response", map[string]interface{}{
+				"status":  "error",
+				"message": "Invitation not found",
+			})
+			return
+		}
+		h.sendErrorResponse(data.ResponseChannel, "Failed to get invitation", err)
+		return
+	}
+
+	// Check if invitation is nil (shouldn't happen if no error, but better safe than sorry)
+	if invitation == nil {
+		h.publisher.Publish(data.ResponseChannel, "invitation_cancelled_response", map[string]interface{}{
+			"status":  "error",
+			"message": "Invitation not found",
+		})
+		return
+	}
+
+	// Verify that the user cancelling the invitation is the one who created it
+	// or is an admin of the group
+	isAdmin, err := h.groupService.IsGroupAdmin(invitation.GroupID, data.CancelledBy)
+	if err != nil {
+		h.sendErrorResponse(data.ResponseChannel, "Failed to verify admin status", err)
+		return
+	}
+
+	if !isAdmin && invitation.InvitedBy != data.CancelledBy {
+		h.publisher.Publish(data.ResponseChannel, "invitation_cancelled_response", map[string]interface{}{
+			"status":  "error",
+			"message": "You are not authorized to cancel this invitation",
+		})
+		return
+	}
+
+	// Update the invitation status to 'cancelled'
+	invitation.Status = "cancelled"
+	err = h.groupService.UpdateInvitation(invitation)
+	if err != nil {
+		h.sendErrorResponse(data.ResponseChannel, "Failed to cancel invitation", err)
+		return
+	}
+
+	// Send success response
+	h.publisher.Publish(data.ResponseChannel, "invitation_cancelled_response", map[string]interface{}{
+		"status":  "success",
+		"message": "Invitation cancelled successfully",
+	})
+}
+
 func (h *EventHandler) handleListGroupEvents(payload json.RawMessage) {
 	// Parse the payload
 	var data struct {

@@ -749,7 +749,7 @@ func (d *Database) IsGroupAdmin(groupID, userID string) (bool, error) {
 func (d *Database) RemoveParentFromChildren(parentID string) error {
 	tx, err := d.db.Begin()
 	if err != nil {
-		return fmt.Errorf("failed to begin transaction: %v", err)
+		return fmt.Errorf("error starting transaction: %v", err)
 	}
 
 	defer func() {
@@ -758,38 +758,60 @@ func (d *Database) RemoveParentFromChildren(parentID string) error {
 		}
 	}()
 
-	// Update all groups that have this group as parent
-	_, err = tx.Exec(
-		`UPDATE groups 
-		SET parent_group_id = NULL, updated_at = ? 
-		WHERE parent_group_id = ?`,
-		time.Now().UTC(),
-		parentID,
-	)
-
+	// Get all direct children of the parent group
+	rows, err := tx.Query(
+		`SELECT id FROM groups 
+		WHERE parent_group_id = ?`, parentID)
 	if err != nil {
 		tx.Rollback()
-		return fmt.Errorf("failed to update child groups: %v", err)
+		return fmt.Errorf("error querying child groups: %v", err)
+	}
+	defer rows.Close()
+
+	var childIDs []string
+	for rows.Next() {
+		var childID string
+		if err := rows.Scan(&childID); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("error scanning child group ID: %v", err)
+		}
+		childIDs = append(childIDs, childID)
 	}
 
-	// Remove any inherited memberships that came from this parent group
-	_, err = tx.Exec(
-		`DELETE FROM group_members 
-		WHERE is_inherited = 1 AND group_id IN (
-			SELECT id FROM groups WHERE parent_group_id = ?
-		)`,
-		parentID,
-	)
-
-	if err != nil {
-		tx.Rollback()
-		return fmt.Errorf("failed to clean up inherited memberships: %v", err)
+	// Update each child to remove the parent reference
+	for _, childID := range childIDs {
+		_, err = tx.Exec(
+			`UPDATE groups 
+			SET parent_group_id = NULL, 
+			updated_at = CURRENT_TIMESTAMP 
+			WHERE id = ?`, childID)
+		if err != nil {
+			tx.Rollback()
+			return fmt.Errorf("error updating child group %s: %v", childID, err)
+		}
 	}
 
-	if err := tx.Commit(); err != nil {
+	if err = tx.Commit(); err != nil {
 		tx.Rollback()
-		return fmt.Errorf("failed to commit transaction: %v", err)
+		return fmt.Errorf("error committing transaction: %v", err)
 	}
 
 	return nil
 }
+
+// HasPendingInvitation checks if there's already a pending invitation for a user in a group
+func (d *Database) HasPendingInvitation(groupID, userID string) (bool, error) {
+	var count int
+	err := d.db.QueryRow(
+		`SELECT COUNT(*) FROM group_invitations 
+		WHERE group_id = ? AND user_id = ? AND status = 'pending'`,
+		groupID, userID,
+	).Scan(&count)
+
+	if err != nil {
+		return false, fmt.Errorf("error checking for pending invitations: %v", err)
+	}
+
+	return count > 0, nil
+}
+

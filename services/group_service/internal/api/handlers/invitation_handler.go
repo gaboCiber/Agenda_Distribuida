@@ -241,21 +241,24 @@ func (h *InvitationHandler) RespondToInvitation(w http.ResponseWriter, r *http.R
 	}
 }
 
-// ListUserInvitations returns all invitations for the authenticated user
+// ListUserInvitations returns all invitations for the authenticated user, optionally filtered by status
 func (h *InvitationHandler) ListUserInvitations(w http.ResponseWriter, r *http.Request) {
-	// Obtener el ID del usuario de la URL
+	// Get user ID from URL
 	vars := mux.Vars(r)
 	userID, exists := vars["userID"]
 	if !exists || userID == "" {
-		log.Printf("Error: No se proporcionó userID en la URL")
+		log.Printf("Error: User ID not provided in URL")
 		RespondWithError(w, http.StatusBadRequest, "User ID is required")
 		return
 	}
 
-	log.Printf("Listando invitaciones para el usuario: %s", userID)
+	// Get status filter from query parameters
+	status := r.URL.Query().Get("status")
 
-	// Get all invitations for the user
-	invitations, err := h.db.GetUserInvitations(userID)
+	log.Printf("Listing invitations for user: %s, status: %s", userID, status)
+
+	// Get invitations for the user, optionally filtered by status
+	invitations, err := h.db.GetUserInvitations(userID, status)
 	if err != nil {
 		log.Printf("Error al obtener invitaciones para el usuario %s: %v", userID, err)
 		RespondWithError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to retrieve invitations: %v", err))

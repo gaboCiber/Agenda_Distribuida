@@ -38,6 +38,8 @@ type GroupService interface {
 	CreateInvitation(invitation *models.GroupInvitation) error
 	GetInvitation(invitationID string) (*models.GroupInvitation, error)
 	UpdateInvitation(invitation *models.GroupInvitation) error
+	HasPendingInvitation(groupID, userID string) (bool, error)
+	GetUserInvitations(userID string, status string) ([]*models.GroupInvitation, error)
 
 	// Event operations
 	AddGroupEvent(groupEvent *models.GroupEvent) error
@@ -382,10 +384,39 @@ func (s *groupService) CommitTx(tx *sql.Tx) error {
 
 // RollbackTx rolls back a transaction
 func (s *groupService) RollbackTx(tx *sql.Tx) error {
-	if tx != nil {
-		if err := tx.Rollback(); err != nil {
-			return fmt.Errorf("failed to rollback transaction: %v", err)
-		}
+	if tx == nil {
+		return errors.New("transaction is nil")
+	}
+
+	if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+		return fmt.Errorf("error rolling back transaction: %v", err)
 	}
 	return nil
+}
+
+// HasPendingInvitation checks if there's already a pending invitation for a user in a group
+func (s *groupService) HasPendingInvitation(groupID, userID string) (bool, error) {
+	return s.db.HasPendingInvitation(groupID, userID)
+}
+
+// GetUserInvitations retrieves all invitations for a user, optionally filtered by status
+// If status is empty, all invitations are returned
+func (s *groupService) GetUserInvitations(userID string, status string) ([]*models.GroupInvitation, error) {
+	if userID == "" {
+		return nil, errors.New("user ID is required")
+	}
+
+	// Validate status if provided
+	if status != "" {
+		validStatuses := map[string]bool{
+			"pending":  true,
+			"accepted": true,
+			"rejected": true,
+		}
+		if !validStatuses[status] {
+			return nil, fmt.Errorf("invalid status: %s. Must be one of: pending, accepted, rejected", status)
+		}
+	}
+
+	return s.db.GetUserInvitations(userID, status)
 }

@@ -217,17 +217,43 @@ func (d *Database) UpdateInvitation(id, status string) error {
 	return err
 }
 
-// GetUserInvitations returns all invitations for a user
-func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error) {
-	rows, err := d.db.Query(
-		`SELECT i.id, i.group_id, i.user_id, i.invited_by, i.status, 
-		i.created_at, i.responded_at, g.name as group_name
+// GetUserInvitations returns all invitations for a user, optionally filtered by status
+// If status is empty, all invitations are returned
+func (d *Database) GetUserInvitations(userID, status string) ([]*GroupInvitation, error) {
+	if userID == "" {
+		return nil, errors.New("user ID is required")
+	}
+
+	// Build the query based on whether status is provided
+	query := `
+		SELECT i.id, i.group_id, i.user_id, i.invited_by, i.status, 
+		i.created_at, i.responded_at, g.name as group_name, g.description as group_description
 		FROM group_invitations i
 		JOIN groups g ON i.group_id = g.id
 		WHERE i.user_id = ?
-		ORDER BY i.created_at DESC`,
-		userID,
-	)
+	`
+
+	var args []interface{}
+	args = append(args, userID)
+
+	// Add status filter if provided
+	if status != "" {
+		// Validate status
+		validStatuses := map[string]bool{
+			"pending":  true,
+			"accepted": true,
+			"rejected": true,
+		}
+		if !validStatuses[status] {
+			return nil, fmt.Errorf("invalid status: %s. Must be one of: pending, accepted, rejected", status)
+		}
+		query += " AND i.status = ?"
+		args = append(args, status)
+	}
+
+	query += " ORDER BY i.created_at DESC"
+
+	rows, err := d.db.Query(query, args...)
 
 	if err != nil {
 		return nil, fmt.Errorf("error querying invitations: %v", err)
@@ -240,6 +266,7 @@ func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error)
 		var groupName string
 		var respondedAt sql.NullTime // Usar sql.NullTime para manejar valores NULL
 
+		var groupDesc string
 		err := rows.Scan(
 			&invitation.ID,
 			&invitation.GroupID,
@@ -249,6 +276,7 @@ func (d *Database) GetUserInvitations(userID string) ([]*GroupInvitation, error)
 			&invitation.CreatedAt,
 			&respondedAt, // Escanear a sql.NullTime
 			&groupName,
+			&groupDesc,    // Agregar group_description
 		)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning invitation row: %v", err)
