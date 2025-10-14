@@ -15,6 +15,7 @@ case "$1" in
     "events") CONTAINER="agenda-events-service" ;;
     "groups") CONTAINER="agenda-groups-service" ;;
     "notifications") CONTAINER="agenda-notifications-service" ;;
+    "streamlit") CONTAINER=agenda-streamlit-app;;
     *)
         echo "Error: Servicio no reconocido: $1"
         echo "Servicios disponibles: api-gateway, users, events, groups, notifications, redis"

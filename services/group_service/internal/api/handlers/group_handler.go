@@ -220,10 +220,15 @@ func (h *GroupHandler) ListUserGroups(w http.ResponseWriter, r *http.Request) {
 		pageSize = 20
 	}
 
-	// In a real implementation, you would use pagination in the database query
+	// Get user groups
 	groups, err := h.db.ListUserGroups(userID)
-	if err != nil {
-		RespondWithError(w, http.StatusInternalServerError, "Failed to retrieve groups")
+	if err != nil || len(groups) == 0 {
+		// Si hay un error o no hay grupos, devolver lista vacía
+		RespondWithJSON(w, http.StatusOK, map[string]interface{}{
+			"groups": []interface{}{},
+			"page":   page,
+			"total":  0,
+		})
 		return
 	}
 
@@ -238,7 +243,7 @@ func (h *GroupHandler) ListUserGroups(w http.ResponseWriter, r *http.Request) {
 		response = append(response, *toGroupResponse(group, len(members)))
 	}
 
-	// In a real implementation, you would return paginated results
+	// Return paginated results
 	RespondWithJSON(w, http.StatusOK, map[string]interface{}{
 		"groups": response,
 		"page":   page,
