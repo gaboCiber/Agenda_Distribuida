@@ -1028,36 +1028,98 @@ def render_group_detail():
 
 def render_invite_member_form(group):
     """Renderizar formulario para invitar miembros"""
-    st.markdown("### 📨 Invitar Nuevo Miembro")
-
-    with st.form(f"invite_member_form_{group['id']}"):
-        user_email = st.text_input("Email del usuario a invitar*", placeholder="usuario@email.com")
+    form_key = f"invite_form_{group['id']}"
+    
+    # Inicializar el estado del formulario si no existe
+    if 'invite_form_state' not in st.session_state:
+        st.session_state.invite_form_state = {
+            'submitted': False,
+            'error': None,
+            'email': ''
+        }
+    
+    # Mostrar mensaje de error si existe
+    if st.session_state.invite_form_state['error']:
+        st.error(st.session_state.invite_form_state['error'])
+    
+    # Si el formulario ya fue enviado con éxito
+    if st.session_state.invite_form_state['submitted']:
+        st.success("✅ Invitación enviada exitosamente!")
+        if st.button("Cerrar", key=f"close_invite_form_{group['id']}"):
+            st.session_state.inviting_to_group = None
+            st.session_state.invite_form_state = {'submitted': False, 'error': None, 'email': ''}
+            st.rerun()
+        return
+    
+    # Formulario de invitación
+    with st.form(form_key, clear_on_submit=True):
+        user_email = st.text_input(
+            "Email del usuario a invitar*",
+            placeholder="usuario@email.com",
+            key=f"invite_email_{group['id']}",
+            value=st.session_state.invite_form_state.get('email', '')
+        )
 
         col1, col2 = st.columns(2)
         with col1:
             invite_btn = st.form_submit_button("📨 Enviar Invitación", use_container_width=True)
         with col2:
             cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
-
-        if invite_btn and user_email:
-            # Crear invitación
-            invite_data = {
-                "group_id": group['id'],
-                "user_id": user_email  # Asumiendo que usamos email como user_id por ahora
-            }
-
-            response = make_api_request("/api/v1/groups/invitations", "POST", invite_data)
-
-            if response and response.status_code == 201:
-                st.success("✅ Invitación enviada exitosamente!")
-                st.session_state.inviting_to_group = None
-                st.rerun()
-            else:
-                st.error("❌ Error al enviar la invitación")
-
+        
         if cancel_btn:
             st.session_state.inviting_to_group = None
+            st.session_state.invite_form_state = {'submitted': False, 'error': None, 'email': ''}
             st.rerun()
+            
+        if invite_btn and user_email:
+            st.session_state.invite_form_state['email'] = user_email
+            try:
+                # Buscar el ID del usuario por su email
+                user_response = make_api_request(f"/api/v1/users/email/{user_email}", "GET")
+                
+                if user_response and user_response.status_code == 200:
+                    user_data = user_response.json()
+                    user_id = user_data.get('id')
+                    
+                    if user_id:
+                        # Verificar si el usuario ya es miembro del grupo
+                        members_response = make_api_request(f"/api/v1/groups/{group['id']}/members", "GET")
+                        if members_response and members_response.status_code == 200:
+                            members = members_response.json().get('members', [])
+                            if any(member['user_id'] == user_id for member in members):
+                                st.session_state.invite_form_state['error'] = "❌ Este usuario ya es miembro del grupo"
+                                st.rerun()
+                        
+                        # Crear invitación con el ID del usuario
+                        invite_data = {
+                            "group_id": group['id'],
+                            "user_id": user_id
+                        }
+
+                        response = make_api_request("/api/v1/groups/invitations", "POST", invite_data)
+
+                        if response and response.status_code == 201:
+                            st.session_state.invite_form_state = {
+                                'submitted': True,
+                                'error': None,
+                                'email': ''
+                            }
+                            st.rerun()
+                        else:
+                            error_msg = response.json().get('detail', 'Error desconocido') if response else "No se pudo conectar con el servidor"
+                            st.session_state.invite_form_state['error'] = f"❌ Error al enviar la invitación: {error_msg}"
+                            st.rerun()
+                    else:
+                        st.session_state.invite_form_state['error'] = "❌ No se pudo obtener el ID del usuario"
+                        st.rerun()
+                else:
+                    st.session_state.invite_form_state['error'] = "❌ No se encontró ningún usuario con ese correo electrónico"
+                    st.rerun()
+                    
+            except Exception as e:
+                st.session_state.invite_form_state['error'] = f"❌ Error inesperado: {str(e)}"
+                st.rerun()
+                st.rerun()
 
 def render_group_members(group_id):
     """Renderizar lista de miembros del grupo"""

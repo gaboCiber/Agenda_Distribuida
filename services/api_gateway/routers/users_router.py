@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, status
-from schemas import UserRegistration, UserLogin
+from fastapi import APIRouter, HTTPException, status, Depends
+from schemas import UserRegistration, UserLogin, UserResponse
 from services.event_service import event_service
+import httpx
+import os
+from typing import Optional
 
 # Crear router
 router = APIRouter(prefix="/api/v1/users", tags=["users"])
@@ -52,3 +55,29 @@ async def login_user(login_data: UserLogin):
         "event_id": result["event_id"],
         "timestamp": result["timestamp"]
     }
+
+@router.get("/email/{email}", response_model=UserResponse)
+async def get_user_by_email(email: str):
+    """
+    Obtener información de un usuario por su correo electrónico
+    
+    Args:
+        email: Correo electrónico del usuario a buscar
+    """
+    try:
+        # Hacer la petición al servicio de usuarios
+        users_service_url = os.getenv("USERS_SERVICE_URL", "http://agenda-users-service:8002")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"{users_service_url}/api/v1/users/email/{email}")
+            
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            else:
+                raise HTTPException(status_code=response.status_code, detail=response.text)
+                
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Error al conectar con el servicio de usuarios: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error inesperado: {str(e)}")

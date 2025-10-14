@@ -18,6 +18,17 @@ class EventSchema(BaseModel):
     version: str = "1.0"
     payload: dict
 
+class UserResponse(BaseModel):
+    id: str
+    email: str
+    username: str
+    created_at: datetime
+    updated_at: datetime
+    is_active: bool
+
+    class Config:
+        from_attributes = True
+
 class HealthResponse(BaseModel):
     service: str
     status: str
