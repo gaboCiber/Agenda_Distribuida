@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 import httpx
 from datetime import datetime
+from fastapi import Request
 
 # Crear router
 router = APIRouter(prefix="/api/v1/groups", tags=["groups"])
@@ -84,7 +85,7 @@ async def make_groups_service_request(endpoint: str, method: str = "GET", data: 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
-from fastapi import Request
+
 
 # Función auxiliar para obtener user_id desde el header X-User-ID
 async def get_current_user_id(request: Request):
@@ -123,15 +124,15 @@ async def list_user_groups(request: Request, page: int = 1, page_size: int = 20)
     try:
         # Obtener el ID del usuario autenticado
         user_id = await get_current_user_id(request)
-        
+
         # Construir la URL con los parámetros de paginación
         endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
-        
+
         print(f"🔍 Solicitando grupos para el usuario {user_id}")
-        
+
         # Hacer la petición al servicio de grupos
         response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
-        
+
         # Si la respuesta es exitosa
         if response.status_code == 200:
             data = response.json()
@@ -141,11 +142,11 @@ async def list_user_groups(request: Request, page: int = 1, page_size: int = 20)
                 page=data.get("page", page),
                 total=data.get("total", 0)
             )
-        
+
         # Si no hay grupos, devolver lista vacía
         print(f"⚠️ No se encontraron grupos para el usuario {user_id}")
         return GroupListResponse(groups=[], page=page, total=0)
-        
+
     except Exception as e:
         print(f"❌ Error al listar grupos: {str(e)}")
         # En caso de error, devolver lista vacía en lugar de fallar
@@ -292,22 +293,26 @@ async def list_groups_for_user(
     try:
         # Construir la URL con los parámetros de paginación
         endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
-        
+
         print(f"🔍 Solicitando grupos para el usuario {user_id}")
-        
+
         # Hacer la petición al servicio de grupos
         response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
-        
+
         # Si la respuesta es exitosa
         if response.status_code == 200:
             data = response.json()
             print(f"✅ Respuesta del servicio de grupos: {data}")
-            return data
-        
+            return GroupListResponse(
+                groups=data.get("groups", []),
+                page=data.get("page", page),
+                total=data.get("total", 0)
+            )
+
         # Si hay un error
         print(f"❌ Error del servicio de grupos: {response.text}")
         raise HTTPException(status_code=response.status_code, detail=response.text)
-        
+
     except Exception as e:
         print(f"❌ Error al listar grupos: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
