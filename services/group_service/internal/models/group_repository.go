@@ -376,25 +376,52 @@ func (d *Database) AddGroupMember(member *GroupMember) error {
 
 		if isHierarchical {
 			// Add the member to all child groups as inherited
-			_, err = tx.Exec(`
-				INSERT INTO group_members (id, group_id, user_id, role, is_inherited, joined_at)
-				SELECT 
-					uuid(), 
-					cg.id, 
-					?, 
-					CASE WHEN ? = 'admin' THEN 'member' ELSE ? END, 
-					true, 
-					?
-				FROM groups cg
-				WHERE cg.parent_group_id = ?
-			`,
-				member.UserID,
-				member.Role,
-				member.Role,
-				member.JoinedAt,
-				member.GroupID,
-			)
+			// Get all child groups
+			rows, err := tx.Query(`
+				SELECT id FROM groups 
+				WHERE parent_group_id = ?
+			`, member.GroupID)
+			if err != nil {
+				tx.Rollback()
+				return err
+			}
+			defer rows.Close()
 
+			// For each child group, add the member with a new UUID
+			for rows.Next() {
+				var childGroupID string
+				if err := rows.Scan(&childGroupID); err != nil {
+					tx.Rollback()
+					return err
+				}
+
+				// Create a new member for the child group
+				childMember := &GroupMember{
+					ID:          uuid.New().String(),
+					GroupID:     childGroupID,
+					UserID:      member.UserID,
+					Role:        member.Role,
+					IsInherited: true,
+					JoinedAt:    time.Now().UTC(),
+				}
+
+				// Insert the member for this child group
+				_, err = tx.Exec(`
+					INSERT INTO group_members (id, group_id, user_id, role, is_inherited, joined_at)
+					VALUES (?, ?, ?, ?, ?, ?)
+				`,
+					childMember.ID,
+					childMember.GroupID,
+					childMember.UserID,
+					childMember.Role,
+					childMember.IsInherited,
+					childMember.JoinedAt,
+				)
+				if err != nil {
+					tx.Rollback()
+					return err
+				}
+			}
 			if err != nil {
 				tx.Rollback()
 				return err

@@ -6,9 +6,10 @@ import (
 	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
+	"github.com/google/uuid"
 )
 
-// handleMemberAdded handles member_added events
+// handleMemberAdded handles member_added events with hierarchical group support
 func (h *EventHandler) handleMemberAdded(payload interface{}) {
 	data, ok := payload.(map[string]interface{})
 	if !ok {
@@ -26,10 +27,11 @@ func (h *EventHandler) handleMemberAdded(payload interface{}) {
 	groupID, _ := data["group_id"].(string)
 	userID, _ := data["user_id"].(string)
 	role, _ := data["role"].(string)
+	addedBy, _ := data["added_by"].(string)
 	responseChannel, _ := data["response_channel"].(string)
 
-	if groupID == "" || userID == "" {
-		log.Printf("❌ Missing required fields in member_added event")
+	if groupID == "" || userID == "" || addedBy == "" {
+		h.sendErrorResponse(responseChannel, "Missing required fields in member_added event", nil)
 		return
 	}
 
@@ -38,26 +40,80 @@ func (h *EventHandler) handleMemberAdded(payload interface{}) {
 		role = "member"
 	}
 
-	// Create the group member
+	// Start a transaction
+	tx, err := h.groupService.BeginTx()
+	if err != nil {
+		log.Printf("❌ Failed to start transaction: %v", err)
+		h.sendErrorResponse(responseChannel, "Failed to start transaction", err)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			log.Printf("❌ Recovered from panic in handleMemberAdded: %v", r)
+		}
+	}()
+
+	// Check if the user adding the member has permission (must be admin)
+	isAdmin, err := h.groupService.IsGroupAdmin(groupID, addedBy)
+	if err != nil || !isAdmin {
+		_ = tx.Rollback()
+		log.Printf("❌ User %s is not authorized to add members to group %s", addedBy, groupID)
+		h.sendErrorResponse(responseChannel, "Unauthorized: Only group admins can add members", nil)
+		return
+	}
+
+	// Check if the group is hierarchical
+	group, err := h.groupService.GetGroup(groupID)
+	if err != nil {
+		_ = tx.Rollback()
+		log.Printf("❌ Failed to get group %s: %v", groupID, err)
+		h.sendErrorResponse(responseChannel, "Failed to get group information", err)
+		return
+	}
+
+	// If this is a hierarchical group and we're adding an admin, check parent group permissions
+	if group.IsHierarchical && role == "admin" && group.ParentGroupID != nil {
+		parentAdmin, err := h.groupService.IsGroupAdmin(*group.ParentGroupID, addedBy)
+		if err != nil || !parentAdmin {
+			_ = tx.Rollback()
+			log.Printf("❌ User %s is not authorized to add admins to subgroup %s", addedBy, groupID)
+			h.sendErrorResponse(responseChannel, "Unauthorized: Only parent group admins can add subgroup admins", nil)
+			return
+		}
+	}
+
+	// Check if user is already a member
+	existingMember, _ := h.groupService.GetGroupMember(groupID, userID)
+	if existingMember != nil {
+		_ = tx.Rollback()
+		log.Printf("⚠️ User %s is already a member of group %s", userID, groupID)
+		h.sendErrorResponse(responseChannel, "User is already a member of this group", nil)
+		return
+	}
+
+	// Create the group member with a new UUID
 	member := &models.GroupMember{
-		ID:       userID, // Usamos el userID como ID del miembro por simplicidad
-		GroupID:  groupID,
-		UserID:   userID,
-		Role:     role,
-		JoinedAt: time.Now().UTC(),
+		ID:          uuid.New().String(),
+		GroupID:     groupID,
+		UserID:      userID,
+		Role:        role,
+		IsInherited: false,
+		JoinedAt:    time.Now().UTC(),
 	}
 
 	// Add the member to the group
 	if err := h.groupService.AddGroupMember(member); err != nil {
+		_ = tx.Rollback()
 		log.Printf("❌ Failed to add member %s to group %s: %v", userID, groupID, err)
-		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "member_added_response", map[string]interface{}{
-				"status":  "error",
-				"message": "Failed to add member to group",
-				"error":   err.Error(),
-			})
-		}
+		h.sendErrorResponse(responseChannel, "Failed to add member to group", err)
+		return
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("❌ Failed to commit transaction: %v", err)
+		h.sendErrorResponse(responseChannel, "Failed to complete member addition", err)
 		return
 	}
 
@@ -71,6 +127,7 @@ func (h *EventHandler) handleMemberAdded(payload interface{}) {
 				"group_id": groupID,
 				"user_id":  userID,
 				"role":     role,
+				"added_by": addedBy,
 			},
 		})
 	}
@@ -80,11 +137,12 @@ func (h *EventHandler) handleMemberAdded(payload interface{}) {
 		"group_id": groupID,
 		"user_id":  userID,
 		"role":     role,
-		"source":   "group-service", // Mark as system-generated
+		"added_by": addedBy,
+		"source":   "group-service",
 	})
 }
 
-// handleMemberRemoved handles member_removed events
+// handleMemberRemoved handles member_removed events with hierarchical group support
 func (h *EventHandler) handleMemberRemoved(payload interface{}) {
 	data, ok := payload.(map[string]interface{})
 	if !ok {
@@ -104,49 +162,74 @@ func (h *EventHandler) handleMemberRemoved(payload interface{}) {
 	removedBy, _ := data["removed_by"].(string)
 	responseChannel, _ := data["response_channel"].(string)
 
-	if groupID == "" || userID == "" {
-		log.Printf("❌ Missing required fields in member_removed event")
+	if groupID == "" || userID == "" || removedBy == "" {
+		h.sendErrorResponse(responseChannel, "Missing required fields in member_removed event", nil)
 		return
 	}
+
+	// Start a transaction
+	tx, err := h.groupService.BeginTx()
+	if err != nil {
+		log.Printf("❌ Failed to start transaction: %v", err)
+		h.sendErrorResponse(responseChannel, "Failed to start transaction", err)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			log.Printf("❌ Recovered from panic in handleMemberRemoved: %v", r)
+		}
+	}()
 
 	// Get member before removing to include in the response
 	member, err := h.groupService.GetGroupMember(groupID, userID)
 	if err != nil {
+		_ = tx.Rollback()
 		log.Printf("❌ Failed to get member %s from group %s: %v", userID, groupID, err)
-		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "member_removed_response", map[string]interface{}{
-				"status":  "error",
-				"message": "Failed to get member",
-				"error":   err.Error(),
-			})
-		}
+		h.sendErrorResponse(responseChannel, "Failed to get member information", err)
 		return
 	}
 
 	if member == nil {
+		_ = tx.Rollback()
 		log.Printf("❌ Member %s not found in group %s", userID, groupID)
-		// Publish not found response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "member_removed_response", map[string]interface{}{
-				"status":  "not_found",
-				"message": "Member not found in group",
-			})
-		}
+		h.sendErrorResponse(responseChannel, "Member not found in group", nil)
 		return
+	}
+
+	// Check if the user removing the member has permission (must be admin)
+	isAdmin, err := h.groupService.IsGroupAdmin(groupID, removedBy)
+	if err != nil || !isAdmin {
+		_ = tx.Rollback()
+		log.Printf("❌ User %s is not authorized to remove members from group %s", removedBy, groupID)
+		h.sendErrorResponse(responseChannel, "Unauthorized: Only group admins can remove members", nil)
+		return
+	}
+
+	// Check if user is trying to remove themselves (not allowed for the last admin)
+	if userID == removedBy {
+		// Get all admins of the group
+		admins, err := h.groupService.GetGroupAdmins(groupID)
+		if err != nil || len(admins) <= 1 {
+			_ = tx.Rollback()
+			log.Printf("❌ Cannot remove the last admin from group %s", groupID)
+			h.sendErrorResponse(responseChannel, "Cannot remove the last admin from the group", nil)
+			return
+		}
 	}
 
 	// Remove the member from the group
 	if err := h.groupService.RemoveGroupMember(groupID, userID); err != nil {
+		_ = tx.Rollback()
 		log.Printf("❌ Failed to remove member %s from group %s: %v", userID, groupID, err)
-		// Publish error response if response channel is provided
-		if responseChannel != "" {
-			h.publisher.Publish(responseChannel, "member_removed_response", map[string]interface{}{
-				"status":  "error",
-				"message": "Failed to remove member from group",
-				"error":   err.Error(),
-			})
-		}
+		h.sendErrorResponse(responseChannel, "Failed to remove member from group", err)
+		return
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("❌ Failed to commit transaction: %v", err)
+		h.sendErrorResponse(responseChannel, "Failed to complete member removal", err)
 		return
 	}
 
@@ -171,7 +254,7 @@ func (h *EventHandler) handleMemberRemoved(payload interface{}) {
 		"user_id":    userID,
 		"removed_by": removedBy,
 		"removed_at": time.Now().Format(time.RFC3339),
-		"source":     "group-service", // Mark as system-generated
+		"source":     "group-service",
 	})
 }
 
