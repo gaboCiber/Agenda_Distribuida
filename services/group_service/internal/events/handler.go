@@ -346,12 +346,13 @@ func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
 
 	// Parse the actual group data
 	var payloadData struct {
-		Name            string `json:"name"`
-		Description     string `json:"description"`
-		CreatedBy       string `json:"created_by"`
-		IsHierarchical  bool   `json:"is_hierarchical"`
-		ResponseChannel string `json:"response_channel"`
-		Source          string `json:"source"`
+		Name            string  `json:"name"`
+		Description     string  `json:"description"`
+		CreatedBy       string  `json:"created_by"`
+		IsHierarchical  bool    `json:"is_hierarchical"`
+		ParentGroupID   *string `json:"parent_group_id,omitempty"`
+		ResponseChannel string  `json:"response_channel"`
+		Source          string  `json:"source"`
 	}
 
 	if err := json.Unmarshal(payload, &payloadData); err != nil {
@@ -368,14 +369,28 @@ func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
 	// Generate a new UUID for the group
 	groupID := uuid.New().String()
 
-	log.Printf("Processing group creation - Name: %s, CreatedBy: %s, ResponseChannel: %s",
-		payloadData.Name, payloadData.CreatedBy, payloadData.ResponseChannel)
+	log.Printf("Processing group creation - Name: %s, CreatedBy: %s, ResponseChannel: %s, IsHierarchical: %v, ParentGroupID: %v",
+		payloadData.Name, payloadData.CreatedBy, payloadData.ResponseChannel,
+		payloadData.IsHierarchical, payloadData.ParentGroupID)
 
 	// Validate required fields
 	if payloadData.Name == "" || payloadData.CreatedBy == "" {
 		log.Printf("❌ Missing required fields in group_created event")
 		return
 	}
+
+	// Start a transaction to ensure data consistency
+	tx, err := h.groupService.BeginTx()
+	if err != nil {
+		log.Printf("❌ Failed to start transaction: %v", err)
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			_ = tx.Rollback()
+			log.Printf("❌ Recovered from panic in handleGroupCreated: %v", r)
+		}
+	}()
 
 	// Create the group using the service
 	group := &models.Group{
@@ -384,47 +399,76 @@ func (h *EventHandler) handleGroupCreated(payload json.RawMessage) {
 		Description:    payloadData.Description,
 		CreatedBy:      payloadData.CreatedBy,
 		IsHierarchical: payloadData.IsHierarchical,
+		ParentGroupID:  payloadData.ParentGroupID,
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
 	}
 
-	// Create the group and get the created group with its database ID
+	// Create the group
 	createdGroup, err := h.groupService.CreateGroup(group)
 	if err != nil {
+		_ = tx.Rollback()
 		log.Printf("❌ Failed to create group: %v", err)
-		// Publish error response if response channel is provided
-		if payloadData.ResponseChannel != "" {
-			h.publisher.Publish(payloadData.ResponseChannel, "group_created_response", map[string]interface{}{
-				"status":  "error",
-				"message": "Failed to create group",
-				"error":   err.Error(),
-			})
-		}
+		h.sendErrorResponse(payloadData.ResponseChannel, "Failed to create group", err)
 		return
 	}
 
-	log.Printf("✅ Created group %s (ID: %s, DB ID: %s) created by %s",
-		group.Name, groupID, createdGroup.ID, group.CreatedBy)
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("❌ Failed to commit transaction: %v", err)
+		h.sendErrorResponse(payloadData.ResponseChannel, "Failed to complete group creation", err)
+		return
+	}
+
+	log.Printf("✅ Created group %s (ID: %s) created by %s",
+		createdGroup.Name, createdGroup.ID, createdGroup.CreatedBy)
+
+	// Prepare success response
+	response := map[string]interface{}{
+		"event_id": event.EventID,
+		"status":   "success",
+		"payload": map[string]interface{}{
+			"id":              createdGroup.ID,
+			"name":            createdGroup.Name,
+			"description":     createdGroup.Description,
+			"created_by":      createdGroup.CreatedBy,
+			"is_hierarchical": createdGroup.IsHierarchical,
+			"parent_group_id": createdGroup.ParentGroupID,
+			"created_at":      createdGroup.CreatedAt,
+			"updated_at":      createdGroup.UpdatedAt,
+		},
+	}
 
 	// Publish success response if response channel is provided
 	if payloadData.ResponseChannel != "" {
 		log.Printf("Sending success response to channel: %s", payloadData.ResponseChannel)
-		response := map[string]interface{}{
-			"event_id": event.EventID,
-			"status":   "success",
-			"payload": map[string]interface{}{
-				"id":          createdGroup.ID, // The database ID
-				"group_id":    groupID,         // The generated group ID
-				"name":        group.Name,
-				"description": group.Description,
-				"created_by":  group.CreatedBy,
-			},
-		}
-
-		// Convert response to JSON for logging
-		responseJSON, _ := json.MarshalIndent(response, "", "  ")
-		log.Printf("Sending response: %s", responseJSON)
-
 		h.publisher.Publish(payloadData.ResponseChannel, "group_created_response", response)
 	}
+
+	// Publish group_created event for other services
+	h.publisher.Publish("groups", "group_created", map[string]interface{}{
+		"group_id":   createdGroup.ID,
+		"name":       createdGroup.Name,
+		"created_by": createdGroup.CreatedBy,
+		"source":     "group-service",
+	})
+}
+
+// Helper function to send error responses
+func (h *EventHandler) sendErrorResponse(channel, message string, err error) {
+	if channel == "" {
+		return
+	}
+
+	errorMsg := message
+	if err != nil {
+		errorMsg = fmt.Sprintf("%s: %v", message, err)
+	}
+
+	h.publisher.Publish(channel, "error", map[string]interface{}{
+		"status":  "error",
+		"message": errorMsg,
+	})
 }
 
 // handleDirectPayload handles cases where the payload is the group data directly

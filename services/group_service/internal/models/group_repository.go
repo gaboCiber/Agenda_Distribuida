@@ -35,6 +35,11 @@ func (d *Database) CreateGroup(group *Group) error {
 	group.UpdatedAt = group.CreatedAt
 
 	// Insert the group
+	var parentGroupID sql.NullString
+	if group.ParentGroupID != nil {
+		parentGroupID = sql.NullString{String: *group.ParentGroupID, Valid: true}
+	}
+
 	_, err = tx.Exec(
 		`INSERT INTO groups (id, name, description, created_by, created_at, updated_at, is_hierarchical, parent_group_id)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -45,7 +50,7 @@ func (d *Database) CreateGroup(group *Group) error {
 		group.CreatedAt,
 		group.UpdatedAt,
 		group.IsHierarchical,
-		sql.NullString{String: *group.ParentGroupID, Valid: group.ParentGroupID != nil},
+		parentGroupID, // Use the properly initialized NullString
 	)
 
 	if err != nil {

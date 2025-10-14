@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -83,24 +82,6 @@ func (s *groupService) CreateGroup(group *models.Group) (*models.Group, error) {
 	err := s.db.CreateGroup(group)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create group: %v", err)
-	}
-
-	// Add the creator as an admin if not already added
-	if group.CreatedBy != "" {
-		member := &models.GroupMember{
-			ID:       uuid.New().String(),
-			GroupID:  group.ID,
-			UserID:   group.CreatedBy,
-			Role:     "admin",
-			JoinedAt: time.Now().UTC(),
-		}
-
-		if err := s.db.AddGroupMember(member); err != nil {
-			// Log the error but don't fail the group creation
-			// The group was created successfully, we just couldn't add the admin
-			// This should be monitored and fixed as it's a critical part of group creation
-			log.Printf("Warning: Failed to add creator as admin to group %s: %v", group.ID, err)
-		}
 	}
 
 	// Return the created group
