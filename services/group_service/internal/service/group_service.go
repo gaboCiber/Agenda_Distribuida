@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -23,6 +24,7 @@ type GroupService interface {
 	GetGroupHierarchy(groupID string) ([]*models.Group, error)
 	UpdateGroupHierarchy(groupID string, parentGroupID *string, isHierarchical bool) error
 	GetInheritedMembers(groupID string) ([]*models.GroupMember, error)
+	GetSubGroups(parentGroupID string) ([]*models.Group, error)
 
 	// Member operations
 	AddGroupMember(member *models.GroupMember) error
@@ -46,6 +48,14 @@ type GroupService interface {
 	RemoveEventFromGroup(groupID, eventID string) error
 	GetGroupEvents(groupID string) ([]*models.GroupEvent, error)
 	RemoveEventFromAllGroups(eventID string) error
+	GetGroupEvent(eventID string) (*models.GroupEvent, error)
+
+	// Event Status operations
+	UpdateEventStatus(status *models.GroupEventStatus) error
+	GetEventStatus(eventID, userID string) (*models.GroupEventStatus, error)
+	GetEventStatuses(eventID string) ([]*models.GroupEventStatus, error)
+	HasAllMembersAccepted(groupID, eventID string) (bool, error)
+	UpdateGroupEventStatus(groupID, eventID, status string) error
 
 	// Event handlers
 	HandleUserDeleted(userID string) error
@@ -58,15 +68,19 @@ type GroupService interface {
 }
 
 // NewGroupService creates a new instance of GroupService
-func NewGroupService(db *models.Database) GroupService {
+func NewGroupService(db *models.Database, eventStatusRepo models.EventStatusRepository) GroupService {
 	return &groupService{
-		db: db,
+		db:                 db,
+		eventStatusRepo:    eventStatusRepo,
+		eventStatusTxCache: make(map[*sql.Tx]models.EventStatusRepository),
 	}
 }
 
 // groupService implements the GroupService interface
 type groupService struct {
-	db *models.Database
+	db                 *models.Database
+	eventStatusRepo    models.EventStatusRepository
+	eventStatusTxCache map[*sql.Tx]models.EventStatusRepository
 }
 
 // CreateGroup creates a new group and adds the creator as an admin
@@ -361,8 +375,193 @@ func (s *groupService) HandleUserDeleted(userID string) error {
 
 // HandleEventDeleted handles the event_deleted event
 func (s *groupService) HandleEventDeleted(eventID string) error {
-	// Remove the event from all groups
-	return s.RemoveEventFromAllGroups(eventID)
+	return s.db.RemoveEventFromAllGroups(eventID)
+}
+
+// GetSubGroups returns all direct child groups of a parent group
+func (s *groupService) GetSubGroups(parentGroupID string) ([]*models.Group, error) {
+	return s.db.GetSubGroups(parentGroupID)
+}
+
+// GetGroupEvent retrieves a group event by event ID
+func (s *groupService) GetGroupEvent(eventID string) (*models.GroupEvent, error) {
+	return s.db.GetGroupEvent(eventID)
+}
+
+// GetEventStatuses retrieves all statuses for an event
+func (s *groupService) GetEventStatuses(eventID string) ([]*models.GroupEventStatus, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+
+	statuses, err := s.eventStatusRepo.GetEventStatuses(tx, eventID)
+	if err != nil {
+		return nil, err
+	}
+
+	return statuses, nil
+}
+
+// UpdateEventStatus updates the status of an event for a user
+func (s *groupService) UpdateEventStatus(status *models.GroupEventStatus) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+
+	defer func() {
+		if err != nil {
+			tx.Rollback()
+		} else {
+			tx.Commit()
+		}
+	}()
+
+	// Check if status already exists
+	existing, err := s.eventStatusRepo.GetEventStatus(tx, status.EventID, status.UserID)
+	if err != nil {
+		return err
+	}
+
+	if existing == nil {
+		// Create new status
+		if status.ID == "" {
+			status.ID = uuid.New().String()
+		}
+		return s.eventStatusRepo.CreateEventStatus(tx, status)
+	}
+
+	// Update existing status
+	existing.Status = status.Status
+	existing.RespondedAt = status.RespondedAt
+	existing.UpdatedAt = time.Now().UTC()
+
+	return s.eventStatusRepo.UpdateEventStatus(tx, existing)
+}
+
+// GetEventStatus retrieves the status of an event for a specific user
+func (s *groupService) GetEventStatus(eventID, userID string) (*models.GroupEventStatus, error) {
+	// Get event status from the repository
+	return s.eventStatusRepo.GetEventStatus(nil, eventID, userID)
+}
+
+// HasAllMembersAccepted checks if all members of a non-hierarchical group have accepted an event
+func (s *groupService) HasAllMembersAccepted(groupID, eventID string) (bool, error) {
+	// Get the group to check if it's hierarchical
+	group, err := s.GetGroup(groupID)
+	if err != nil {
+		return false, fmt.Errorf("error getting group: %w", err)
+	}
+
+	// For hierarchical groups, we consider the event as accepted for all members
+	if group.IsHierarchical {
+		// Update the group_events status to 'accepted' for hierarchical groups
+		err := s.UpdateGroupEventStatus(groupID, eventID, "accepted")
+		if err != nil {
+			log.Printf("Error updating group event status for hierarchical group: %v", err)
+			return false, fmt.Errorf("error updating group event status: %w", err)
+		}
+		return true, nil
+	}
+
+	// For non-hierarchical groups, check if all members have accepted
+	allAccepted, err := s.eventStatusRepo.HasAllMembersAccepted(nil, groupID, eventID)
+	if err != nil {
+		return false, fmt.Errorf("error checking member acceptances: %w", err)
+	}
+
+	// If all members have accepted, update the group_events status
+	if allAccepted {
+		err := s.UpdateGroupEventStatus(groupID, eventID, "accepted")
+		if err != nil {
+			log.Printf("Error updating group event status after all members accepted: %v", err)
+			return false, fmt.Errorf("error updating group event status: %w", err)
+		}
+	}
+
+	return allAccepted, nil
+}
+
+// UpdateGroupEventStatus updates the status of a group event
+func (s *groupService) UpdateGroupEventStatus(groupID, eventID, status string) error {
+	// Validate status
+	if status != "accepted" && status != "rejected" && status != "pending" {
+		return fmt.Errorf("invalid status: %s", status)
+	}
+
+	// Start a transaction
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+
+	// Check if the updated_at column exists in the group_events table
+	var columnExists bool
+	err = tx.QueryRow(`
+		SELECT COUNT(*) > 0 
+		FROM pragma_table_info('group_events') 
+		WHERE name = 'updated_at'`).Scan(&columnExists)
+
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error checking for updated_at column: %w", err)
+	}
+
+	// Build the query based on whether updated_at exists
+	var query string
+	var args []interface{}
+
+	if columnExists {
+		query = `
+			UPDATE group_events 
+			SET status = ?, 
+			    updated_at = ?
+			WHERE group_id = ? AND event_id = ?
+		`
+		args = []interface{}{status, time.Now().UTC(), groupID, eventID}
+	} else {
+		query = `
+			UPDATE group_events 
+			SET status = ?
+			WHERE group_id = ? AND event_id = ?
+		`
+		args = []interface{}{status, groupID, eventID}
+	}
+
+	// Execute the update
+	result, err := tx.Exec(query, args...)
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error updating group event status: %w", err)
+	}
+
+	// Check if any rows were affected
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		tx.Rollback()
+		return fmt.Errorf("error getting rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		tx.Rollback()
+		return fmt.Errorf("no group event found with group_id %s and event_id %s", groupID, eventID)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	log.Printf("✅ Updated group event status for group %s and event %s to %s", groupID, eventID, status)
+	return nil
 }
 
 // BeginTx starts a new database transaction

@@ -799,9 +799,57 @@ func (d *Database) RemoveParentFromChildren(parentID string) error {
 	return nil
 }
 
+// GetSubGroups returns all direct child groups of a parent group
+func (d *Database) GetSubGroups(parentGroupID string) ([]*Group, error) {
+	var groups []*Group
+
+	rows, err := d.db.Query(
+		`SELECT id, name, description, created_by, created_at, updated_at, is_hierarchical, parent_group_id 
+		FROM groups 
+		WHERE parent_group_id = ?`,
+		parentGroupID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error querying subgroups: %v", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var group Group
+		var parentID sql.NullString
+
+		err := rows.Scan(
+			&group.ID,
+			&group.Name,
+			&group.Description,
+			&group.CreatedBy,
+			&group.CreatedAt,
+			&group.UpdatedAt,
+			&group.IsHierarchical,
+			&parentID,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("error scanning subgroup: %v", err)
+		}
+
+		if parentID.Valid {
+			group.ParentGroupID = &parentID.String
+		}
+
+		groups = append(groups, &group)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating subgroups: %v", err)
+	}
+
+	return groups, nil
+}
+
 // HasPendingInvitation checks if there's already a pending invitation for a user in a group
 func (d *Database) HasPendingInvitation(groupID, userID string) (bool, error) {
 	var count int
+
 	err := d.db.QueryRow(
 		`SELECT COUNT(*) FROM group_invitations 
 		WHERE group_id = ? AND user_id = ? AND status = 'pending'`,
@@ -814,4 +862,3 @@ func (d *Database) HasPendingInvitation(groupID, userID string) (bool, error) {
 
 	return count > 0, nil
 }
-

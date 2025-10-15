@@ -120,6 +120,43 @@ func Migrate(db *sql.DB) error {
 				    gm.is_inherited = TRUE;
 			`,
 		},
+		// Add event status table
+		{
+			Name: "add_event_status_table",
+			Up: `
+				CREATE TABLE IF NOT EXISTS group_event_status (
+					id TEXT PRIMARY KEY,
+					group_id TEXT NOT NULL,
+					event_id TEXT NOT NULL,
+					user_id TEXT NOT NULL,
+					status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+					responded_at TIMESTAMP,
+					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+					updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+					UNIQUE(event_id, user_id),
+					FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
+					FOREIGN KEY (group_id, event_id) REFERENCES group_events(group_id, event_id) ON DELETE CASCADE
+				);
+
+				-- Create indexes for better performance
+				CREATE INDEX IF NOT EXISTS idx_group_event_status_event ON group_event_status(event_id);
+				CREATE INDEX IF NOT EXISTS idx_group_event_status_group ON group_event_status(group_id);
+				CREATE INDEX IF NOT EXISTS idx_group_event_status_group_event ON group_event_status(group_id, event_id);
+			`,
+		},
+		// Add status column to group_events table
+		{
+			Name: "add_status_to_group_events",
+			Up: `
+				-- Add status column with default 'pending' and check constraint
+				ALTER TABLE group_events 
+				ADD COLUMN status TEXT NOT NULL DEFAULT 'pending' 
+				CHECK (status IN ('pending', 'accepted', 'rejected'));
+
+				-- Update existing records to have 'accepted' status for backward compatibility
+				UPDATE group_events SET status = 'accepted';
+			`,
+		},
 	}
 
 	// Run each migration in a transaction

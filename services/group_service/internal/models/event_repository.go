@@ -30,14 +30,22 @@ func (d *Database) AddGroupEvent(groupEvent *GroupEvent) error {
 		return errors.New("event already exists in this group")
 	}
 
+	// Convert boolean to int for SQLite (0 or 1)
+	isHierarchicalInt := 0
+	if groupEvent.IsHierarchical {
+		isHierarchicalInt = 1
+	}
+
 	_, err = d.db.Exec(
-		`INSERT INTO group_events (id, group_id, event_id, added_by, added_at)
-		VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO group_events (id, group_id, event_id, added_by, added_at, status, is_hierarchical)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		groupEvent.ID,
 		groupEvent.GroupID,
 		groupEvent.EventID,
 		groupEvent.AddedBy,
 		groupEvent.AddedAt,
+		groupEvent.Status,
+		isHierarchicalInt,
 	)
 
 	return err
@@ -70,7 +78,7 @@ func (d *Database) RemoveGroupEvent(groupID, eventID string) error {
 // GetGroupEvents returns all events in a group
 func (d *Database) GetGroupEvents(groupID string) ([]*GroupEvent, error) {
 	rows, err := d.db.Query(
-		`SELECT id, group_id, event_id, added_by, added_at
+		`SELECT id, group_id, event_id, added_by, added_at, status, is_hierarchical
 		FROM group_events 
 		WHERE group_id = ?
 		ORDER BY added_at DESC`,
@@ -85,16 +93,24 @@ func (d *Database) GetGroupEvents(groupID string) ([]*GroupEvent, error) {
 	var events []*GroupEvent
 	for rows.Next() {
 		var event GroupEvent
-		err := rows.Scan(
+		var isHierarchicalInt int
+
+		scanErr := rows.Scan(
 			&event.ID,
 			&event.GroupID,
 			&event.EventID,
 			&event.AddedBy,
 			&event.AddedAt,
+			&event.Status,
+			&isHierarchicalInt,
 		)
-		if err != nil {
-			return nil, err
+
+		if scanErr != nil {
+			return nil, scanErr
 		}
+
+		// Convert int to boolean
+		event.IsHierarchical = (isHierarchicalInt == 1)
 		events = append(events, &event)
 	}
 
@@ -276,7 +292,7 @@ func (d *Database) GetUserInvitations(userID, status string) ([]*GroupInvitation
 			&invitation.CreatedAt,
 			&respondedAt, // Escanear a sql.NullTime
 			&groupName,
-			&groupDesc,    // Agregar group_description
+			&groupDesc, // Agregar group_description
 		)
 		if err != nil {
 			return nil, fmt.Errorf("error scanning invitation row: %v", err)
@@ -320,29 +336,218 @@ func (d *Database) RemoveEventFromAllGroups(eventID string) error {
 	return err
 }
 
-// RemoveUserFromAllGroups removes a user from all groups
-func (d *Database) RemoveUserFromAllGroups(userID string) error {
-	tx, err := d.db.Begin()
+// AddGroupEventWithTx adds an event to a group within a transaction
+func (d *Database) AddGroupEventWithTx(tx *sql.Tx, groupEvent *GroupEvent) error {
+	groupEvent.ID = uuid.New().String()
+	groupEvent.AddedAt = time.Now().UTC()
+
+	_, err := tx.Exec(
+		`INSERT INTO group_events (id, group_id, event_id, added_by, added_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		groupEvent.ID,
+		groupEvent.GroupID,
+		groupEvent.EventID,
+		groupEvent.AddedBy,
+		groupEvent.AddedAt,
+	)
+
+	return err
+}
+
+// GetGroupEvent retrieves a group event by ID
+func (d *Database) GetGroupEvent(eventID string) (*GroupEvent, error) {
+	var event GroupEvent
+	var isHierarchicalInt int
+
+	err := d.db.QueryRow(
+		`SELECT id, group_id, event_id, added_by, added_at, status, is_hierarchical
+		FROM group_events 
+		WHERE event_id = ?`,
+		eventID,
+	).Scan(
+		&event.ID,
+		&event.GroupID,
+		&event.EventID,
+		&event.AddedBy,
+		&event.AddedAt,
+		&event.Status,
+		&isHierarchicalInt,
+	)
+
+	// Convert int to boolean
+	event.IsHierarchical = (isHierarchicalInt == 1)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("event not found")
+		}
+		return nil, err
+	}
+
+	return &event, nil
+}
+
+// AddEventStatus adds a new event status record
+func (d *Database) AddEventStatus(status *GroupEventStatus) error {
+	status.ID = uuid.New().String()
+	now := time.Now().UTC()
+	status.CreatedAt = now
+	status.UpdatedAt = now
+
+	_, err := d.db.Exec(
+		`INSERT INTO group_event_status 
+		(id, group_id, event_id, user_id, status, responded_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		status.ID,
+		status.GroupID,
+		status.EventID,
+		status.UserID,
+		status.Status,
+		status.RespondedAt,
+		status.CreatedAt,
+		status.UpdatedAt,
+	)
+
+	return err
+}
+
+// AddEventStatusWithTx adds a new event status record within a transaction
+func (d *Database) AddEventStatusWithTx(tx *sql.Tx, status *GroupEventStatus) error {
+	status.ID = uuid.New().String()
+	now := time.Now().UTC()
+	status.CreatedAt = now
+	status.UpdatedAt = now
+
+	_, err := tx.Exec(
+		`INSERT INTO group_event_status 
+		(id, group_id, event_id, user_id, status, responded_at, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		status.ID,
+		status.GroupID,
+		status.EventID,
+		status.UserID,
+		status.Status,
+		status.RespondedAt,
+		status.CreatedAt,
+		status.UpdatedAt,
+	)
+
+	return err
+}
+
+// UpdateEventStatus updates the status of an event for a user
+func (d *Database) UpdateEventStatus(eventID, userID string, status EventStatus) error {
+	now := time.Now().UTC()
+	var respondedAt interface{}
+	if status != EventStatusPending {
+		respondedAt = now
+	}
+
+	result, err := d.db.Exec(
+		`UPDATE group_event_status 
+		SET status = ?, responded_at = ?, updated_at = ?
+		WHERE event_id = ? AND user_id = ?`,
+		status, respondedAt, now, eventID, userID,
+	)
+
 	if err != nil {
 		return err
 	}
 
-	// First, handle groups where the user is the only admin
-	// This is a simplified approach - in a real app, you might want to
-	// promote another member or handle this differently
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("event status not found for user %s and event %s", userID, eventID)
+	}
+
+	return nil
+}
+
+// GetEventStatus retrieves the status of an event for a specific user
+func (d *Database) GetEventStatus(eventID, userID string) (*GroupEventStatus, error) {
+	var status GroupEventStatus
+
+	err := d.db.QueryRow(
+		`SELECT id, group_id, event_id, user_id, status, responded_at, created_at, updated_at
+		FROM group_event_status
+		WHERE event_id = ? AND user_id = ?`,
+		eventID, userID,
+	).Scan(
+		&status.ID,
+		&status.GroupID,
+		&status.EventID,
+		&status.UserID,
+		&status.Status,
+		&status.RespondedAt,
+		&status.CreatedAt,
+		&status.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("event status not found for user %s and event %s", userID, eventID)
+		}
+		return nil, err
+	}
+
+	return &status, nil
+}
+
+// GetEventStatuses retrieves all statuses for an event
+func (d *Database) GetEventStatuses(eventID string) ([]*GroupEventStatus, error) {
+	rows, err := d.db.Query(
+		`SELECT id, group_id, event_id, user_id, status, responded_at, created_at, updated_at
+		FROM group_event_status
+		WHERE event_id = ?`,
+		eventID,
+	)
+
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var statuses []*GroupEventStatus
+	for rows.Next() {
+		var status GroupEventStatus
+		if err := rows.Scan(
+			&status.ID,
+			&status.GroupID,
+			&status.EventID,
+			&status.UserID,
+			&status.Status,
+			&status.RespondedAt,
+			&status.CreatedAt,
+			&status.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		statuses = append(statuses, &status)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+
+	return statuses, nil
+}
+
+// RemoveUserFromAllGroups removes a user from all groups
+func (d *Database) RemoveUserFromAllGroups(userID string) error {
+	// Start a transaction
+	tx, err := d.db.Begin()
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %v", err)
+	}
+
+	// Delete all group memberships for the user
 	_, err = tx.Exec(`
 		DELETE FROM group_members 
-		WHERE user_id = ? AND role = 'admin' AND group_id IN (
-			SELECT group_id FROM (
-				SELECT group_id, COUNT(*) as admin_count 
-				FROM group_members 
-				WHERE role = 'admin' 
-				GROUP BY group_id
-			) AS admin_counts 
-			WHERE admin_count = 1
-		)`,
-		userID,
-	)
+		WHERE user_id = ? AND is_inherited = false
+	`, userID)
 
 	if err != nil {
 		tx.Rollback()

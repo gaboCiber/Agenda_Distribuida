@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/events"
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -45,6 +46,14 @@ func (h *EventHandler) AddEventToGroup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Start a transaction
+	tx, err := h.db.Begin()
+	if err != nil {
+		log.Printf("Error starting transaction: %v", err)
+		RespondWithError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
 	// Add event to group
 	event := &models.GroupEvent{
 		GroupID: groupID,
@@ -52,9 +61,31 @@ func (h *EventHandler) AddEventToGroup(w http.ResponseWriter, r *http.Request) {
 		AddedBy: req.AddedBy,
 	}
 
-	if err := h.db.AddGroupEvent(event); err != nil {
+	// Use the transaction to add the group event
+	if err := h.db.AddGroupEventWithTx(tx, event); err != nil {
+		tx.Rollback()
 		log.Printf("Error adding event to group: %v", err)
 		RespondWithError(w, http.StatusInternalServerError, "Failed to add event to group")
+		return
+	}
+
+	// Automatically set the creator's status to 'accepted'
+	status := models.NewGroupEventStatus(groupID, req.EventID, req.AddedBy, models.EventStatusAccepted)
+	now := time.Now().UTC()
+	status.RespondedAt = &now
+
+	// Use the transaction to add the event status
+	if err := h.db.AddEventStatusWithTx(tx, status); err != nil {
+		tx.Rollback()
+		log.Printf("Error setting creator's event status: %v", err)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to set event status")
+		return
+	}
+
+	// Commit the transaction
+	if err := tx.Commit(); err != nil {
+		log.Printf("Error committing transaction: %v", err)
+		RespondWithError(w, http.StatusInternalServerError, "Failed to save changes")
 		return
 	}
 
