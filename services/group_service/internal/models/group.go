@@ -7,34 +7,35 @@ import (
 
 // Group represents a user group in the system
 type Group struct {
-	ID              string    `json:"id"`
-	Name            string    `json:"name"`
-	Description     string    `json:"description,omitempty"`
-	CreatedBy       string    `json:"created_by"`
-	IsHierarchical  bool      `json:"is_hierarchical"`
-	ParentGroupID   *string   `json:"parent_group_id,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Description    string    `json:"description,omitempty"`
+	CreatedBy      string    `json:"created_by"`
+	IsHierarchical bool      `json:"is_hierarchical"`
+	ParentGroupID  *string   `json:"parent_group_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // GroupMember represents a member of a group
 type GroupMember struct {
-	ID           string    `json:"id"`
-	GroupID      string    `json:"group_id"`
-	UserID       string    `json:"user_id"`
-	Role         string    `json:"role"` // "admin" or "member"
-	IsInherited  bool      `json:"is_inherited"`
-	JoinedAt     time.Time `json:"joined_at"`
+	ID          string    `json:"id"`
+	GroupID     string    `json:"group_id"`
+	UserID      string    `json:"user_id"`
+	Role        string    `json:"role"` // "admin" or "member"
+	IsInherited bool      `json:"is_inherited"`
+	JoinedAt    time.Time `json:"joined_at"`
 }
 
 // GroupEvent represents an event associated with a group
 type GroupEvent struct {
-	ID              string    `json:"id"`
-	GroupID         string    `json:"group_id"`
-	EventID         string    `json:"event_id"`
-	AddedBy         string    `json:"added_by"`
-	IsHierarchical  bool      `json:"is_hierarchical"`
-	AddedAt         time.Time `json:"added_at"`
+	ID             string    `json:"id" db:"id"`
+	GroupID        string    `json:"group_id" db:"group_id"`
+	EventID        string    `json:"event_id" db:"event_id"`
+	AddedBy        string    `json:"added_by" db:"added_by"`
+	IsHierarchical bool      `json:"is_hierarchical" db:"is_hierarchical"`
+	Status         string    `json:"status" db:"status"`
+	AddedAt        time.Time `json:"added_at" db:"added_at"`
 }
 
 // GroupInvitation represents an invitation to join a group
