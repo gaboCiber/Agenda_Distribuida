@@ -197,29 +197,55 @@ async def get_events(user_id: Optional[str] = None, limit: int = 50, offset: int
 
         if response.status_code == 200:
             data = response.json()
-            events_raw = data.get("events", [])
+            events_raw = data.get("events")
+            
+            # Si events_raw es None, devolver lista vacía
+            if events_raw is None:
+                print("⚠️ API_GATEWAY: El campo 'events' no está presente en la respuesta o es nulo")
+                return EventListResponse(events=[], total=0)
+                
+            # Asegurarnos de que events_raw sea una lista
+            if not isinstance(events_raw, list):
+                print(f"⚠️ API_GATEWAY: Se esperaba una lista de eventos, se recibió: {type(events_raw)}")
+                events_raw = []
+                
             print(f"📊 API_GATEWAY: Events Service devolvió {len(events_raw)} eventos")
 
             # Convertir los eventos al formato esperado
             events = []
             for event_data in events_raw:
-                event_user_id = event_data.get("user_id")
-                print(f"🔍 API_GATEWAY: Procesando evento {event_data['id']} - Usuario: {event_user_id}")
+                try:
+                    if not isinstance(event_data, dict):
+                        print(f"⚠️ API_GATEWAY: Se esperaba un diccionario para el evento, se recibió: {type(event_data)}")
+                        continue
+                        
+                    event_user_id = event_data.get("user_id")
+                    event_id = event_data.get("id", "desconocido")
+                    print(f"🔍 API_GATEWAY: Procesando evento {event_id} - Usuario: {event_user_id}")
 
-                # ⚠️ VERIFICACIÓN DE SEGURIDAD: Solo devolver eventos del usuario solicitado
-                if user_id and event_user_id != user_id:
-                    print(f"🚨 API_GATEWAY: ¡SEGURIDAD COMPROMETIDA! Evento {event_data['id']} pertenece a {event_user_id}, pero se pidió {user_id}")
-                    continue  # Saltar este evento
+                    # ⚠️ VERIFICACIÓN DE SEGURIDAD: Solo devolver eventos del usuario solicitado
+                    if user_id and event_user_id != user_id:
+                        print(f"🚨 API_GATEWAY: ¡SEGURIDAD COMPROMETIDA! Evento {event_id} pertenece a {event_user_id}, pero se pidió {user_id}")
+                        continue  # Saltar este evento
 
-                events.append(EventResponse(
-                    id=event_data["id"],
-                    title=event_data["title"],
-                    description=event_data["description"],
-                    start_time=datetime.fromisoformat(event_data["start_time"].replace('Z', '+00:00')),
-                    end_time=datetime.fromisoformat(event_data["end_time"].replace('Z', '+00:00')),
-                    user_id=event_user_id,
-                    created_at=datetime.fromisoformat(event_data["created_at"].replace('Z', '+00:00'))
-                ))
+                    # Validar campos requeridos
+                    required_fields = ["id", "title", "description", "start_time", "end_time", "created_at"]
+                    if not all(field in event_data for field in required_fields):
+                        print(f"⚠️ API_GATEWAY: Evento {event_id} no tiene todos los campos requeridos")
+                        continue
+
+                    events.append(EventResponse(
+                        id=event_data["id"],
+                        title=event_data["title"],
+                        description=event_data["description"],
+                        start_time=datetime.fromisoformat(event_data["start_time"].replace('Z', '+00:00')),
+                        end_time=datetime.fromisoformat(event_data["end_time"].replace('Z', '+00:00')),
+                        user_id=event_user_id,
+                        created_at=datetime.fromisoformat(event_data["created_at"].replace('Z', '+00:00'))
+                    ))
+                except Exception as e:
+                    print(f"⚠️ API_GATEWAY: Error al procesar evento: {str(e)}")
+                    continue
 
             print(f"✅ API_GATEWAY: Devolviendo {len(events)} eventos filtrados para usuario {user_id}")
 

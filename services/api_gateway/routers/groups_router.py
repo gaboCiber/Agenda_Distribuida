@@ -6,6 +6,9 @@ from datetime import datetime
 from fastapi import Request
 import uuid
 from services.event_service import event_service
+import asyncio
+import json
+import time
 
 # Importar group_responses desde el módulo de almacenamiento
 from services.response_store import group_responses
@@ -136,61 +139,225 @@ async def create_group(group_data: GroupCreateRequest, request: Request):
         "timestamp": result["timestamp"]
     }
 
+# @router.get("", response_model=GroupListResponse)
+# async def list_user_groups(request: Request, page: int = 1, page_size: int = 20):
+#     """Listar grupos del usuario actual - HTTP directo (lectura)"""
+    
+#     user_id = await get_current_user_id(request)
+
+#     Publicar evento en Redis
+#     result = event_service.publish_event(
+#         channel="groups",
+#         event_type="list_user_groups",
+#         payload={
+#             "user_id": user_id
+#         }
+#     )
+
+#     if not result.get("published", False):
+#         raise HTTPException(status_code=503, detail="Message bus unavailable")
+
+#     return {
+#         "status": "processing",
+#         "message": "Group list request received and queued",
+#         "event_id": result["event_id"],
+#         "timestamp": result["timestamp"]
+#     }
+    
+#     try:
+#         # Obtener el ID del usuario autenticado
+#         user_id = await get_current_user_id(request)
+
+#         # Construir la URL con los parámetros de paginación
+#         endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
+
+#         print(f"🔍 Solicitando grupos para el usuario {user_id}")
+
+#         # Hacer la petición al servicio de grupos
+#         response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
+
+#         # Si la respuesta es exitosa
+#         if response.status_code == 200:
+#             data = response.json()
+#             print(f"✅ Respuesta del servicio de grupos: {data}")
+#             return GroupListResponse(
+#                 groups=data.get("groups", []),
+#                 page=data.get("page", page),
+#                 total=data.get("total", 0)
+#             )
+
+#         # Si no hay grupos, devolver lista vacía
+#         print(f"⚠️ No se encontraron grupos para el usuario {user_id}")
+#         return GroupListResponse(groups=[], page=page, total=0)
+
+#     except Exception as e:
+#         print(f"❌ Error al listar grupos: {str(e)}")
 @router.get("", response_model=GroupListResponse)
 async def list_user_groups(request: Request, page: int = 1, page_size: int = 20):
-    """Listar grupos del usuario actual - HTTP directo (lectura)"""
+    """
+    Lista los grupos del usuario actual usando el patrón Pub/Sub de Redis.
     
-    user_id = await get_current_user_id(request)
-
-    # Publicar evento en Redis
-    result = event_service.publish_event(
-        channel="groups",
-        event_type="list_user_groups",
-        payload={
-            "user_id": user_id
+    1. Publica un mensaje en el canal 'groups' solicitando los grupos
+    2. Espera la respuesta en un canal específico
+    3. Devuelve la respuesta recibida
+    """
+    try:
+        # Obtener el ID del usuario autenticado
+        user_id = await get_current_user_id(request)
+        
+        # Generar un ID de correlación único
+        correlation_id = str(uuid.uuid4())
+        response_channel = f"groups:response:{correlation_id}"
+        
+        # 1. Publicar el mensaje de solicitud usando el servicio de eventos
+        message = {
+            "event_id": str(uuid.uuid4()),
+            "type": "list_user_groups",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "version": "1.0",
+            "payload": {
+                "user_id": user_id,
+                "page": page,
+                "page_size": page_size,
+                "correlation_id": correlation_id,
+                "response_channel": response_channel
+            }
         }
-    )
-
-    if not result.get("published", False):
-        raise HTTPException(status_code=503, detail="Message bus unavailable")
-
-    return {
-        "status": "processing",
-        "message": "Group list request received and queued",
-        "event_id": result["event_id"],
-        "timestamp": result["timestamp"]
-    }
-    
-    # try:
-    #     # Obtener el ID del usuario autenticado
-    #     user_id = await get_current_user_id(request)
-
-    #     # Construir la URL con los parámetros de paginación
-    #     endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
-
-    #     print(f"🔍 Solicitando grupos para el usuario {user_id}")
-
-    #     # Hacer la petición al servicio de grupos
-    #     response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
-
-    #     # Si la respuesta es exitosa
-    #     if response.status_code == 200:
-    #         data = response.json()
-    #         print(f"✅ Respuesta del servicio de grupos: {data}")
-    #         return GroupListResponse(
-    #             groups=data.get("groups", []),
-    #             page=data.get("page", page),
-    #             total=data.get("total", 0)
-    #         )
-
-    #     # Si no hay grupos, devolver lista vacía
-    #     print(f"⚠️ No se encontraron grupos para el usuario {user_id}")
-    #     return GroupListResponse(groups=[], page=page, total=0)
-
-    # except Exception as e:
-    #     print(f"❌ Error al listar grupos: {str(e)}")
-    #     # En caso de error, devolver lista vacía en lugar de fallar
-    #     return GroupListResponse(groups=[], page=page, total=0)
+        
+        # Publicar el mensaje en Redis usando el servicio de eventos
+        result = await event_service.redis.publish_event(
+            "groups",
+            json.dumps(message)
+        )
+        
+        if not result:
+            print(f"❌ No se pudo publicar el mensaje en Redis")
+            return GroupListResponse(groups=[], page=page, total=0)
+            
+        print(f"📤 Publicada solicitud de listado de grupos (ID: {correlation_id}) en canal 'groups'")
+        print(f"🔄 Esperando respuesta en canal: {response_channel}")
+        
+        # 2. Configurar el manejador de respuesta
+        response_received = None
+        
+        # 3. Crear un nuevo cliente Redis para esta solicitud
+        try:
+            # Crear un nuevo cliente Redis
+            redis_client = event_service.redis.client
+            pubsub = redis_client.pubsub()
+            
+            # Suscribirse al canal de respuesta
+            await pubsub.subscribe(response_channel)
+            print(f"🔔 Suscrito al canal: {response_channel}")
+            
+            # Esperar mensaje de confirmación de suscripción
+            sub_message = await pubsub.get_message(ignore_subscribe_messages=False, timeout=5.0)
+            if not sub_message or sub_message['type'] != 'subscribe':
+                print("❌ Error al suscribirse al canal de respuesta")
+                await pubsub.close()
+                return GroupListResponse(groups=[], page=page, total=0)
+                
+            # Publicar el mensaje después de suscribirse
+            result = await redis_client.publish("groups", json.dumps(message))
+            if not result:
+                print("❌ No se pudo publicar el mensaje en Redis")
+                await pubsub.close()
+                return GroupListResponse(groups=[], page=page, total=0)
+                
+            print(f"📤 Publicada solicitud de listado de grupos (ID: {correlation_id}) en canal 'groups'")
+            
+            # Esperar la respuesta
+            start_time = time.time()
+            while time.time() - start_time < 10.0:  # Timeout de 10 segundos
+                try:
+                    message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if message and message.get('type') == 'message':
+                        try:
+                            data = json.loads(message["data"])
+                            print(f"📥 Mensaje recibido: {data}")
+                            if data.get("type") == "list_user_groups_response":
+                                payload = data.get("payload", {})
+                                # El payload ya es el diccionario que necesitamos
+                                print(f"✅ Respuesta recibida para la solicitud {correlation_id}")
+                                response_received = payload
+                                break
+                        except Exception as e:
+                            print(f"❌ Error procesando mensaje: {e}")
+                            continue
+                except asyncio.TimeoutError:
+                    continue
+            
+            # 4. Procesar la respuesta
+            if response_received:
+                try:
+                    # El payload ya está parseado, extraer los grupos directamente
+                    groups = response_received.get("groups", [])
+                    total = response_received.get("total", len(groups))
+                    
+                    # Convertir los grupos al formato de respuesta
+                    valid_groups = []
+                    for group in groups:
+                        try:
+                            # Convertir las fechas de string a datetime
+                            created_at = group.get("created_at")
+                            if isinstance(created_at, str):
+                                created_at = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                            
+                            updated_at = group.get("updated_at")
+                            if isinstance(updated_at, str):
+                                updated_at = datetime.fromisoformat(updated_at.replace('Z', '+00:00'))
+                            
+                            valid_group = GroupResponse(
+                                id=group.get("id"),
+                                name=group.get("name", "Sin nombre"),
+                                description=group.get("description"),
+                                created_by=group.get("created_by"),
+                                created_at=created_at,
+                                updated_at=updated_at,
+                                member_count=group.get("member_count", 0)
+                            )
+                            valid_groups.append(valid_group)
+                        except Exception as e:
+                            print(f"⚠️ Error procesando grupo: {e}")
+                            import traceback
+                            print(f"🔍 Stack trace: {traceback.format_exc()}")
+                            continue
+                    
+                    print(f"✅ Obtenidos {len(valid_groups)} grupos (de {total} totales)")
+                    return GroupListResponse(
+                        groups=valid_groups,
+                        page=page,
+                        total=total
+                    )
+                except Exception as e:
+                    print(f"❌ Error procesando la respuesta: {e}")
+                    import traceback
+                    print(f"🔍 Stack trace: {traceback.format_exc()}")
+                    return GroupListResponse(groups=[], page=page, total=0)
+            else:
+                print("⚠️ No se recibió respuesta del servicio de grupos")
+                return GroupListResponse(groups=[], page=page, total=0)
+                
+        except Exception as e:
+            print(f"❌ Error en el manejador de mensajes: {e}")
+            import traceback
+            print(f"🔍 Stack trace: {traceback.format_exc()}")
+            return GroupListResponse(groups=[], page=page, total=0)
+            
+        finally:
+            try:
+                if 'pubsub' in locals():
+                    await pubsub.unsubscribe(response_channel)
+                    await pubsub.close()
+                    print(f"👋 Desconectado del canal: {response_channel}")
+            except Exception as e:
+                print(f"⚠️ Error al cerrar la conexión: {e}")
+            
+    except Exception as e:
+        import traceback
+        print(f"❌ Error en list_user_groups: {str(e)}")
+        print(f"🔍 Stack trace: {traceback.format_exc()}")
+        return GroupListResponse(groups=[], page=page, total=0)
 
 @router.get("/{group_id}", response_model=GroupResponse)
 async def get_group(group_id: str, request: Request):

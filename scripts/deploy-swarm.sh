@@ -2,7 +2,7 @@
 
 # Configuración
 NETWORK_NAME="agenda-network"
-MANAGER_IP="192.168.1.100"  # Cambiar por la IP del manager
+MANAGER_IP="10.171.210.16"  # Cambiar por la IP del manager
 
 # Crear red si no existe
 docker network create --driver=overlay --attachable $NETWORK_NAME 2>/dev/null || true

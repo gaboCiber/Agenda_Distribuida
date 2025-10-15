@@ -52,28 +52,33 @@ async def startup_event():
     print(f"🚀 {settings.app_title} v{settings.app_version} iniciando...")
 
     # Suscribirse a respuestas de eventos y grupos
-    if event_service.redis and event_service.redis.is_connected():
+    if event_service.redis and await event_service.redis.is_connected():
         try:
-            def start_redis_listener():
-                pubsub = event_service.redis.client.pubsub()
-                pubsub.subscribe('events_events_response', 'groups_responses')
+            pubsub = event_service.redis.pubsub
+            
+            async def listen_for_messages():
+                await pubsub.subscribe('events_events_response', 'groups_responses')
                 print("👂 Escuchando respuestas en events_events_response y groups_responses...")
+                
+                try:
+                    while True:
+                        message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                        if message:
+                            channel = message['channel']
+                            if isinstance(channel, bytes):
+                                channel = channel.decode('utf-8')
 
-                for message in pubsub.listen():
-                    if message['type'] == 'message':
-                        channel = message['channel']
-                        if isinstance(channel, bytes):
-                            channel = channel.decode('utf-8')
+                            if channel == 'events_events_response':
+                                process_event_response(message)
+                            elif channel == 'groups_responses':
+                                process_group_response(message)
+                        await asyncio.sleep(0.1)
+                except asyncio.CancelledError:
+                    await pubsub.unsubscribe('events_events_response', 'groups_responses')
+                    await pubsub.close()
 
-                        if channel == 'events_events_response':
-                            process_event_response(message)
-                        elif channel == 'groups_responses':
-                            process_group_response(message)
-
-            # Ejecutar en segundo plano
-            executor = ThreadPoolExecutor(max_workers=1)
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(executor, start_redis_listener)
+            # Iniciar el listener en el bucle de eventos
+            asyncio.create_task(listen_for_messages())
 
         except Exception as e:
             print(f"❌ Error iniciando listener de respuestas: {e}")
@@ -95,7 +100,7 @@ async def get_current_user():
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
     """Health check mejorado para la interfaz"""
-    redis_status = "connected" if event_service.redis.is_connected() else "disconnected"
+    redis_status = "connected" if (event_service.redis and await event_service.redis.is_connected()) else "disconnected"
 
     return HealthResponse(
         status="healthy",

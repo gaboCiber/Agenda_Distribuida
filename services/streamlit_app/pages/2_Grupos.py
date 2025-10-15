@@ -30,6 +30,11 @@ def main():
     """Función principal de la página de grupos"""
     init_session_state()
 
+    # Inicializar user_id en session_state si no existe
+    if 'user_id' not in st.session_state:
+        st.session_state.user_id = None  # o el valor por defecto que corresponda
+    
+
     # Verificar autenticación
     if not st.session_state.user_id:
         st.warning("🔒 Debes iniciar sesión para acceder a la gestión de grupos")
