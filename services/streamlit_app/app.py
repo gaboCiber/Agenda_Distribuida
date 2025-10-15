@@ -27,9 +27,9 @@ def main():
 
     # Si el usuario está autenticado, mostrar calendario
     if st.session_state.user_id:
-        # Recargar eventos si es necesario
-        if not st.session_state.events:
-            load_events()
+        # ⚠️ SIEMPRE recargar eventos para asegurar que son del usuario correcto
+        print(f"🏠 STREAMLIT: Usuario autenticado {st.session_state.user_id}, cargando eventos...")
+        load_events()
 
         # Layout principal
         col1, col2 = st.columns([2, 1])
