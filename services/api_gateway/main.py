@@ -1,4 +1,5 @@
 import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
@@ -7,6 +8,7 @@ from routers import users_router, health_router, groups_router, events_router, g
 from models import HealthResponse, UserProfileResponse
 from services.event_service import event_service
 from services.event_handlers import process_event_response
+from services.response_store import event_responses, group_responses
 
 from fastapi import FastAPI
 
@@ -23,22 +25,50 @@ app.include_router(groups_router.router)
 app.include_router(events_router.router)
 app.include_router(group_events_router.router)
 
+# Función para procesar respuestas de grupos
+def process_group_response(message):
+    """Procesar respuestas del Groups Service"""
+    try:
+        group_data = json.loads(message['data'])
+        event_type = group_data.get('type')
+        correlation_id = group_data.get('payload', {}).get('correlation_id')
+        response_data = group_data.get('payload', {}).get('response', {})
+
+        if correlation_id and response_data:
+            group_responses[correlation_id] = {
+                'success': response_data.get('success', False),
+                'message': response_data.get('message', ''),
+                'data': response_data,
+                'timestamp': datetime.now(),
+                'type': event_type
+            }
+            print(f"✅ Respuesta procesada para {event_type} {correlation_id}: {response_data}")
+    except Exception as e:
+        print(f"❌ Error procesando respuesta de grupo: {e}")
+
 # Iniciar listener de respuestas en segundo plano
 @app.on_event("startup")
 async def startup_event():
     print(f"🚀 {settings.app_title} v{settings.app_version} iniciando...")
 
-    # Suscribirse a respuestas de eventos
+    # Suscribirse a respuestas de eventos y grupos
     if event_service.redis and event_service.redis.is_connected():
         try:
             def start_redis_listener():
                 pubsub = event_service.redis.client.pubsub()
-                pubsub.subscribe('events_events_response')
-                print("👂 Escuchando respuestas de eventos en events_events_response...")
+                pubsub.subscribe('events_events_response', 'groups_responses')
+                print("👂 Escuchando respuestas en events_events_response y groups_responses...")
 
                 for message in pubsub.listen():
                     if message['type'] == 'message':
-                        process_event_response(message)
+                        channel = message['channel']
+                        if isinstance(channel, bytes):
+                            channel = channel.decode('utf-8')
+
+                        if channel == 'events_events_response':
+                            process_event_response(message)
+                        elif channel == 'groups_responses':
+                            process_group_response(message)
 
             # Ejecutar en segundo plano
             executor = ThreadPoolExecutor(max_workers=1)

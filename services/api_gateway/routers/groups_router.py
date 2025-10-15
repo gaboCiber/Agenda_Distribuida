@@ -7,6 +7,9 @@ from fastapi import Request
 import uuid
 from services.event_service import event_service
 
+# Importar group_responses desde el módulo de almacenamiento
+from services.response_store import group_responses
+
 # Crear router
 router = APIRouter(prefix="/api/v1/groups", tags=["groups"])
 
@@ -278,20 +281,48 @@ async def create_invitation(invitation_data: InvitationCreateRequest, request: R
         "timestamp": result["timestamp"]
     }
 
+@router.get("/invitations/{invitation_id}/status")
+async def get_invitation_status(invitation_id: str):
+    """Obtener el estado de una invitación específica"""
+    if invitation_id in group_responses:
+        response = group_responses[invitation_id]
+        return {
+            "status": "completed",
+            "success": response['success'],
+            "message": response['message'],
+            "data": response['data'],
+            "timestamp": response['timestamp']
+        }
+    else:
+        return {
+            "status": "processing",
+            "message": "Invitation still being processed"
+        }
+
 @router.get("/invitations", response_model=List[InvitationResponse])
 async def list_user_invitations(request: Request):
     """Listar invitaciones del usuario actual - HTTP directo (lectura)"""
+    print("🚀🚀🚀 CAMBIOS APLICADOS: Endpoint GET /api/v1/groups/invitations corregido 🚀🚀🚀")
+
     user_id = await get_current_user_id(request)
 
-    # CORRECCIÓN: El endpoint correcto en Groups Service es /invitations/user/{user_id}
-    response = await make_groups_service_request(f"/invitations/user/{user_id}", "GET", user_id=user_id)
+    print(f"🔍 DEBUG: Listando invitaciones para usuario {user_id}")
+
+    # CORRECCIÓN: El endpoint correcto en Groups Service es /invitations con X-User-ID header
+    response = await make_groups_service_request("/invitations", "GET", user_id=user_id)
+
+    print(f"🔍 DEBUG: Respuesta del Groups Service: {response.status_code} - {response.text}")
 
     if response.status_code == 200:
-        return response.json()
+        data = response.json()
+        print(f"🔍 DEBUG: Datos de invitaciones: {data}")
+        return data
     else:
         # Si no hay invitaciones, devolver una lista vacía en lugar de error 404
         if response.status_code == 404:
+            print("🔍 DEBUG: No hay invitaciones (404), devolviendo lista vacía")
             return []
+        print(f"❌ DEBUG: Error del Groups Service: {response.status_code} - {response.text}")
         raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.post("/invitations/{invitation_id}/respond", status_code=status.HTTP_200_OK)

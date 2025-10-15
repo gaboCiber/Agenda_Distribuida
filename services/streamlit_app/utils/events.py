@@ -7,23 +7,27 @@ import time
 from utils.api import make_api_request
 
 def load_events():
-    """Cargar eventos del usuario actual con información de debug"""
-    if st.session_state.user_id or True:  # Temporal para pruebas
-        user_id_to_use = st.session_state.user_id or "user_test"
-        response = make_api_request(f"/api/v1/events?user_id={user_id_to_use}")
+    """Cargar eventos del usuario actual - SOLO del usuario logueado"""
+    if not st.session_state.user_id:
+        st.session_state.events = []
+        print("🔧 DEBUG: No hay usuario logueado, lista de eventos vacía")
+        return
 
-        if response and response.status_code == 200:
-            data = response.json()
-            st.session_state.events = data.get('events', [])
+    user_id_to_use = st.session_state.user_id
+    response = make_api_request(f"/api/v1/events?user_id={user_id_to_use}")
 
-            # ✅ DEBUG: Mostrar información de eventos cargados
-            print(f"🔧 DEBUG: Se cargaron {len(st.session_state.events)} eventos para usuario {user_id_to_use}")
-            for event in st.session_state.events:
-                print(f"🔧 DEBUG: Evento - {event['title']} a las {event['start_time']}")
+    if response and response.status_code == 200:
+        data = response.json()
+        st.session_state.events = data.get('events', [])
 
-        else:
-            st.session_state.events = []
-            print(f"🔧 DEBUG: Error cargando eventos - Status: {response.status_code if response else 'No response'}")
+        # ✅ DEBUG: Mostrar información de eventos cargados
+        print(f"🔧 DEBUG: Se cargaron {len(st.session_state.events)} eventos para usuario {user_id_to_use}")
+        for event in st.session_state.events:
+            print(f"🔧 DEBUG: Evento - {event['title']} a las {event['start_time']}")
+
+    else:
+        st.session_state.events = []
+        print(f"🔧 DEBUG: Error cargando eventos - Status: {response.status_code if response else 'No response'}")
 
 def get_events_for_day(date: datetime) -> List[Dict]:
     """Obtener eventos para un día específico"""
@@ -105,7 +109,11 @@ def create_event_with_conflict_check(event_data):
 
 def delete_event(event_id):
     """Eliminar un evento específico - CORREGIDA"""
-    user_id = st.session_state.user_id or "user_test"
+    if not st.session_state.user_id:
+        st.error("❌ Debes estar logueado para eliminar eventos")
+        return False
+
+    user_id = st.session_state.user_id
 
     print(f"🔧 DEBUG: Eliminando evento {event_id} para usuario {user_id}")
 
