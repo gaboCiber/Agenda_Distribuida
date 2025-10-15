@@ -4,6 +4,8 @@ from typing import Optional, List
 import httpx
 from datetime import datetime
 from fastapi import Request
+import uuid
+from services.event_service import event_service
 
 # Crear router
 router = APIRouter(prefix="/api/v1/groups", tags=["groups"])
@@ -69,6 +71,7 @@ async def make_groups_service_request(endpoint: str, method: str = "GET", data: 
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             if method == "GET":
+                # CORRECCIÓN: No pasar data en GET, solo headers
                 response = await client.get(f"{groups_service_url}{endpoint}", headers=headers)
             elif method == "POST":
                 response = await client.post(f"{groups_service_url}{endpoint}", json=data, headers=headers)
@@ -100,27 +103,35 @@ async def get_current_user_id(request: Request):
     
 # ========== ENDPOINTS DE GRUPOS ==========
 
-@router.post("", response_model=GroupResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", response_model=dict, status_code=status.HTTP_202_ACCEPTED)
 async def create_group(group_data: GroupCreateRequest, request: Request):
-    """Crear un nuevo grupo"""
+    """Crear un nuevo grupo - Pub/Sub"""
     user_id = await get_current_user_id(request)
 
-    data = {
-        "name": group_data.name,
-        "description": group_data.description,
-        "created_by": user_id  # Asegurarse de incluir el ID del creador
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="group_creation_requested",
+        payload={
+            "name": group_data.name,
+            "description": group_data.description,
+            "created_by": user_id
+        }
+    )
+
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
+
+    return {
+        "status": "processing",
+        "message": "Group creation request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
     }
-
-    response = await make_groups_service_request("/groups", "POST", data, user_id)
-
-    if response.status_code == 201:
-        return response.json()
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.get("", response_model=GroupListResponse)
 async def list_user_groups(request: Request, page: int = 1, page_size: int = 20):
-    """Listar grupos del usuario actual"""
+    """Listar grupos del usuario actual - HTTP directo (lectura)"""
     try:
         # Obtener el ID del usuario autenticado
         user_id = await get_current_user_id(request)
@@ -239,28 +250,41 @@ async def get_group_admins(group_id: str, request: Request):
 
 # ========== ENDPOINTS DE INVITACIONES ==========
 
-@router.post("/invitations", status_code=status.HTTP_201_CREATED)
+@router.post("/invitations", status_code=status.HTTP_202_ACCEPTED)
 async def create_invitation(invitation_data: InvitationCreateRequest, request: Request):
-    """Crear una invitación para unirse a un grupo"""
+    """Crear una invitación para unirse a un grupo - Pub/Sub"""
     user_id = await get_current_user_id(request)
 
-    data = {
-        "group_id": invitation_data.group_id,
-        "user_id": invitation_data.user_id,
-        "invited_by": user_id
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="invitation_created",
+        payload={
+            "invitation_id": str(uuid.uuid4()),
+            "group_id": invitation_data.group_id,
+            "user_id": invitation_data.user_id,
+            "invited_by": user_id,
+            "response_channel": "groups_responses"
+        }
+    )
+
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
+
+    return {
+        "status": "processing",
+        "message": "Invitation creation request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
     }
-
-    response = await make_groups_service_request("/invitations", "POST", data, user_id)
-
-    if response.status_code != 201:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.get("/invitations", response_model=List[InvitationResponse])
 async def list_user_invitations(request: Request):
-    """Listar invitaciones del usuario actual"""
+    """Listar invitaciones del usuario actual - HTTP directo (lectura)"""
     user_id = await get_current_user_id(request)
 
-    response = await make_groups_service_request(f"/invitations/user/{user_id}", "GET")
+    # CORRECCIÓN: El endpoint correcto en Groups Service es /invitations/user/{user_id}
+    response = await make_groups_service_request(f"/invitations/user/{user_id}", "GET", user_id=user_id)
 
     if response.status_code == 200:
         return response.json()
