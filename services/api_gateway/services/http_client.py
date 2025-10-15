@@ -49,9 +49,33 @@ async def make_api_request(endpoint: str, method: str = "GET", data: dict = None
     """Hace una petición interna al API Gateway"""
     return await api_gateway_client.request(endpoint, method, data)
 
-async def make_events_service_request(endpoint: str, method: str = "GET", data: dict = None, headers: dict = None):
+async def make_events_service_request(endpoint: str, method: str = "GET", data: dict = None, headers: dict = None, params: dict = None):
     """Hace una petición al Events Service"""
-    return await events_service_client.request(endpoint, method, data, headers)
+    url = f"{events_service_client.base_url}{endpoint}"
+
+    request_headers = {"Content-Type": "application/json"}
+    if headers:
+        request_headers.update(headers)
+
+    try:
+        async with httpx.AsyncClient(timeout=events_service_client.timeout) as client:
+            if method == "GET":
+                response = await client.get(url, headers=request_headers, params=params)
+            elif method == "POST":
+                response = await client.post(url, json=data, headers=request_headers)
+            elif method == "PUT":
+                response = await client.put(url, json=data, headers=request_headers)
+            elif method == "DELETE":
+                response = await client.delete(url, headers=request_headers)
+            else:
+                raise HTTPException(status_code=500, detail=f"Unsupported method: {method}")
+
+            return response
+
+    except httpx.ConnectError:
+        raise HTTPException(status_code=503, detail=f"Events Service no disponible")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error interno: {str(e)}")
 
 async def make_groups_service_request(endpoint: str, method: str = "GET", data: dict = None, headers: dict = None):
     """Hace una petición al Groups Service"""

@@ -173,6 +173,7 @@ async def get_event_status(event_id: str):
 @router.get("", response_model=EventListResponse)
 async def get_events(user_id: Optional[str] = None, limit: int = 50, offset: int = 0):
     """Obtener eventos del Events Service real"""
+    print(f"🎯 API_GATEWAY: get_events() llamado con user_id={user_id}, limit={limit}, offset={offset}")
 
     try:
         # Construir URL para el Events Service
@@ -181,41 +182,60 @@ async def get_events(user_id: Optional[str] = None, limit: int = 50, offset: int
 
         if user_id:
             params["user_id"] = user_id
+            print(f"🔍 API_GATEWAY: Filtrando por user_id: {user_id}")
         if limit != 50:  # Solo agregar si no es el valor por defecto
             params["limit"] = limit
         if offset != 0:  # Solo agregar si no es el valor por defecto
             params["offset"] = offset
 
+        print(f"🌐 API_GATEWAY: Llamando a Events Service: {events_service_url} con params: {params}")
+
         # Hacer request al Events Service
-        response = await make_events_service_request(events_service_url, "GET")
+        response = await make_events_service_request(events_service_url, "GET", params=params)
+
+        print(f"📡 API_GATEWAY: Respuesta de Events Service - Status: {response.status_code}")
 
         if response.status_code == 200:
             data = response.json()
+            events_raw = data.get("events", [])
+            print(f"📊 API_GATEWAY: Events Service devolvió {len(events_raw)} eventos")
 
             # Convertir los eventos al formato esperado
             events = []
-            for event_data in data.get("events", []):
+            for event_data in events_raw:
+                event_user_id = event_data.get("user_id")
+                print(f"🔍 API_GATEWAY: Procesando evento {event_data['id']} - Usuario: {event_user_id}")
+
+                # ⚠️ VERIFICACIÓN DE SEGURIDAD: Solo devolver eventos del usuario solicitado
+                if user_id and event_user_id != user_id:
+                    print(f"🚨 API_GATEWAY: ¡SEGURIDAD COMPROMETIDA! Evento {event_data['id']} pertenece a {event_user_id}, pero se pidió {user_id}")
+                    continue  # Saltar este evento
+
                 events.append(EventResponse(
                     id=event_data["id"],
                     title=event_data["title"],
                     description=event_data["description"],
                     start_time=datetime.fromisoformat(event_data["start_time"].replace('Z', '+00:00')),
                     end_time=datetime.fromisoformat(event_data["end_time"].replace('Z', '+00:00')),
-                    user_id=event_data["user_id"],
+                    user_id=event_user_id,
                     created_at=datetime.fromisoformat(event_data["created_at"].replace('Z', '+00:00'))
                 ))
 
+            print(f"✅ API_GATEWAY: Devolviendo {len(events)} eventos filtrados para usuario {user_id}")
+
             return EventListResponse(
                 events=events,
-                total=data.get("total", 0)
+                total=len(events)  # Usar la cantidad filtrada
             )
         else:
+            print(f"❌ API_GATEWAY: Error del Events Service: {response.status_code} - {response.text}")
             raise HTTPException(
                 status_code=response.status_code,
                 detail=f"Error del Events Service: {response.text}"
             )
 
     except Exception as e:
+        print(f"💥 API_GATEWAY: Error interno en get_events: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Error interno: {str(e)}"

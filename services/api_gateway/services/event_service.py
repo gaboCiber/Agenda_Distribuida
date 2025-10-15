@@ -69,24 +69,31 @@ class EventService:
     def publish_event(self, channel: str, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Publica un evento en Redis
-        
+
         Returns:
             Dict con información del evento publicado o error
         """
+        print(f"📤 API_GATEWAY: Publicando evento '{event_type}' en canal '{channel}'")
+
         if not self.redis.is_connected():
+            print("❌ API_GATEWAY: Redis no conectado")
             return {"error": "Redis not connected", "published": False}
-        
+
         # Crear evento
         event = self.create_event(event_type, payload)
-        
+        print(f"📦 API_GATEWAY: Evento creado con ID: {event.event_id}")
+
         # Convertir a JSON
         try:
             event_json = event.json()
+            print(f"📄 API_GATEWAY: Evento serializado correctamente")
         except Exception as e:
+            print(f"❌ API_GATEWAY: Error serializando evento: {e}")
             return {"error": f"Event serialization failed: {e}", "published": False}
-        
+
         # Publicar en Redis
         if self.redis.publish_event(channel, event_json):
+            print(f"✅ API_GATEWAY: Evento publicado exitosamente en {channel}")
             return {
                 "published": True,
                 "event_id": event.event_id,
@@ -95,6 +102,7 @@ class EventService:
                 "timestamp": event.timestamp.isoformat()
             }
         else:
+            print(f"❌ API_GATEWAY: Falló la publicación del evento en {channel}")
             return {"error": "Failed to publish event", "published": False}
 
 

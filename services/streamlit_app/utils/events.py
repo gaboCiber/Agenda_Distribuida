@@ -8,26 +8,47 @@ from utils.api import make_api_request
 
 def load_events():
     """Cargar eventos del usuario actual - SOLO del usuario logueado"""
+    print("🎯 STREAMLIT: Iniciando load_events()")
+
     if not st.session_state.user_id:
         st.session_state.events = []
-        print("🔧 DEBUG: No hay usuario logueado, lista de eventos vacía")
+        print("❌ STREAMLIT: No hay usuario logueado, lista de eventos vacía")
         return
 
     user_id_to_use = st.session_state.user_id
-    response = make_api_request(f"/api/v1/events?user_id={user_id_to_use}")
+    print(f"👤 STREAMLIT: Usuario logueado: {user_id_to_use}")
+
+    # Construir URL con parámetros
+    url = f"/api/v1/events?user_id={user_id_to_use}"
+    print(f"🌐 STREAMLIT: Llamando a API Gateway: {url}")
+
+    response = make_api_request(url)
+
+    print(f"📡 STREAMLIT: Respuesta del API Gateway - Status: {response.status_code if response else 'No response'}")
 
     if response and response.status_code == 200:
         data = response.json()
         st.session_state.events = data.get('events', [])
 
         # ✅ DEBUG: Mostrar información de eventos cargados
-        print(f"🔧 DEBUG: Se cargaron {len(st.session_state.events)} eventos para usuario {user_id_to_use}")
-        for event in st.session_state.events:
-            print(f"🔧 DEBUG: Evento - {event['title']} a las {event['start_time']}")
+        print(f"✅ STREAMLIT: Se cargaron {len(st.session_state.events)} eventos para usuario {user_id_to_use}")
+        for i, event in enumerate(st.session_state.events):
+            print(f"📅 STREAMLIT: Evento {i+1}: {event['title']} - Usuario: {event.get('user_id', 'N/A')} - Inicio: {event['start_time']}")
+
+        # ⚠️ VERIFICACIÓN DE SEGURIDAD: Verificar que todos los eventos son del usuario correcto
+        invalid_events = [e for e in st.session_state.events if e.get('user_id') != user_id_to_use]
+        if invalid_events:
+            print(f"🚨 STREAMLIT: ¡SEGURIDAD COMPROMETIDA! {len(invalid_events)} eventos no pertenecen al usuario {user_id_to_use}")
+            for event in invalid_events:
+                print(f"🚨 STREAMLIT: Evento inválido - {event['title']} pertenece a {event.get('user_id')}")
+        else:
+            print(f"🔒 STREAMLIT: Seguridad OK - Todos los eventos pertenecen al usuario {user_id_to_use}")
 
     else:
         st.session_state.events = []
-        print(f"🔧 DEBUG: Error cargando eventos - Status: {response.status_code if response else 'No response'}")
+        print(f"❌ STREAMLIT: Error cargando eventos - Status: {response.status_code if response else 'No response'}")
+        if response:
+            print(f"❌ STREAMLIT: Error response: {response.text}")
 
 def get_events_for_day(date: datetime) -> List[Dict]:
     """Obtener eventos para un día específico"""

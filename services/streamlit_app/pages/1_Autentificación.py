@@ -66,11 +66,19 @@ if st.session_state.user_id:
     
 
     if st.button("🚪 Cerrar Sesión", use_container_width=True, type="secondary"):
-            # Limpiar sesión
+            # Limpiar sesión COMPLETA incluyendo eventos
+            print(f"🚪 STREAMLIT: Cerrando sesión del usuario {st.session_state.user_id}")
+
             st.session_state.user_id = None
             st.session_state.user_email = None
             st.session_state.user_username = None
             st.session_state.show_register = False
+
+            # ⚠️ IMPORTANTE: Limpiar eventos al cerrar sesión
+            if 'events' in st.session_state:
+                st.session_state.events = []
+                print("🧹 STREAMLIT: Eventos limpiados al cerrar sesión")
+
             st.success("✅ Sesión cerrada correctamente")
             st.rerun()
     
