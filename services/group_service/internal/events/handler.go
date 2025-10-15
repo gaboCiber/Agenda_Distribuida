@@ -14,8 +14,8 @@ import (
 
 // EventHandler handles incoming events from Redis
 type EventHandler struct {
-	groupService    service.GroupService
-	publisher       *Publisher
+	groupService      service.GroupService
+	publisher         *Publisher
 	groupEventHandler *GroupEventHandler
 }
 
@@ -1577,7 +1577,7 @@ func (h *EventHandler) handleListInvitations(payload json.RawMessage) {
 	// Publish the response
 	if responseChannel != "" {
 		h.publisher.Publish(responseChannel, "list_invitations_response", map[string]interface{}{
-			"status":     "success",
+			"status":      "success",
 			"invitations": invitations,
 		})
 	}

@@ -114,11 +114,15 @@ async def create_group(group_data: GroupCreateRequest, request: Request):
     # Publicar evento en Redis
     result = event_service.publish_event(
         channel="groups",
-        event_type="group_creation_requested",
+        event_type="group_created",
         payload={
             "name": group_data.name,
             "description": group_data.description,
-            "created_by": user_id
+            "created_by": user_id,
+            "is_hierarchical": False,
+            "parent_group_id": None,
+            "response_channel": "groups",
+            "source": "api_gateway"
         }
     )
 
@@ -135,75 +139,163 @@ async def create_group(group_data: GroupCreateRequest, request: Request):
 @router.get("", response_model=GroupListResponse)
 async def list_user_groups(request: Request, page: int = 1, page_size: int = 20):
     """Listar grupos del usuario actual - HTTP directo (lectura)"""
-    try:
-        # Obtener el ID del usuario autenticado
-        user_id = await get_current_user_id(request)
+    
+    user_id = await get_current_user_id(request)
 
-        # Construir la URL con los parámetros de paginación
-        endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="list_user_groups",
+        payload={
+            "user_id": user_id
+        }
+    )
 
-        print(f"🔍 Solicitando grupos para el usuario {user_id}")
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
 
-        # Hacer la petición al servicio de grupos
-        response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
+    return {
+        "status": "processing",
+        "message": "Group list request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
+    }
+    
+    # try:
+    #     # Obtener el ID del usuario autenticado
+    #     user_id = await get_current_user_id(request)
 
-        # Si la respuesta es exitosa
-        if response.status_code == 200:
-            data = response.json()
-            print(f"✅ Respuesta del servicio de grupos: {data}")
-            return GroupListResponse(
-                groups=data.get("groups", []),
-                page=data.get("page", page),
-                total=data.get("total", 0)
-            )
+    #     # Construir la URL con los parámetros de paginación
+    #     endpoint = f"/groups/user/{user_id}?page={page}&page_size={page_size}"
 
-        # Si no hay grupos, devolver lista vacía
-        print(f"⚠️ No se encontraron grupos para el usuario {user_id}")
-        return GroupListResponse(groups=[], page=page, total=0)
+    #     print(f"🔍 Solicitando grupos para el usuario {user_id}")
 
-    except Exception as e:
-        print(f"❌ Error al listar grupos: {str(e)}")
-        # En caso de error, devolver lista vacía en lugar de fallar
-        return GroupListResponse(groups=[], page=page, total=0)
+    #     # Hacer la petición al servicio de grupos
+    #     response = await make_groups_service_request(endpoint, "GET", user_id=user_id)
+
+    #     # Si la respuesta es exitosa
+    #     if response.status_code == 200:
+    #         data = response.json()
+    #         print(f"✅ Respuesta del servicio de grupos: {data}")
+    #         return GroupListResponse(
+    #             groups=data.get("groups", []),
+    #             page=data.get("page", page),
+    #             total=data.get("total", 0)
+    #         )
+
+    #     # Si no hay grupos, devolver lista vacía
+    #     print(f"⚠️ No se encontraron grupos para el usuario {user_id}")
+    #     return GroupListResponse(groups=[], page=page, total=0)
+
+    # except Exception as e:
+    #     print(f"❌ Error al listar grupos: {str(e)}")
+    #     # En caso de error, devolver lista vacía en lugar de fallar
+    #     return GroupListResponse(groups=[], page=page, total=0)
 
 @router.get("/{group_id}", response_model=GroupResponse)
 async def get_group(group_id: str, request: Request):
-    """Obtener detalles de un grupo"""
-    user_id = await get_current_user_id(request)
+    
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="get_group",
+        payload={
+            "group_id": group_id
+        }
+    )
 
-    response = await make_groups_service_request(f"/groups/{group_id}", "GET", user_id=user_id)
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
 
-    if response.status_code == 200:
-        return response.json()
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return {
+        "status": "processing",
+        "message": "Group get request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
+    }
+
+    # """Obtener detalles de un grupo"""
+    # user_id = await get_current_user_id(request)
+
+    # response = await make_groups_service_request(f"/groups/{group_id}", "GET", user_id=user_id)
+
+    # if response.status_code == 200:
+    #     return response.json()
+    # else:
+    #     raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.put("/{group_id}", response_model=GroupResponse)
 async def update_group(group_id: str, group_data: GroupCreateRequest, request: Request):
-    """Actualizar un grupo"""
-    user_id = await get_current_user_id(request)
+    
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="update_group",
+        payload={
+            "group_id": group_id,
+            "group_data": group_data.dict()
+        }
+    )
 
-    data = {
-        "name": group_data.name,
-        "description": group_data.description
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
+
+    return {
+        "status": "processing",
+        "message": "Group update request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
     }
 
-    response = await make_groups_service_request(f"/groups/{group_id}", "PUT", data, user_id)
+    # """Actualizar un grupo"""
+    # user_id = await get_current_user_id(request)
 
-    if response.status_code == 200:
-        return response.json()
-    else:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    # data = {
+    #     "name": group_data.name,
+    #     "description": group_data.description
+    # }
+
+    # response = await make_groups_service_request(f"/groups/{group_id}", "PUT", data, user_id)
+
+    # if response.status_code == 200:
+    #     return response.json()
+    # else:
+    #     raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.delete("/{group_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_group(group_id: str, request: Request):
-    """Eliminar un grupo"""
+    
     user_id = await get_current_user_id(request)
 
-    response = await make_groups_service_request(f"/groups/{group_id}", "DELETE", user_id=user_id)
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="group_deleted",
+        payload={
+            "group_id": group_id,
+            "deleted_by": user_id,
+            "response_channel": "groups",
+            "source": "api_gateway"
+        }
+    )
+    
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
 
-    if response.status_code != 204:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return {
+        "status": "processing",
+        "message": "Group delete request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
+    }
+    
+    # """Eliminar un grupo"""
+    # user_id = await get_current_user_id(request)
+
+    # response = await make_groups_service_request(f"/groups/{group_id}", "DELETE", user_id=user_id)
+
+    # if response.status_code != 204:
+    #     raise HTTPException(status_code=response.status_code, detail=response.text)
 
 # ========== ENDPOINTS DE MIEMBROS ==========
 
@@ -221,13 +313,41 @@ async def list_group_members(group_id: str, request: Request):
 
 @router.post("/{group_id}/members", status_code=status.HTTP_201_CREATED)
 async def add_group_member(group_id: str, member_data: dict, request: Request):
-    """Agregar un miembro a un grupo"""
+    
     user_id = await get_current_user_id(request)
 
-    response = await make_groups_service_request(f"/groups/{group_id}/members", "POST", member_data, user_id)
+    # Publicar evento en Redis
+    result = event_service.publish_event(
+        channel="groups",
+        event_type="member_added",
+        payload={
+            "group_id": group_id,
+            "userID": member_data["userID"],
+            "role": member_data["role"],
+            "added_by": user_id,
+            "response_channel": "groups",
+            "source": "api_gateway"
+        }
+    )
+    
+    if not result.get("published", False):
+        raise HTTPException(status_code=503, detail="Message bus unavailable")
 
-    if response.status_code != 201:
-        raise HTTPException(status_code=response.status_code, detail=response.text)
+    return {
+        "status": "processing",
+        "message": "Group member add request received and queued",
+        "event_id": result["event_id"],
+        "timestamp": result["timestamp"]
+    }
+   
+   
+    # """Agregar un miembro a un grupo"""
+    # user_id = await get_current_user_id(request)
+
+    # response = await make_groups_service_request(f"/groups/{group_id}/members", "POST", member_data, user_id)
+
+    # if response.status_code != 201:
+    #     raise HTTPException(status_code=response.status_code, detail=response.text)
 
 @router.delete("/{group_id}/members/{member_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def remove_group_member(group_id: str, member_id: str, request: Request):
