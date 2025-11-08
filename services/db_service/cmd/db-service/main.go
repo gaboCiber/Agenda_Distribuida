@@ -15,10 +15,18 @@ import (
 )
 
 func main() {
-	// Initialize logger
-	logger := zerolog.New(os.Stdout).With().
+	// Initialize logger with console writer for better formatting in containers
+	output := zerolog.ConsoleWriter{
+		Out:        os.Stdout,
+		TimeFormat: time.RFC3339,
+	}
+	logger := zerolog.New(output).With().
 		Timestamp().
 		Logger()
+
+	// Set the global logger
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	zerolog.DefaultContextLogger = &logger
 
 	// Load configuration
 	cfg := config.Load()

@@ -15,8 +15,7 @@ type Config struct {
 		IdleTimeout  time.Duration
 	}
 	Database struct {
-		Path        string
-	
+		Path string
 	}
 	LogLevel string
 }
@@ -35,7 +34,7 @@ func Load() *Config {
 	cfg.Database.Path = getEnv("DB_PATH", "./data/agenda_distribuida.db")
 
 	// Logging
-	cfg.LogLevel = getEnv("LOG_LEVEL", "info")
+	cfg.LogLevel = getEnv("LOG_LEVEL", "debug")
 
 	return cfg
 }

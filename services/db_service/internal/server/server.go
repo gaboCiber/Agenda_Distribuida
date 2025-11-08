@@ -37,6 +37,9 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 }
 
 func (s *Server) setupRoutes(r *mux.Router) {
+	// Use the logging middleware for all routes
+	r.Use(s.loggingMiddleware)
+
 	// Health check endpoint
 	r.HandleFunc("/health", s.healthCheck).Methods("GET")
 
@@ -88,6 +91,39 @@ func (s *Server) Start() error {
 func (s *Server) Stop(ctx context.Context) error {
 	s.log.Info().Msg("Shutting down server")
 	return s.Server.Shutdown(ctx)
+}
+
+// loggingMiddleware logs all incoming requests
+func (s *Server) loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+
+		// Create a response writer to capture the status code
+		rw := &responseWriter{w, http.StatusOK}
+
+		// Process the request
+		next.ServeHTTP(rw, r)
+
+		// Log the request
+		duration := time.Since(start)
+		s.log.Info().
+			Str("method", r.Method).
+			Str("path", r.URL.Path).
+			Int("status", rw.status).
+			Str("duration", duration.String()).
+			Msg("Request processed")
+	})
+}
+
+// responseWriter wraps http.ResponseWriter to capture the status code
+type responseWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.status = code
+	rw.ResponseWriter.WriteHeader(code)
 }
 
 // healthCheck handles the health check endpoint
