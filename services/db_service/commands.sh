@@ -26,3 +26,11 @@ curl -X PUT http://localhost:8000/api/v1/users/USER_ID \
 
 curl -X DELETE http://localhost:8000/api/v1/users/USER_ID \
   -H "Content-Type: application/json"
+
+# 5. Login
+curl -X POST http://localhost:8000/api/v1/users/login \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "test@example.com",
+    "password": "securepassword123"
+  }'

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/agenda-distribuida/db-service/internal/models"
 	"github.com/agenda-distribuida/db-service/internal/repository"
 	"github.com/google/uuid"
@@ -42,12 +44,20 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Create hashed password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		h.log.Error().Err(err).Msg("Failed to hash password")
+		http.Error(w, `{"status":"error","message":"Failed to process password"}`, http.StatusInternalServerError)
+		return
+	}
+
 	// Create user
 	user := &models.User{
 		ID:             uuid.New(),
 		Username:       req.Username,
 		Email:          req.Email,
-		HashedPassword: req.Password, // Note: In a real app, hash the password before storing
+		HashedPassword: string(hashedPassword), // Guardamos el hash, no la contraseña en texto plano
 		IsActive:       true,
 	}
 
@@ -162,4 +172,43 @@ func (h *UserHandler) DeleteUser(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// Login handles user authentication
+func (h *UserHandler) Login(w http.ResponseWriter, r *http.Request) {
+	var req models.LoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.log.Error().Err(err).Msg("Failed to decode login request")
+		http.Error(w, `{"status":"error","message":"Invalid request"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validar la solicitud
+	if err := validate.Struct(req); err != nil {
+		h.log.Error().Err(err).Msg("Login validation failed")
+		http.Error(w, `{"status":"error","message":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Obtener el usuario por email
+	user, err := h.repo.GetByEmail(r.Context(), req.Email)
+	if err != nil {
+		h.log.Error().Err(err).Str("email", req.Email).Msg("User not found")
+		http.Error(w, `{"status":"error","message":"Invalid credentials"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Verificar la contraseña
+	if err := bcrypt.CompareHashAndPassword([]byte(user.HashedPassword), []byte(req.Password)); err != nil {
+		h.log.Error().Err(err).Str("email", req.Email).Msg("Invalid password")
+		http.Error(w, `{"status":"error","message":"Invalid credentials"}`, http.StatusUnauthorized)
+		return
+	}
+
+	// Si todo está bien, devolver el ID del usuario
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models.LoginResponse{
+		Status: "success",
+		UserID: user.ID,
+	})
 }
