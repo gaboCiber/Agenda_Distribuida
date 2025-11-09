@@ -6,17 +6,26 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/agenda-distribuida/db-service/internal/repository"
+	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
 )
 
+var validate = validator.New()
+
 type Server struct {
-	Server *http.Server
-	log    *zerolog.Logger
-	db     *sql.DB
+	Server  *http.Server
+	log     *zerolog.Logger
+	db      *sql.DB
+	userAPI *UserHandler
 }
 
 func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
+	// Initialize repository and handlers
+	userRepo := repository.NewUserRepository(db, *log)
+	userAPI := NewUserHandler(userRepo, log)
+
 	s := &Server{
 		Server: &http.Server{
 			Addr:         addr,
@@ -24,8 +33,9 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  60 * time.Second,
 		},
-		db:  db,
-		log: log,
+		db:      db,
+		log:     log,
+		userAPI: userAPI,
 	}
 
 	// Setup routes
@@ -48,10 +58,10 @@ func (s *Server) setupRoutes(r *mux.Router) {
 
 	// Users routes
 	users := api.PathPrefix("/users").Subrouter()
-	users.HandleFunc("", s.createUser).Methods("POST")
-	users.HandleFunc("/{id}", s.getUser).Methods("GET")
-	users.HandleFunc("/{id}", s.updateUser).Methods("PUT")
-	users.HandleFunc("/{id}", s.deleteUser).Methods("DELETE")
+	users.HandleFunc("", s.userAPI.CreateUser).Methods("POST")
+	users.HandleFunc("/{id}", s.userAPI.GetUser).Methods("GET")
+	users.HandleFunc("/{id}", s.userAPI.UpdateUser).Methods("PUT")
+	users.HandleFunc("/{id}", s.userAPI.DeleteUser).Methods("DELETE")
 
 	// Groups routes
 	groups := api.PathPrefix("/groups").Subrouter()
@@ -153,12 +163,13 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(`{"status":"ok"}`))
 }
 
-// The following are placeholder handlers to be implemented
+// notImplemented is a helper function to return 501 Not Implemented
+func (s *Server) notImplemented(w http.ResponseWriter) {
+	w.WriteHeader(http.StatusNotImplemented)
+	w.Write([]byte(`{"status": "error", "message": "Not implemented"}`))
+}
 
-func (s *Server) createUser(w http.ResponseWriter, r *http.Request)        { s.notImplemented(w) }
-func (s *Server) getUser(w http.ResponseWriter, r *http.Request)           { s.notImplemented(w) }
-func (s *Server) updateUser(w http.ResponseWriter, r *http.Request)        { s.notImplemented(w) }
-func (s *Server) deleteUser(w http.ResponseWriter, r *http.Request)        { s.notImplemented(w) }
+// Group handlers
 func (s *Server) createGroup(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
 func (s *Server) getGroup(w http.ResponseWriter, r *http.Request)          { s.notImplemented(w) }
 func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
@@ -166,6 +177,8 @@ func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request)       { s.n
 func (s *Server) getGroupMembers(w http.ResponseWriter, r *http.Request)   { s.notImplemented(w) }
 func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request)    { s.notImplemented(w) }
 func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) { s.notImplemented(w) }
+
+// Event handlers
 func (s *Server) createEvent(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
 func (s *Server) getEvent(w http.ResponseWriter, r *http.Request)          { s.notImplemented(w) }
 func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
@@ -174,8 +187,3 @@ func (s *Server) getGroupEvents(w http.ResponseWriter, r *http.Request)    { s.n
 func (s *Server) addGroupEvent(w http.ResponseWriter, r *http.Request)     { s.notImplemented(w) }
 func (s *Server) removeGroupEvent(w http.ResponseWriter, r *http.Request)  { s.notImplemented(w) }
 func (s *Server) updateEventStatus(w http.ResponseWriter, r *http.Request) { s.notImplemented(w) }
-
-func (s *Server) notImplemented(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte(`{"status": "error", "message": "Not implemented"}`))
-}
