@@ -15,16 +15,19 @@ import (
 var validate = validator.New()
 
 type Server struct {
-	Server  *http.Server
-	log     *zerolog.Logger
-	db      *sql.DB
-	userAPI *UserHandler
+	Server   *http.Server
+	log      *zerolog.Logger
+	db       *sql.DB
+	userAPI  *UserHandler
+	eventAPI *EventHandler
 }
 
 func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
-	// Initialize repository and handlers
 	userRepo := repository.NewUserRepository(db, *log)
 	userAPI := NewUserHandler(userRepo, log)
+
+	eventRepo := repository.NewEventRepository(db, *log)
+	eventAPI := NewEventHandler(eventRepo, log)
 
 	s := &Server{
 		Server: &http.Server{
@@ -33,12 +36,12 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  60 * time.Second,
 		},
-		db:      db,
-		log:     log,
-		userAPI: userAPI,
+		db:       db,
+		log:      log,
+		userAPI:  userAPI,
+		eventAPI: eventAPI,
 	}
 
-	// Setup routes
 	r := mux.NewRouter()
 	s.setupRoutes(r)
 	s.Server.Handler = r
@@ -64,6 +67,13 @@ func (s *Server) setupRoutes(r *mux.Router) {
 	users.HandleFunc("/{id}", s.userAPI.DeleteUser).Methods("DELETE")
 	users.HandleFunc("/login", s.userAPI.Login).Methods("POST")
 
+	// Events routes
+	events := api.PathPrefix("/events").Subrouter()
+	events.HandleFunc("", s.eventAPI.CreateEvent).Methods("POST")
+	events.HandleFunc("/{id}", s.eventAPI.GetEvent).Methods("GET")
+	events.HandleFunc("/{id}", s.eventAPI.UpdateEvent).Methods("PUT")
+	events.HandleFunc("/{id}", s.eventAPI.DeleteEvent).Methods("DELETE")
+
 	// Groups routes
 	groups := api.PathPrefix("/groups").Subrouter()
 	groups.HandleFunc("", s.createGroup).Methods("POST")
@@ -75,13 +85,6 @@ func (s *Server) setupRoutes(r *mux.Router) {
 	groups.HandleFunc("/{id}/members", s.getGroupMembers).Methods("GET")
 	groups.HandleFunc("/{id}/members", s.addGroupMember).Methods("POST")
 	groups.HandleFunc("/{id}/members/{user_id}", s.removeGroupMember).Methods("DELETE")
-
-	// Events routes
-	events := api.PathPrefix("/events").Subrouter()
-	events.HandleFunc("", s.createEvent).Methods("POST")
-	events.HandleFunc("/{id}", s.getEvent).Methods("GET")
-	events.HandleFunc("/{id}", s.updateEvent).Methods("PUT")
-	events.HandleFunc("/{id}", s.deleteEvent).Methods("DELETE")
 
 	// Group events routes
 	groups.HandleFunc("/{id}/events", s.getGroupEvents).Methods("GET")
@@ -180,10 +183,6 @@ func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request)    { s.n
 func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) { s.notImplemented(w) }
 
 // Event handlers
-func (s *Server) createEvent(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
-func (s *Server) getEvent(w http.ResponseWriter, r *http.Request)          { s.notImplemented(w) }
-func (s *Server) updateEvent(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
-func (s *Server) deleteEvent(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
 func (s *Server) getGroupEvents(w http.ResponseWriter, r *http.Request)    { s.notImplemented(w) }
 func (s *Server) addGroupEvent(w http.ResponseWriter, r *http.Request)     { s.notImplemented(w) }
 func (s *Server) removeGroupEvent(w http.ResponseWriter, r *http.Request)  { s.notImplemented(w) }
