@@ -20,14 +20,19 @@ type Server struct {
 	db       *sql.DB
 	userAPI  *UserHandler
 	eventAPI *EventHandler
+	groupAPI *GroupHandler
 }
 
 func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
+	// Initialize repositories
 	userRepo := repository.NewUserRepository(db, *log)
-	userAPI := NewUserHandler(userRepo, log)
-
 	eventRepo := repository.NewEventRepository(db, *log)
+	groupRepo := repository.NewGroupRepository(db, *log)
+
+	// Initialize handlers
+	userAPI := NewUserHandler(userRepo, log)
 	eventAPI := NewEventHandler(eventRepo, log)
+	groupAPI := NewGroupHandler(groupRepo, log)
 
 	s := &Server{
 		Server: &http.Server{
@@ -40,6 +45,7 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 		log:      log,
 		userAPI:  userAPI,
 		eventAPI: eventAPI,
+		groupAPI: groupAPI,
 	}
 
 	r := mux.NewRouter()
@@ -76,23 +82,9 @@ func (s *Server) setupRoutes(r *mux.Router) {
 
 	// Groups routes
 	groups := api.PathPrefix("/groups").Subrouter()
-	groups.HandleFunc("", s.createGroup).Methods("POST")
-	groups.HandleFunc("/{id}", s.getGroup).Methods("GET")
-	groups.HandleFunc("/{id}", s.updateGroup).Methods("PUT")
-	groups.HandleFunc("/{id}", s.deleteGroup).Methods("DELETE")
-
-	// Group members routes
-	groups.HandleFunc("/{id}/members", s.getGroupMembers).Methods("GET")
-	groups.HandleFunc("/{id}/members", s.addGroupMember).Methods("POST")
-	groups.HandleFunc("/{id}/members/{user_id}", s.removeGroupMember).Methods("DELETE")
-
-	// Group events routes
-	groups.HandleFunc("/{id}/events", s.getGroupEvents).Methods("GET")
-	groups.HandleFunc("/{id}/events", s.addGroupEvent).Methods("POST")
-	groups.HandleFunc("/{id}/events/{event_id}", s.removeGroupEvent).Methods("DELETE")
+	s.groupAPI.RegisterRoutes(groups)
 
 	// Event status routes
-	events.HandleFunc("/{id}/status", s.updateEventStatus).Methods("POST")
 }
 
 // Start starts the HTTP server
@@ -166,24 +158,3 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
 }
-
-// notImplemented is a helper function to return 501 Not Implemented
-func (s *Server) notImplemented(w http.ResponseWriter) {
-	w.WriteHeader(http.StatusNotImplemented)
-	w.Write([]byte(`{"status": "error", "message": "Not implemented"}`))
-}
-
-// Group handlers
-func (s *Server) createGroup(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
-func (s *Server) getGroup(w http.ResponseWriter, r *http.Request)          { s.notImplemented(w) }
-func (s *Server) updateGroup(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
-func (s *Server) deleteGroup(w http.ResponseWriter, r *http.Request)       { s.notImplemented(w) }
-func (s *Server) getGroupMembers(w http.ResponseWriter, r *http.Request)   { s.notImplemented(w) }
-func (s *Server) addGroupMember(w http.ResponseWriter, r *http.Request)    { s.notImplemented(w) }
-func (s *Server) removeGroupMember(w http.ResponseWriter, r *http.Request) { s.notImplemented(w) }
-
-// Event handlers
-func (s *Server) getGroupEvents(w http.ResponseWriter, r *http.Request)    { s.notImplemented(w) }
-func (s *Server) addGroupEvent(w http.ResponseWriter, r *http.Request)     { s.notImplemented(w) }
-func (s *Server) removeGroupEvent(w http.ResponseWriter, r *http.Request)  { s.notImplemented(w) }
-func (s *Server) updateEventStatus(w http.ResponseWriter, r *http.Request) { s.notImplemented(w) }
