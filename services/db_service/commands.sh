@@ -112,8 +112,8 @@ curl -X POST http://localhost:8000/api/v1/events \
 
 curl -X POST http://localhost:8000/api/v1/groups \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer 8318f0ff-02c3-4461-af07-c19e3d144068" \
   -d '{
+    "creator_id": "",
     "name": "Test Group",
     "description": "A test group",
     "is_hierarchical": true
@@ -165,3 +165,94 @@ curl -X DELETE http://localhost:8000/api/v1/groups/{groupId}/members/{userId}
 # List all groups a user is member of
 # Replace {userId} with the user ID
 curl http://localhost:8000/api/v1/groups/users/{userId}
+
+#####################################################################
+#                        Group Event                                #
+#####################################################################
+
+# 1. Group Event Management
+
+# Add an event to a group
+curl -X POST http://localhost:8000/api/v1/groups/<groupId>/events \
+  -H "Content-Type: application/json" \
+  -d '{
+    "event_id": "<eventId>",
+    "added_by": "<userId>",
+    "is_hierarchical": false
+  }'
+
+# Get all events for a group
+curl -X GET "http://localhost:8000/api/v1/groups/<groupId>/events"
+
+# Remove an event from a group
+curl -X DELETE "http://localhost:8000/api/v1/groups/<groupId>/events/<eventId>"
+
+### 2. Event Status Management
+
+# Add a new status for an event
+curl -X POST http://localhost:8000/api/v1/events/<eventId>/status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_id": "<groupId>",
+    "user_id": "<userId>",
+    "status": "accepted"  # or "declined", "pending", etc.
+  }'
+
+# Update an existing event status
+curl -X PUT http://localhost:8000/api/v1/events/<eventId>/status \
+  -H "Content-Type: application/json" \
+  -d '{
+    "user_id": "<userId>",
+    "status": "declined"
+  }'
+
+# Get status for a specific user and event
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/status/<userId>"
+
+# Get all statuses for an event
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/statuses"
+
+# Get counts of each status type for an event
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/statuses/count"
+
+# Get all statuses for an event within a specific group
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/statuses/group/<groupId>"
+
+# Check if a user has responded to an event
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/responded/<userId>"
+
+# Check if all members of a group have accepted an event
+curl -X GET "http://localhost:8000/api/v1/events/<eventId>/all-accepted/<groupId>"
+
+# Delete a specific user's status for an event
+curl -X DELETE "http://localhost:8000/api/v1/events/<eventId>/status/<userId>"
+
+# Delete all statuses for an event
+curl -X DELETE "http://localhost:8000/api/v1/events/<eventId>/statuses"
+
+# Delete all statuses for an event within a specific group
+curl -X DELETE "http://localhost:8000/api/v1/events/<eventId>/statuses/group/<groupId>"
+
+# 3. Invitation Management
+
+# Create a new invitation
+curl -X POST http://localhost:8000/api/v1/invitations \
+  -H "Content-Type: application/json" \
+  -d '{
+    "group_id": "<groupId>",
+    "user_id": "<userId>",
+    "invited_by": "<inviterId>"
+  }'
+
+# Get a specific invitation
+curl -X GET "http://localhost:8000/api/v1/invitations/<invitationId>"
+
+# Respond to an invitation
+curl -X PUT http://localhost:8000/api/v1/invitations/<invitationId> \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "accepted"  # or "declined"
+  }'
+
+# Get all invitations for a user
+curl -X GET "http://localhost:8000/api/v1/users/<userId>/invitations"

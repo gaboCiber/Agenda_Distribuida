@@ -256,6 +256,7 @@ func getMigrations() []migration {
 					status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'cancelled')),
 					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 					updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+					responded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 					FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,
 					FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
 					FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,

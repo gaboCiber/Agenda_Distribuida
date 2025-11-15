@@ -15,12 +15,13 @@ import (
 var validate = validator.New()
 
 type Server struct {
-	Server   *http.Server
-	log      *zerolog.Logger
-	db       *sql.DB
-	userAPI  *UserHandler
-	eventAPI *EventHandler
-	groupAPI *GroupHandler
+	Server        *http.Server
+	log           *zerolog.Logger
+	db            *sql.DB
+	userAPI       *UserHandler
+	eventAPI      *EventHandler
+	groupAPI      *GroupHandler
+	groupEventAPI *GroupEventHandler
 }
 
 func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
@@ -28,11 +29,13 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 	userRepo := repository.NewUserRepository(db, *log)
 	eventRepo := repository.NewEventRepository(db, *log)
 	groupRepo := repository.NewGroupRepository(db, *log)
+	groupEventRepo := repository.NewGroupEventRepository(db, *log)
 
 	// Initialize handlers
 	userAPI := NewUserHandler(userRepo, log)
 	eventAPI := NewEventHandler(eventRepo, log)
 	groupAPI := NewGroupHandler(groupRepo, log)
+	groupEventAPI := NewGroupEventHandler(groupEventRepo, log)
 
 	s := &Server{
 		Server: &http.Server{
@@ -41,11 +44,12 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  60 * time.Second,
 		},
-		db:       db,
-		log:      log,
-		userAPI:  userAPI,
-		eventAPI: eventAPI,
-		groupAPI: groupAPI,
+		db:            db,
+		log:           log,
+		userAPI:       userAPI,
+		eventAPI:      eventAPI,
+		groupAPI:      groupAPI,
+		groupEventAPI: groupEventAPI,
 	}
 
 	r := mux.NewRouter()
@@ -84,7 +88,9 @@ func (s *Server) setupRoutes(r *mux.Router) {
 	groups := api.PathPrefix("/groups").Subrouter()
 	s.groupAPI.RegisterRoutes(groups)
 
-	// Event status routes
+	// Group Event routes
+	groupEvents := api.PathPrefix("").Subrouter() // Base path is already /api/v1
+	s.groupEventAPI.RegisterRoutes(groupEvents)
 }
 
 // Start starts the HTTP server
