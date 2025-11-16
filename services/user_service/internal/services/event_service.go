@@ -119,10 +119,10 @@ func (s *EventService) HandleGetUser(ctx context.Context, event models.Event) (m
 		event.ID,
 		event.Type,
 		map[string]interface{}{
-			"id":        user.ID,
-			"email":     user.Email,
-			"username":  user.Username,
-			"is_active": user.IsActive,
+			"id":         user.ID,
+			"email":      user.Email,
+			"username":   user.Username,
+			"is_active":  user.IsActive,
 			"created_at": user.CreatedAt,
 			"updated_at": user.UpdatedAt,
 		},
@@ -156,15 +156,16 @@ func (s *EventService) HandleLogin(ctx context.Context, event models.Event) (mod
 
 	// Autenticar al usuario a través del db_service
 	user, err := s.dbClient.Login(ctx, email, password)
-	if err != nil {
+	if err != nil || user == nil {
 		s.logger.Error("Error en el inicio de sesión",
 			zap.String("email", email),
-			zap.Error(err))
+			zap.Error(err),
+			zap.Bool("user_not_found", user == nil))
 
 		return models.NewErrorResponse(
 			event.ID,
 			event.Type,
-			fmt.Errorf("error en el inicio de sesión: %w", err),
+			fmt.Errorf("credenciales inválidas"),
 		), nil
 	}
 
@@ -186,24 +187,24 @@ func (s *EventService) HandleLogin(ctx context.Context, event models.Event) (mod
 
 func (s *EventService) HandleDeleteUser(ctx context.Context, event models.Event) (models.EventResponse, error) {
 	// Extraer el email del evento
-	email, ok := event.Data["email"].(string)
-	if !ok || email == "" {
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
 		return models.NewErrorResponse(
 			event.ID,
 			event.Type,
-			fmt.Errorf("email es requerido"),
+			fmt.Errorf("user_id es requerido"),
 		), nil
 	}
 
 	s.logger.Info("Procesando evento de eliminación de usuario",
 		zap.String("event_id", event.ID),
-		zap.String("email", email))
+		zap.String("user_id", userID))
 
 	// Eliminar el usuario a través del db_service
-	err := s.dbClient.DeleteUser(ctx, email)
+	err := s.dbClient.DeleteUser(ctx, userID)
 	if err != nil {
 		s.logger.Error("Error al eliminar usuario",
-			zap.String("email", email),
+			zap.String("user_id", userID),
 			zap.Error(err))
 
 		return models.NewErrorResponse(
@@ -214,14 +215,83 @@ func (s *EventService) HandleDeleteUser(ctx context.Context, event models.Event)
 	}
 
 	s.logger.Info("Usuario eliminado exitosamente",
-		zap.String("email", email))
+		zap.String("user_id", userID))
 
 	return models.NewSuccessResponse(
 		event.ID,
 		event.Type,
 		map[string]interface{}{
 			"message": "Usuario eliminado correctamente",
-			"email":   email,
+			"user_id": userID,
+		},
+	), nil
+}
+
+// HandleUpdateUser maneja la actualización de un usuario existente
+func (s *EventService) HandleUpdateUser(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	// Extraer el ID del usuario y los datos a actualizar
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("user_id es requerido"),
+		), nil
+	}
+
+	// Crear un mapa con solo los campos actualizables
+	updates := make(map[string]interface{})
+	if email, ok := event.Data["email"].(string); ok && email != "" {
+		updates["email"] = email
+	}
+	if username, ok := event.Data["username"].(string); ok && username != "" {
+		updates["username"] = username
+	}
+	if password, ok := event.Data["password"].(string); ok && password != "" {
+		updates["password"] = password
+	}
+	if isActive, ok := event.Data["is_active"].(bool); ok {
+		updates["is_active"] = isActive
+	}
+
+	if len(updates) == 0 {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("no se proporcionaron campos para actualizar"),
+		), nil
+	}
+
+	s.logger.Info("Procesando actualización de usuario",
+		zap.String("event_id", event.ID),
+		zap.String("user_id", userID),
+		zap.Any("updates", updates))
+
+	// Actualizar el usuario a través del db_service
+	user, err := s.dbClient.UpdateUser(ctx, userID, updates)
+	if err != nil {
+		s.logger.Error("Error al actualizar usuario",
+			zap.String("user_id", userID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al actualizar el usuario: %w", err),
+		), nil
+	}
+
+	s.logger.Info("Usuario actualizado exitosamente",
+		zap.String("user_id", userID))
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"id":        user.ID,
+			"email":     user.Email,
+			"username":  user.Username,
+			"is_active": user.IsActive,
 		},
 	), nil
 }

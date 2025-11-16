@@ -134,9 +134,14 @@ func (c *DBServiceClient) Login(ctx context.Context, email, password string) (*U
 		return nil, err
 	}
 
-	var response LoginResponse
+	// Primero intentamos parsear la respuesta con el formato esperado
+	var response struct {
+		Status string `json:"status"`
+		UserID string `json:"user_id"`
+	}
+
 	if err := json.Unmarshal(resp, &response); err != nil {
-		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err), zap.ByteString("response", resp))
 		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
 	}
 
@@ -144,7 +149,16 @@ func (c *DBServiceClient) Login(ctx context.Context, email, password string) (*U
 		return nil, fmt.Errorf("error en el inicio de sesión: %s", string(resp))
 	}
 
-	return response.User, nil
+	// Si llegamos aquí, el login fue exitoso, obtenemos los datos del usuario
+	user, err := c.GetUser(ctx, response.UserID)
+	if err != nil {
+		c.logger.Error("Error al obtener los datos del usuario después del login",
+			zap.String("user_id", response.UserID),
+			zap.Error(err))
+		return nil, fmt.Errorf("error al obtener los datos del usuario: %w", err)
+	}
+
+	return user, nil
 }
 
 // DeleteUser elimina un usuario por su ID
@@ -153,6 +167,38 @@ func (c *DBServiceClient) DeleteUser(ctx context.Context, userID string) error {
 
 	_, err := c.doRequest(ctx, http.MethodDelete, url, nil)
 	return err
+}
+
+// UpdateUser actualiza un usuario existente
+func (c *DBServiceClient) UpdateUser(ctx context.Context, userID string, updates map[string]interface{}) (*User, error) {
+	url := fmt.Sprintf("%s/api/v1/users/%s", c.baseURL, userID)
+
+	jsonBody, err := json.Marshal(updates)
+	if err != nil {
+		c.logger.Error("Error al serializar la solicitud", zap.Error(err))
+		return nil, fmt.Errorf("error al serializar la solicitud: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPut, url, jsonBody)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Status string `json:"status"`
+		User   *User  `json:"user"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("error al actualizar el usuario: %s", string(resp))
+	}
+
+	return response.User, nil
 }
 
 // doRequest es una función auxiliar para realizar peticiones HTTP

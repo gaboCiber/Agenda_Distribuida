@@ -81,6 +81,8 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 		response, err = h.eventService.HandleLogin(ctx, event)
 	case "user.delete":
 		response, err = h.eventService.HandleDeleteUser(ctx, event)
+	case "user.update":
+		response, err = h.eventService.HandleUpdateUser(ctx, event)
 	default:
 		h.logger.Warn("Tipo de evento no soportado",
 			zap.String("event_type", event.Type))

@@ -203,7 +203,7 @@ curl -X PUT http://localhost:8000/api/v1/events/<eventId>/status \
   -H "Content-Type: application/json" \
   -d '{
     "user_id": "<userId>",
-    "status": "declined"
+    "1oqontZOYrNrNczPkwwzQicR49CoiZ4hostatus": "declined"
   }'
 
 # Get status for a specific user and event
@@ -251,7 +251,7 @@ curl -X GET "http://localhost:8000/api/v1/invitations/<invitationId>"
 curl -X PUT http://localhost:8000/api/v1/invitations/<invitationId> \
   -H "Content-Type: application/json" \
   -d '{
-    "status": "accepted"  # or "declined"
+    "status": "accepted"
   }'
 
 # Get all invitations for a user
