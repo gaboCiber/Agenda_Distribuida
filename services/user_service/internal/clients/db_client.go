@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 )
@@ -16,6 +17,19 @@ type DBServiceClient struct {
 	baseURL string
 	client  *http.Client
 	logger  *zap.Logger
+}
+
+// AgendaEvent represents a calendar/agenda event
+type AgendaEvent struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	StartTime   time.Time `json:"start_time"`
+	EndTime     time.Time `json:"end_time"`
+	Location    string    `json:"location"`
+	UserID      string    `json:"user_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func NewDBServiceClient(baseURL string, logger *zap.Logger) *DBServiceClient {
@@ -159,6 +173,117 @@ func (c *DBServiceClient) Login(ctx context.Context, email, password string) (*U
 	}
 
 	return user, nil
+}
+
+// CreateAgendaEvent crea un nuevo evento en la agenda
+func (c *DBServiceClient) CreateAgendaEvent(ctx context.Context, event *AgendaEvent) (*AgendaEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/events", c.baseURL)
+
+	eventData := map[string]interface{}{
+		"title":       event.Title,
+		"description": event.Description,
+		"start_time":  event.StartTime.Format(time.RFC3339),
+		"end_time":    event.EndTime.Format(time.RFC3339),
+		"location":    event.Location,
+		"user_id":     event.UserID,
+	}
+
+	jsonBody, err := json.Marshal(eventData)
+	if err != nil {
+		c.logger.Error("Error al serializar el evento", zap.Error(err))
+		return nil, fmt.Errorf("error al serializar el evento: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPost, url, jsonBody)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Status string     `json:"status"`
+		Event  *AgendaEvent `json:"event"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("error al crear el evento: %s", string(resp))
+	}
+
+	return response.Event, nil
+}
+
+// GetAgendaEvent obtiene un evento por su ID
+func (c *DBServiceClient) GetAgendaEvent(ctx context.Context, eventID string) (*AgendaEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s", c.baseURL, eventID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Status string     `json:"status"`
+		Event  *AgendaEvent `json:"event"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("error al obtener el evento: %s", string(resp))
+	}
+
+	return response.Event, nil
+}
+
+// UpdateAgendaEvent actualiza un evento existente
+func (c *DBServiceClient) UpdateAgendaEvent(ctx context.Context, eventID string, updates map[string]interface{}) (*AgendaEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s", c.baseURL, eventID)
+
+	jsonBody, err := json.Marshal(updates)
+	if err != nil {
+		c.logger.Error("Error al serializar la solicitud", zap.Error(err))
+		return nil, fmt.Errorf("error al serializar la solicitud: %w", err)
+	}
+
+	resp, err := c.doRequest(ctx, http.MethodPut, url, jsonBody)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Status string     `json:"status"`
+		Event  *AgendaEvent `json:"event"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("error al actualizar el evento: %s", string(resp))
+	}
+
+	return response.Event, nil
+}
+
+// DeleteAgendaEvent elimina un evento por su ID
+func (c *DBServiceClient) DeleteAgendaEvent(ctx context.Context, eventID string) error {
+	url := fmt.Sprintf("%s/api/v1/events/%s", c.baseURL, eventID)
+
+	_, err := c.doRequest(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // DeleteUser elimina un usuario por su ID

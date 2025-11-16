@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/agenda-distribuida/user-service/internal/clients"
 	"github.com/agenda-distribuida/user-service/internal/models"
@@ -12,6 +13,19 @@ import (
 type EventService struct {
 	dbClient *clients.DBServiceClient
 	logger   *zap.Logger
+}
+
+// AgendaEvent representa un evento de agenda/calendario
+type AgendaEvent struct {
+	ID          string    `json:"id"`
+	Title       string    `json:"title"`
+	Description string    `json:"description"`
+	StartTime   time.Time `json:"start_time"`
+	EndTime     time.Time `json:"end_time"`
+	Location    string    `json:"location"`
+	UserID      string    `json:"user_id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *EventService {
@@ -181,6 +195,302 @@ func (s *EventService) HandleLogin(ctx context.Context, event models.Event) (mod
 			"email":     user.Email,
 			"username":  user.Username,
 			"is_active": user.IsActive,
+		},
+	), nil
+}
+
+// HandleCreateAgendaEvent maneja la creación de un nuevo evento de agenda
+func (s *EventService) HandleCreateAgendaEvent(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	// Extraer y validar los datos del evento
+	title, ok := event.Data["title"].(string)
+	if !ok || title == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("el título es requerido"),
+		), nil
+	}
+
+	description, _ := event.Data["description"].(string)
+	location, _ := event.Data["location"].(string)
+	userID, _ := event.Data["user_id"].(string)
+
+	// Parsear fechas
+	startTimeStr, ok := event.Data["start_time"].(string)
+	if !ok || startTimeStr == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("start_time es requerido"),
+		), nil
+	}
+
+	startTime, err := time.Parse(time.RFC3339, startTimeStr)
+	if err != nil {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("formato de start_time inválido, se esperaba formato RFC3339"),
+		), nil
+	}
+
+	endTimeStr, ok := event.Data["end_time"].(string)
+	if !ok || endTimeStr == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("end_time es requerido"),
+		), nil
+	}
+
+	endTime, err := time.Parse(time.RFC3339, endTimeStr)
+	if err != nil {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("formato de end_time inválido, se esperaba formato RFC3339"),
+		), nil
+	}
+
+	if endTime.Before(startTime) {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("end_time debe ser posterior a start_time"),
+		), nil
+	}
+
+	// Crear el evento en la base de datos
+	newEvent := &clients.AgendaEvent{
+		Title:       title,
+		Description: description,
+		StartTime:   startTime,
+		EndTime:     endTime,
+		Location:    location,
+		UserID:      userID,
+	}
+
+	createdEvent, err := s.dbClient.CreateAgendaEvent(ctx, newEvent)
+	if err != nil {
+		s.logger.Error("Error al crear el evento de agenda",
+			zap.String("event_id", event.ID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al crear el evento: %w", err),
+		), nil
+	}
+
+	s.logger.Info("Evento de agenda creado exitosamente",
+		zap.String("event_id", createdEvent.ID),
+		zap.String("title", createdEvent.Title))
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"id":          createdEvent.ID,
+			"title":       createdEvent.Title,
+			"description": createdEvent.Description,
+			"start_time":  createdEvent.StartTime.Format(time.RFC3339),
+			"end_time":    createdEvent.EndTime.Format(time.RFC3339),
+			"location":    createdEvent.Location,
+			"user_id":     createdEvent.UserID,
+			"created_at":  createdEvent.CreatedAt.Format(time.RFC3339),
+		},
+	), nil
+}
+
+// HandleGetAgendaEvent maneja la obtención de un evento de agenda por su ID
+func (s *EventService) HandleGetAgendaEvent(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("event_id es requerido"),
+		), nil
+	}
+
+	s.logger.Info("Obteniendo evento de agenda",
+		zap.String("event_id", eventID))
+
+	// Obtener el evento de la base de datos
+	agendaEvent, err := s.dbClient.GetAgendaEvent(ctx, eventID)
+	if err != nil {
+		s.logger.Error("Error al obtener el evento de agenda",
+			zap.String("event_id", eventID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al obtener el evento: %w", err),
+		), nil
+	}
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"id":          agendaEvent.ID,
+			"title":       agendaEvent.Title,
+			"description": agendaEvent.Description,
+			"start_time":  agendaEvent.StartTime.Format(time.RFC3339),
+			"end_time":    agendaEvent.EndTime.Format(time.RFC3339),
+			"location":    agendaEvent.Location,
+			"user_id":     agendaEvent.UserID,
+			"created_at":  agendaEvent.CreatedAt.Format(time.RFC3339),
+			"updated_at":  agendaEvent.UpdatedAt.Format(time.RFC3339),
+		},
+	), nil
+}
+
+// HandleUpdateAgendaEvent maneja la actualización de un evento de agenda existente
+func (s *EventService) HandleUpdateAgendaEvent(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("event_id es requerido"),
+		), nil
+	}
+
+	// Obtener el evento actual para tener todos los campos
+	currentEvent, err := s.dbClient.GetAgendaEvent(ctx, eventID)
+	if err != nil {
+		s.logger.Error("Error al obtener el evento actual",
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al obtener el evento: %w", err),
+		), nil
+	}
+
+	// Crear un mapa con los campos actualizables
+	updates := make(map[string]interface{})
+
+	// Actualizar solo los campos que se proporcionaron en la solicitud
+	if title, ok := event.Data["title"].(string); ok && title != "" {
+		currentEvent.Title = title
+	}
+	updates["title"] = currentEvent.Title
+
+	if description, ok := event.Data["description"].(string); ok {
+		currentEvent.Description = description
+	}
+	updates["description"] = currentEvent.Description
+
+	if location, ok := event.Data["location"].(string); ok {
+		currentEvent.Location = location
+	}
+	updates["location"] = currentEvent.Location
+
+	if startTimeStr, ok := event.Data["start_time"].(string); ok && startTimeStr != "" {
+		startTime, err := time.Parse(time.RFC3339, startTimeStr)
+		if err != nil {
+			return models.NewErrorResponse(
+				event.ID,
+				event.Type,
+				fmt.Errorf("formato de start_time inválido, se esperaba formato RFC3339"),
+			), nil
+		}
+		currentEvent.StartTime = startTime
+	}
+	updates["start_time"] = currentEvent.StartTime
+
+	if endTimeStr, ok := event.Data["end_time"].(string); ok && endTimeStr != "" {
+		endTime, err := time.Parse(time.RFC3339, endTimeStr)
+		if err != nil {
+			return models.NewErrorResponse(
+				event.ID,
+				event.Type,
+				fmt.Errorf("formato de end_time inválido, se esperaba formato RFC3339"),
+			), nil
+		}
+		currentEvent.EndTime = endTime
+	}
+	updates["end_time"] = currentEvent.EndTime
+
+	// Asegurarse de que el user_id siempre esté presente
+	if userID, ok := event.Data["user_id"].(string); ok && userID != "" {
+		currentEvent.UserID = userID
+	}
+	updates["user_id"] = currentEvent.UserID
+
+	s.logger.Info("Actualizando evento de agenda",
+		zap.String("event_id", eventID),
+		zap.Any("updates", updates))
+
+	// Actualizar el evento en la base de datos
+	updatedEvent, err := s.dbClient.UpdateAgendaEvent(ctx, eventID, updates)
+	if err != nil {
+		s.logger.Error("Error al actualizar el evento de agenda",
+			zap.String("event_id", eventID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al actualizar el evento: %w", err),
+		), nil
+	}
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"id":          updatedEvent.ID,
+			"title":       updatedEvent.Title,
+			"description": updatedEvent.Description,
+			"start_time":  updatedEvent.StartTime.Format(time.RFC3339),
+			"end_time":    updatedEvent.EndTime.Format(time.RFC3339),
+			"location":    updatedEvent.Location,
+			"user_id":     updatedEvent.UserID,
+			"updated_at":  updatedEvent.UpdatedAt.Format(time.RFC3339),
+		},
+	), nil
+}
+
+// HandleDeleteAgendaEvent maneja la eliminación de un evento de agenda
+func (s *EventService) HandleDeleteAgendaEvent(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("event_id es requerido"),
+		), nil
+	}
+
+	s.logger.Info("Eliminando evento de agenda",
+		zap.String("event_id", eventID))
+
+	// Eliminar el evento de la base de datos
+	err := s.dbClient.DeleteAgendaEvent(ctx, eventID)
+	if err != nil {
+		s.logger.Error("Error al eliminar el evento de agenda",
+			zap.String("event_id", eventID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al eliminar el evento: %w", err),
+		), nil
+	}
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"message":  "Evento eliminado correctamente",
+			"event_id": eventID,
 		},
 	), nil
 }

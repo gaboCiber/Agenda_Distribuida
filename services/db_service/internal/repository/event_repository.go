@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/models"
@@ -23,7 +24,7 @@ type EventRepository interface {
 	Update(ctx context.Context, id uuid.UUID, updateReq *models.EventRequest) (*models.Event, error)
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID, offset, limit int) ([]*models.Event, error)
-	CheckTimeConflict(ctx context.Context, userID uuid.UUID, startTime, endTime time.Time) (bool, error)
+	CheckTimeConflict(ctx context.Context, userID uuid.UUID, startTime, endTime time.Time, excludeEventID *uuid.UUID) (bool, error)
 }
 
 type eventRepository struct {
@@ -102,6 +103,21 @@ func (r *eventRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Ev
 
 // Update modifies an existing event
 func (r *eventRepository) Update(ctx context.Context, id uuid.UUID, updateReq *models.EventRequest) (*models.Event, error) {
+	// Check for time conflicts, excluding the current event
+	hasConflict, err := r.CheckTimeConflict(ctx, updateReq.UserID, updateReq.StartTime, updateReq.EndTime, &id)
+	if err != nil {
+		r.log.Error().
+			Err(err).
+			Str("event_id", id.String()).
+			Str("user_id", updateReq.UserID.String()).
+			Msg("Failed to check time conflict during update")
+		return nil, fmt.Errorf("failed to check time conflict: %w", err)
+	}
+
+	if hasConflict {
+		return nil, fmt.Errorf("time conflict detected for the specified time range")
+	}
+
 	query := `
 		UPDATE events
 		SET title = $1, description = $2, start_time = $3, end_time = $4, user_id = $5, updated_at = $6
@@ -111,7 +127,7 @@ func (r *eventRepository) Update(ctx context.Context, id uuid.UUID, updateReq *m
 
 	var event models.Event
 	now := time.Now()
-	err := r.db.QueryRowContext(ctx, query,
+	err = r.db.QueryRowContext(ctx, query,
 		updateReq.Title,
 		updateReq.Description,
 		updateReq.StartTime,
@@ -132,7 +148,7 @@ func (r *eventRepository) Update(ctx context.Context, id uuid.UUID, updateReq *m
 
 	if err != nil {
 		r.log.Error().Err(err).Str("event_id", id.String()).Msg("Failed to update event")
-		return nil, err
+		return nil, fmt.Errorf("failed to update event: %w", err)
 	}
 
 	return &event, nil
@@ -201,7 +217,8 @@ func (r *eventRepository) ListByUser(ctx context.Context, userID uuid.UUID, offs
 }
 
 // CheckTimeConflict checks if there is a time conflict for a user's events
-func (r *eventRepository) CheckTimeConflict(ctx context.Context, userID uuid.UUID, startTime, endTime time.Time) (bool, error) {
+// excluding the event with the specified ID (if provided)
+func (r *eventRepository) CheckTimeConflict(ctx context.Context, userID uuid.UUID, startTime, endTime time.Time, excludeEventID *uuid.UUID) (bool, error) {
 	// Check for any of these overlap conditions:
 	// 1. New event starts during an existing event
 	// 2. New event ends during an existing event
@@ -211,24 +228,60 @@ func (r *eventRepository) CheckTimeConflict(ctx context.Context, userID uuid.UUI
 		SELECT EXISTS(
 			SELECT 1 FROM events
 			WHERE user_id = $1
+			AND (id != $2)
 			AND (
 				-- New event starts during an existing event
-				(start_time <= $2 AND end_time > $2) OR
+				(start_time <= $3 AND end_time > $3) OR
 				-- New event ends during an existing event
-				(start_time < $3 AND end_time >= $3) OR
+				(start_time < $4 AND end_time >= $4) OR
 				-- New event completely contains an existing event
-				(start_time >= $2 AND end_time <= $3) OR
+				(start_time >= $3 AND end_time <= $4) OR
 				-- New event is completely within an existing event
-				(start_time <= $2 AND end_time >= $3)
+				(start_time <= $3 AND end_time >= $4)
 			)
 		)
 	`
 
 	var exists bool
-	err := r.db.QueryRowContext(ctx, query, userID, startTime, endTime).Scan(&exists)
+	var err error
+
+	// If excludeEventID is nil, we don't need to exclude any event
+	if excludeEventID == nil {
+		// Use a different query that doesn't check for excludeEventID
+		query = `
+			SELECT EXISTS(
+				SELECT 1 FROM events
+				WHERE user_id = $1
+				AND (
+					-- New event starts during an existing event
+					(start_time <= $2 AND end_time > $2) OR
+					-- New event ends during an existing event
+					(start_time < $3 AND end_time >= $3) OR
+					-- New event completely contains an existing event
+					(start_time >= $2 AND end_time <= $3) OR
+					-- New event is completely within an existing event
+					(start_time <= $2 AND end_time >= $3)
+				)
+			)
+		`
+		err = r.db.QueryRowContext(ctx, query, userID, startTime, endTime).Scan(&exists)
+	} else {
+		err = r.db.QueryRowContext(ctx, query, userID, excludeEventID, startTime, endTime).Scan(&exists)
+	}
+
 	if err != nil {
-		r.log.Error().Err(err).Str("user_id", userID.String()).Msg("Failed to check time conflict")
-		return false, err
+		r.log.Error().
+			Err(err).
+			Str("user_id", userID.String()).
+			Str("exclude_event_id", func() string { 
+				if excludeEventID != nil { 
+					return excludeEventID.String() 
+				} 
+				return "none" 
+			}()).
+			Str("query", query).
+			Msg("Failed to check time conflict")
+		return false, fmt.Errorf("failed to check time conflict: %w", err)
 	}
 
 	return exists, nil

@@ -19,8 +19,7 @@ RUN go mod download && go mod verify
 COPY . .
 
 # Sincronizar dependencias y construir la aplicación
-RUN go mod tidy && \
-    CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /user-service ./cmd/user-service
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /user-service ./cmd/user-service
 
 # Etapa de ejecución
 FROM debian:bullseye-slim

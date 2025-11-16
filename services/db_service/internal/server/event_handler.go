@@ -53,7 +53,8 @@ func (h *EventHandler) CreateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check for time conflicts
-	hasConflict, err := h.repo.CheckTimeConflict(r.Context(), req.UserID, req.StartTime, req.EndTime)
+	// Check for time conflicts, excludeEventID is nil for new events
+	hasConflict, err := h.repo.CheckTimeConflict(r.Context(), req.UserID, req.StartTime, req.EndTime, nil)
 	if err != nil {
 		h.log.Error().Err(err).Msg("Failed to check time conflict")
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
@@ -130,7 +131,7 @@ func (h *EventHandler) UpdateEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check for time conflicts
-	hasConflict, err := h.repo.CheckTimeConflict(r.Context(), req.UserID, req.StartTime, req.EndTime)
+	hasConflict, err := h.repo.CheckTimeConflict(r.Context(), req.UserID, req.StartTime, req.EndTime, &id)
 	if err != nil {
 		h.log.Error().Err(err).Msg("Failed to check time conflict")
 		http.Error(w, `{"status":"error","message":"Internal server error"}`, http.StatusInternalServerError)
