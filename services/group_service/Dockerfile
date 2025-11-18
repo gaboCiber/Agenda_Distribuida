@@ -1,52 +1,45 @@
 # Build stage
-FROM golang:1.25.1-alpine AS builder
+FROM golang:1.24.0-bullseye AS builder
 
+# Install build dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /app
 
-# Install build dependencies including SQLite development files
-RUN apk add --no-cache git ca-certificates gcc musl-dev
-
-# Download dependencies first (better layer caching)
+# Copy module files first for better caching
 COPY go.mod go.sum ./
-RUN go mod download
 
-# Copy source code
+# Download dependencies
+RUN go mod download && go mod verify
+
+# Copy the rest of the source code
 COPY . .
 
-# Build the application with CGO enabled for SQLite
-RUN CGO_ENABLED=1 GOOS=linux go build -ldflags='-w -s' -o /app/group-service ./cmd/api
+# Build the application
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-w -s" -o /group-service ./cmd/group-service
 
-# Final stage
-FROM alpine:3.19
+# Runtime stage
+FROM debian:bullseye-slim
 
-WORKDIR /app
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    tzdata \
+    && rm -rf /var/lib/apt/lists/*
 
-# Install runtime dependencies including SQLite
-RUN apk add --no-cache ca-certificates tzdata sqlite
 
-# Create data directory and set permissions
-RUN mkdir -p /app/data && \
-    chmod -R 777 /app/data
-
-# Create the directory structure for the database
-RUN mkdir -p $(dirname /app/data/groups.db) && \
-    touch /app/data/groups.db && \
-    chmod 666 /app/data/groups.db
-
-# Copy the binary from builder
-COPY --from=builder /app/group-service /app/
-
-# Create a non-root user and switch to it
-RUN addgroup -S appgroup && \
-    adduser -S appuser -G appgroup && \
-    chown -R appuser:appgroup /app
-
-# Switch to non-root user
+# Create non-root user
+RUN groupadd -r appuser && useradd -r -g appuser appuser
 USER appuser
 
+# Copy the binary from the builder stage
+COPY --from=builder /group-service /app/group-service
+
 # Expose the port the app runs on
-EXPOSE 8003
+EXPOSE 8080
 
 # Command to run the application
-WORKDIR /app
-ENTRYPOINT ["/app/group-service"]
+CMD ["/app/group-service"]

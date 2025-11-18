@@ -1,78 +1,45 @@
 package models
 
 import (
-	"database/sql"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Group represents a user group in the system
 type Group struct {
-	ID             string    `json:"id"`
-	Name           string    `json:"name"`
-	Description    string    `json:"description,omitempty"`
-	CreatedBy      string    `json:"created_by"`
-	IsHierarchical bool      `json:"is_hierarchical"`
-	ParentGroupID  *string   `json:"parent_group_id,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	ID             uuid.UUID  `json:"id"`
+	Name           string     `json:"name"`
+	Description    *string    `json:"description,omitempty"`
+	CreatedBy      uuid.UUID  `json:"created_by"`
+	IsHierarchical bool       `json:"is_hierarchical"`
+	ParentGroupID  *uuid.UUID `json:"parent_group_id,omitempty"`
+	CreatedAt      time.Time  `json:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at"`
+}
+
+// GroupRequest represents the data needed to create or update a group
+type GroupRequest struct {
+	Name           string     `json:"name"`
+	Description    *string    `json:"description,omitempty"`
+	IsHierarchical bool       `json:"is_hierarchical"`
+	ParentGroupID  *uuid.UUID `json:"parent_group_id,omitempty"`
+	CreatorID      uuid.UUID  `json:"creator_id"`
 }
 
 // GroupMember represents a member of a group
 type GroupMember struct {
-	ID          string    `json:"id"`
-	GroupID     string    `json:"group_id"`
-	UserID      string    `json:"user_id"`
+	ID          uuid.UUID `json:"id"`
+	GroupID     uuid.UUID `json:"group_id"`
+	UserID      uuid.UUID `json:"user_id"`
 	Role        string    `json:"role"` // "admin" or "member"
 	IsInherited bool      `json:"is_inherited"`
 	JoinedAt    time.Time `json:"joined_at"`
 }
 
-// GroupEvent represents an event associated with a group
-type GroupEvent struct {
-	ID             string    `json:"id" db:"id"`
-	GroupID        string    `json:"group_id" db:"group_id"`
-	EventID        string    `json:"event_id" db:"event_id"`
-	AddedBy        string    `json:"added_by" db:"added_by"`
-	IsHierarchical bool      `json:"is_hierarchical" db:"is_hierarchical"`
-	Status         string    `json:"status" db:"status"`
-	AddedAt        time.Time `json:"added_at" db:"added_at"`
-}
-
-// GroupInvitation represents an invitation to join a group
-type GroupInvitation struct {
-	ID          string    `json:"id"`
-	GroupID     string    `json:"group_id"`
-	UserID      string    `json:"user_id"`
-	InvitedBy   string    `json:"invited_by"`
-	Status      string    `json:"status"` // "pending", "accepted", "rejected"
-	CreatedAt   time.Time `json:"created_at"`
-	RespondedAt time.Time `json:"responded_at,omitempty"`
-}
-
-// Database wraps the database connection and provides group-related operations
-type Database struct {
-	db *sql.DB
-}
-
-// Begin starts a new transaction
-func (d *Database) Begin() (*sql.Tx, error) {
-	return d.db.Begin()
-}
-
-// Commit commits a transaction
-func (d *Database) Commit(tx *sql.Tx) error {
-	return tx.Commit()
-}
-
-// Rollback rolls back a transaction
-func (d *Database) Rollback(tx *sql.Tx) error {
-	if tx != nil {
-		return tx.Rollback()
-	}
-	return nil
-}
-
-// NewDatabase creates a new Database instance
-func NewDatabase(db *sql.DB) *Database {
-	return &Database{db: db}
+// GroupMemberRequest represents the data needed to add a member to a group
+type GroupMemberRequest struct {
+	UserID      uuid.UUID `json:"user_id"`
+	Role        string    `json:"role"` // "admin" or "member"
+	IsInherited bool      `json:"is_inherited"`
 }
