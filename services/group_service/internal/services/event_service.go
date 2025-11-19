@@ -35,6 +35,12 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleUpdateGroup(ctx, event)
 	case "group.delete":
 		return s.handleDeleteGroup(ctx, event)
+	case "group.member.add":
+		return s.handleAddGroupMember(ctx, event)
+	case "group.member.list":
+		return s.handleListGroupMembers(ctx, event)
+	case "group.member.remove":
+		return s.handleRemoveGroupMember(ctx, event)
 	default:
 		return nil, fmt.Errorf("unsupported event type: %s", event.Type)
 	}
@@ -125,7 +131,7 @@ func (s *EventService) handleUpdateGroup(ctx context.Context, event models.Event
 	}
 
 	var data struct {
-		ID   string           `json:"id"`
+		ID   string              `json:"id"`
 		Data models.GroupRequest `json:"data"`
 	}
 	if err := json.Unmarshal(dataBytes, &data); err != nil {
@@ -185,4 +191,189 @@ func (s *EventService) handleDeleteGroup(ctx context.Context, event models.Event
 		Type:    "group.deleted",
 		Success: true,
 	}, nil
+}
+
+// handleAddGroupMember handles adding a member to a group
+func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse the request data
+	var req struct {
+		GroupID string    `json:"group_id"`
+		UserID  uuid.UUID `json:"user_id"`
+		Role    string    `json:"role,omitempty"`
+		AddedBy uuid.UUID `json:"added_by"`
+	}
+
+	if err := mapToStruct(event.Data, &req); err != nil {
+		errMsg := fmt.Errorf("invalid request data: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+		return &resp, nil
+	}
+
+	// Set default role if not provided
+	if req.Role == "" {
+		req.Role = "member"
+	}
+
+	// Convert string groupID to UUID
+	groupID, err := uuid.Parse(req.GroupID)
+	if err != nil {
+		errMsg := fmt.Errorf("invalid group ID format: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+		return &resp, nil
+	}
+
+	// Verify the user adding the member is an admin
+	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID, req.AddedBy)
+	if err != nil {
+		errMsg := fmt.Errorf("error checking admin status: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+		return &resp, nil
+	}
+
+	if !isAdmin {
+		resp := models.NewErrorResponse(event.ID, "group.member.add.unauthorized",
+			fmt.Errorf("only group admins can add members"))
+		return &resp, nil
+	}
+
+	// Check if the group is hierarchical and if we're adding an admin
+	if req.Role == "admin" {
+		group, err := s.dbClient.GetGroup(ctx, groupID)
+		if err != nil {
+			errMsg := fmt.Errorf("error getting group: %w", err)
+			resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+			return &resp, nil
+		}
+
+		if group.IsHierarchical && group.ParentGroupID != nil {
+			// Check if the user is an admin of the parent group
+			parentAdmin, err := s.dbClient.IsGroupAdmin(ctx, group.ParentGroupID.String(), req.AddedBy)
+			if err != nil {
+				errMsg := fmt.Errorf("error checking parent group admin status: %w", err)
+				resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+				return &resp, nil
+			}
+
+			if !parentAdmin {
+				errMsg := fmt.Errorf("only parent group admins can add subgroup admins")
+				resp := models.NewErrorResponse(event.ID, "group.member.add.unauthorized", errMsg)
+				return &resp, nil
+			}
+		}
+	}
+
+	// Add the member to the group
+	member, err := s.dbClient.AddGroupMember(ctx, req.GroupID, req.UserID.String(), req.Role, req.AddedBy.String())
+	if err != nil {
+		errMsg := fmt.Errorf("error adding group member: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
+		return &resp, nil
+	}
+
+	resp := models.NewSuccessResponse(event.ID, "group.member.added", member)
+	return &resp, nil
+}
+
+// handleListGroupMembers handles listing group members
+func (s *EventService) handleListGroupMembers(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse the request data
+	var req struct {
+		GroupID string `json:"group_id"`
+	}
+
+	if err := mapToStruct(event.Data, &req); err != nil {
+		errMsg := fmt.Errorf("invalid request data: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.list.error", errMsg)
+		return &resp, nil
+	}
+
+	// Get the list of members
+	members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
+	if err != nil {
+		errMsg := fmt.Errorf("error listing group members: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.list.error", errMsg)
+		return &resp, nil
+	}
+
+	resp := models.NewSuccessResponse(event.ID, "group.member.list", members)
+	return &resp, nil
+}
+
+// handleRemoveGroupMember handles removing a member from a group
+func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse the request data
+	var req struct {
+		GroupID   string    `json:"group_id"`
+		UserID    uuid.UUID `json:"user_id"`
+		RemovedBy uuid.UUID `json:"removed_by"`
+	}
+
+	if err := mapToStruct(event.Data, &req); err != nil {
+		errMsg := fmt.Errorf("invalid request data: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+		return &resp, nil
+	}
+
+	// Verify the user removing the member is an admin
+	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID, req.RemovedBy)
+	if err != nil {
+		errMsg := fmt.Errorf("error checking admin status: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+		return &resp, nil
+	}
+
+	if !isAdmin {
+		errMsg := fmt.Errorf("only group admins can remove members")
+		resp := models.NewErrorResponse(event.ID, "group.member.remove.unauthorized", errMsg)
+		return &resp, nil
+	}
+
+	// Check if trying to remove the last admin
+	if req.UserID == req.RemovedBy {
+		members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
+		if err != nil {
+			errMsg := fmt.Errorf("error listing group members: %w", err)
+			resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+			return &resp, nil
+		}
+
+		// Count admins
+		adminCount := 0
+		for _, m := range members {
+			if m.Role == "admin" {
+				adminCount++
+			}
+		}
+
+		if adminCount <= 1 {
+			errMsg := fmt.Errorf("cannot remove the last admin of the group")
+			resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+			return &resp, nil
+		}
+	}
+
+	// Remove the member from the group
+	err = s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserID.String(), req.RemovedBy.String())
+	if err != nil {
+		errMsg := fmt.Errorf("error removing group member: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+		return &resp, nil
+	}
+
+	resp := models.NewSuccessResponse(event.ID, "group.member.removed", nil)
+	return &resp, nil
+}
+
+// mapToStruct is a helper function to convert map to struct
+func mapToStruct(data interface{}, target interface{}) error {
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("error marshaling data: %w", err)
+	}
+
+	if err := json.Unmarshal(dataBytes, target); err != nil {
+		return fmt.Errorf("error unmarshaling data: %w", err)
+	}
+
+	return nil
 }

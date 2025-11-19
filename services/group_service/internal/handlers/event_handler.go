@@ -72,29 +72,7 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 	var response *models.EventResponse
 	var err error
 
-	// Check if it's a group-related event
-	if isGroupEvent(event.Type) {
-		response, err = h.eventService.ProcessGroupEvent(ctx, event)
-	} else {
-		h.logger.Warn("Tipo de evento no soportado",
-			zap.String("event_type", event.Type))
-		// Publicar error de tipo no soportado si hay un canal de respuesta
-		if event.Metadata != nil {
-			if replyTo, ok := event.Metadata["reply_to"]; ok && replyTo != "" {
-				errResp := models.NewErrorResponse(
-					event.ID,
-					event.Type,
-					fmt.Errorf("tipo de evento no soportado: %s", event.Type),
-				)
-				if pubErr := h.publishResponse(ctx, replyTo, errResp); pubErr != nil {
-					h.logger.Error("Error al publicar respuesta de error",
-						zap.Error(pubErr),
-						zap.String("reply_to", replyTo))
-				}
-			}
-		}
-		return
-	}
+	response, err = h.eventService.ProcessGroupEvent(ctx, event)
 
 	// Manejar errores del procesamiento
 	if err != nil {
@@ -121,15 +99,6 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 		return
 	}
 
-	// Manejar errores del procesamiento
-	if err != nil {
-		h.logger.Error("Error al procesar evento",
-			zap.Error(err),
-			zap.String("event_type", event.Type),
-			zap.String("event_id", event.ID))
-		return
-	}
-
 	// Publicar la respuesta si se especificó un canal de respuesta
 	if event.Metadata != nil {
 		if replyTo, ok := event.Metadata["reply_to"]; ok && replyTo != "" {
@@ -139,16 +108,6 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 					zap.String("reply_to", replyTo))
 			}
 		}
-	}
-}
-
-// isGroupEvent checks if the event type is related to group operations
-func isGroupEvent(eventType string) bool {
-	switch eventType {
-	case "group.create", "group.get", "group.update", "group.delete":
-		return true
-	default:
-		return false
 	}
 }
 
