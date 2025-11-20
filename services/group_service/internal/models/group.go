@@ -43,3 +43,39 @@ type GroupMemberRequest struct {
 	Role        string    `json:"role"` // "admin" or "member"
 	IsInherited bool      `json:"is_inherited"`
 }
+
+// GroupInvitation represents an invitation to join a group
+type GroupInvitation struct {
+	ID          uuid.UUID `json:"id"`
+	GroupID     uuid.UUID `json:"group_id"`
+	UserID      uuid.UUID `json:"user_id"`
+	InvitedBy   uuid.UUID `json:"invited_by"`
+	Status      string    `json:"status"` // "pending", "accepted", "rejected", "cancelled"
+	CreatedAt   time.Time `json:"created_at"`
+	RespondedAt time.Time `json:"responded_at,omitempty"`
+	Message     string    `json:"message,omitempty"`
+}
+
+// InvitationStatus represents the possible statuses of a group invitation
+type InvitationStatus string
+
+const (
+	InvitationStatusPending   InvitationStatus = "pending"
+	InvitationStatusAccepted  InvitationStatus = "accepted"
+	InvitationStatusRejected  InvitationStatus = "rejected"
+	InvitationStatusCancelled InvitationStatus = "cancelled"
+)
+
+// InvitationRequest represents the data needed to create a new group invitation
+type InvitationRequest struct {
+	GroupID   uuid.UUID `json:"group_id"`
+	UserID    uuid.UUID `json:"user_id"`
+	InvitedBy uuid.UUID `json:"invited_by"`
+	Message   string    `json:"message,omitempty"`
+}
+
+// InvitationResponse represents the data needed to respond to a group invitation
+type InvitationResponse struct {
+	Status InvitationStatus `json:"status"`
+	UserID uuid.UUID        `json:"user_id"`
+}

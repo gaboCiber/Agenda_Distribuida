@@ -11,6 +11,24 @@ import (
 	"go.uber.org/zap"
 )
 
+// Event type constants
+const (
+	EventTypeGroupCreate       = "group.create"
+	EventTypeGroupGet          = "group.get"
+	EventTypeGroupUpdate       = "group.update"
+	EventTypeGroupDelete       = "group.delete"
+	EventTypeGroupMemberAdd    = "group.member.add"
+	EventTypeGroupMemberList   = "group.member.list"
+	EventTypeGroupMemberRemove = "group.member.remove"
+	EventTypeUserGroupsList    = "user.groups.list"
+	EventTypeInviteCreate      = "group.invite.create"
+	EventTypeInviteAccept      = "group.invite.accept"
+	EventTypeInviteReject      = "group.invite.reject"
+	EventTypeInviteList        = "group.invite.list"
+	EventTypeInviteGet         = "group.invite.get"
+	EventTypeInviteCancel      = "group.invite.cancel"
+)
+
 type EventService struct {
 	dbClient *clients.DBServiceClient
 	logger   *zap.Logger
@@ -27,20 +45,34 @@ func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *Eve
 // ProcessGroupEvent processes group-related events
 func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	switch event.Type {
-	case "group.create":
+	case EventTypeGroupCreate:
 		return s.handleCreateGroup(ctx, event)
-	case "group.get":
+	case EventTypeGroupGet:
 		return s.handleGetGroup(ctx, event)
-	case "group.update":
+	case EventTypeGroupUpdate:
 		return s.handleUpdateGroup(ctx, event)
-	case "group.delete":
+	case EventTypeGroupDelete:
 		return s.handleDeleteGroup(ctx, event)
-	case "group.member.add":
+	case EventTypeGroupMemberAdd:
 		return s.handleAddGroupMember(ctx, event)
-	case "group.member.list":
+	case EventTypeGroupMemberList:
 		return s.handleListGroupMembers(ctx, event)
-	case "group.member.remove":
+	case EventTypeGroupMemberRemove:
 		return s.handleRemoveGroupMember(ctx, event)
+	case EventTypeUserGroupsList:
+		return s.handleListUserGroups(ctx, event)
+	case EventTypeInviteCreate:
+		return s.handleCreateInvitation(ctx, event)
+	case EventTypeInviteAccept:
+		return s.handleAcceptInvitation(ctx, event)
+	case EventTypeInviteReject:
+		return s.handleRejectInvitation(ctx, event)
+	case EventTypeInviteList:
+		return s.handleListInvitations(ctx, event)
+	case EventTypeInviteGet:
+		return s.handleGetInvitation(ctx, event)
+	case EventTypeInviteCancel:
+		return s.handleCancelInvitation(ctx, event)
 	default:
 		return nil, fmt.Errorf("unsupported event type: %s", event.Type)
 	}
@@ -364,6 +396,31 @@ func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models
 	return &resp, nil
 }
 
+// handleListUserGroups handles listing all groups that a user is a member of
+func (s *EventService) handleListUserGroups(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse the request data
+	var req struct {
+		UserID string `json:"user_id"`
+	}
+
+	if err := s.mapToStruct(event.Data, &req); err != nil {
+		errMsg := fmt.Errorf("invalid request data: %w", err)
+		resp := models.NewErrorResponse(event.ID, "user.groups.list.error", errMsg)
+		return &resp, nil
+	}
+
+	// Get the list of groups for the user
+	groups, err := s.dbClient.ListUserGroups(ctx, req.UserID)
+	if err != nil {
+		errMsg := fmt.Errorf("error listing user groups: %w", err)
+		resp := models.NewErrorResponse(event.ID, "user.groups.list.error", errMsg)
+		return &resp, nil
+	}
+
+	resp := models.NewSuccessResponse(event.ID, "user.groups.list", groups)
+	return &resp, nil
+}
+
 // mapToStruct is a helper function to convert map to struct
 func mapToStruct(data interface{}, target interface{}) error {
 	dataBytes, err := json.Marshal(data)
@@ -376,4 +433,280 @@ func mapToStruct(data interface{}, target interface{}) error {
 	}
 
 	return nil
+}
+
+func (s *EventService) mapToStruct(data interface{}, target interface{}) error {
+	dataBytes, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("error marshaling data: %w", err)
+	}
+
+	if err := json.Unmarshal(dataBytes, target); err != nil {
+		return fmt.Errorf("error unmarshaling data: %w", err)
+	}
+
+	return nil
+}
+
+// handleCreateInvitation handles the creation of a new group invitation
+func (s *EventService) handleCreateInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing create invitation event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract invitation data
+	var req models.InvitationRequest
+	if err := s.mapToStruct(event.Data, &req); err != nil {
+		return nil, fmt.Errorf("invalid invitation data: %w", err)
+	}
+
+	// Check if the inviter is an admin of the group
+	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID.String(), req.InvitedBy)
+	if err != nil {
+		return nil, fmt.Errorf("error checking admin status: %w", err)
+	}
+
+	if !isAdmin {
+		return nil, fmt.Errorf("only group admins can send invitations")
+	}
+
+	// Create the invitation
+	invitation, err := s.dbClient.CreateInvitation(
+		ctx,
+		req.GroupID.String(),
+		req.UserID.String(),
+		req.InvitedBy.String(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error creating invitation: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitation.created",
+		Success: true,
+		Data:    invitation,
+	}, nil
+}
+
+// handleAcceptInvitation handles accepting a group invitation
+func (s *EventService) handleAcceptInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing accept invitation event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract invitation ID and user ID
+	invitationID, ok := event.Data["invitation_id"].(string)
+	if !ok || invitationID == "" {
+		return nil, fmt.Errorf("missing or invalid invitation_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Get the invitation
+	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting invitation: %w", err)
+	}
+
+	if invitation == nil {
+		return nil, fmt.Errorf("invitation not found")
+	}
+
+	// Check if the user is the one who was invited
+	if invitation.UserID.String() != userID {
+		return nil, fmt.Errorf("unauthorized to accept this invitation")
+	}
+
+	// Update the invitation status to accepted
+	if err := s.dbClient.RespondToInvitation(ctx, invitationID, "accepted"); err != nil {
+		return nil, fmt.Errorf("error accepting invitation: %w", err)
+	}
+
+	// Add user to the group as a member
+	_, err = s.dbClient.AddGroupMember(ctx, invitation.GroupID.String(), userID, "member", userID)
+	if err != nil {
+		return nil, fmt.Errorf("error adding user to group: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitation.accepted",
+		Success: true,
+		Data:    map[string]string{"status": "accepted"},
+	}, nil
+}
+
+// handleRejectInvitation handles rejecting a group invitation
+func (s *EventService) handleRejectInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing reject invitation event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract invitation ID and user ID
+	invitationID, ok := event.Data["invitation_id"].(string)
+	if !ok || invitationID == "" {
+		return nil, fmt.Errorf("missing or invalid invitation_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Get the invitation
+	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting invitation: %w", err)
+	}
+
+	if invitation == nil {
+		return nil, fmt.Errorf("invitation not found")
+	}
+
+	// Check if the user is the one who was invited
+	if invitation.UserID.String() != userID {
+		return nil, fmt.Errorf("unauthorized to reject this invitation")
+	}
+
+	// Update the invitation status to rejected
+	if err := s.dbClient.RespondToInvitation(ctx, invitationID, "rejected"); err != nil {
+		return nil, fmt.Errorf("error rejecting invitation: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitation.rejected",
+		Success: true,
+		Data:    map[string]string{"status": "rejected"},
+	}, nil
+}
+
+// handleListInvitations handles listing invitations for a user
+func (s *EventService) handleListInvitations(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing list invitations event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract user ID and optional status filter
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	status, _ := event.Data["status"].(string) // Optional status filter
+
+	// Get the invitations
+	invitations, err := s.dbClient.ListUserInvitations(ctx, userID, status)
+	if err != nil {
+		return nil, fmt.Errorf("error listing invitations: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitations.listed",
+		Success: true,
+		Data:    map[string]interface{}{"invitations": invitations},
+	}, nil
+}
+
+// handleCancelInvitation handles canceling a group invitation
+// handleGetInvitation handles getting a specific invitation by ID
+func (s *EventService) handleGetInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing get invitation event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract invitation ID
+	invitationID, ok := event.Data["invitation_id"].(string)
+	if !ok || invitationID == "" {
+		return nil, fmt.Errorf("missing or invalid invitation_id")
+	}
+
+	// Get the invitation
+	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting invitation: %w", err)
+	}
+
+	if invitation == nil {
+		return nil, fmt.Errorf("invitation not found")
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitation.retrieved",
+		Success: true,
+		Data:    invitation,
+	}, nil
+}
+
+// handleCancelInvitation handles canceling a group invitation
+// Only the user who created the invitation or a group admin can cancel it
+// handleCancelInvitation handles canceling a group invitation
+// Only the user who created the invitation or a group admin can cancel it
+func (s *EventService) handleCancelInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing cancel invitation event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract invitation ID and user ID
+	invitationID, ok := event.Data["invitation_id"].(string)
+	if !ok || invitationID == "" {
+		return nil, fmt.Errorf("missing or invalid invitation_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Get the invitation to verify ownership
+	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting invitation: %w", err)
+	}
+
+	if invitation == nil {
+		return nil, fmt.Errorf("invitation not found")
+	}
+
+	// Convert string userID to uuid.UUID
+	userUUID, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Check if the user is the one who created the invitation or a group admin
+	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, invitation.GroupID.String(), userUUID)
+	if err != nil {
+		return nil, fmt.Errorf("error checking admin status: %w", err)
+	}
+
+	// User must be either the inviter or a group admin to cancel
+	if invitation.InvitedBy.String() != userID && !isAdmin {
+		return nil, fmt.Errorf("unauthorized: only the inviter or group admin can cancel the invitation")
+	}
+
+	// Delete the invitation
+	err = s.dbClient.DeleteInvitation(ctx, invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("error canceling invitation: %w", err)
+	}
+
+	// Publish notification that the invitation was canceled
+	// This would be handled by a separate notification service in a real application
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "invitation.canceled",
+		Success: true,
+		Data: map[string]interface{}{
+			"invitation_id": invitationID,
+			"canceled_by":   userID,
+		},
+	}, nil
 }

@@ -51,6 +51,7 @@ func (h *GroupEventHandler) RegisterRoutes(router *mux.Router) {
 	// Invitation Management
 	router.HandleFunc("/invitations", h.CreateInvitation).Methods("POST")
 	router.HandleFunc("/invitations/{id}", h.GetInvitation).Methods("GET")
+	router.HandleFunc("/invitations/{id}", h.DeleteInvitation).Methods("DELETE")
 	router.HandleFunc("/invitations/{id}", h.RespondToInvitation).Methods("PUT")
 	router.HandleFunc("/users/{userId}/invitations", h.GetUserInvitations).Methods("GET")
 }
@@ -720,6 +721,39 @@ func (h *GroupEventHandler) RespondToInvitation(w http.ResponseWriter, r *http.R
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
 		"message": "Invitation updated successfully",
+	})
+}
+
+// DeleteInvitation deletes a specific invitation by ID
+func (h *GroupEventHandler) DeleteInvitation(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	invitationID, err := uuid.Parse(vars["id"])
+	if err != nil {
+		h.log.Error().Err(err).Str("invitation_id", vars["id"]).Msg("Invalid invitation ID")
+		http.Error(w, "Invalid invitation ID", http.StatusBadRequest)
+		return
+	}
+
+	// Delete the invitation
+	err = h.repo.DeleteUserInvitation(r.Context(), invitationID)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			h.log.Warn().Str("invitation_id", invitationID.String()).Msg("Invitation not found")
+			http.Error(w, "Invitation not found", http.StatusNotFound)
+			return
+		}
+
+		h.log.Error().Err(err).Str("invitation_id", invitationID.String()).Msg("Failed to delete invitation")
+		http.Error(w, "Failed to delete invitation", http.StatusInternalServerError)
+		return
+	}
+
+	// Return success response
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":  "success",
+		"message": "Invitation deleted successfully",
 	})
 }
 

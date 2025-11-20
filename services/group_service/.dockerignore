@@ -1,0 +1,33 @@
+# Binarios
+dist/
+user-service
+
+# Dependencias de Go
+vendor/
+
+# Archivos de entorno
+.env
+
+# Archivos de desarrollo
+.git
+.gitignore
+.dockerignore
+
+# Archivos del IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Archivos temporales
+*.log
+*.tmp
+
+# Archivos de documentación
+README.md
+
+# Archivos de prueba
+*_test.go
+
+# Archivos específicos de macOS
+.DS_Store

@@ -127,3 +127,124 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
         "reply_to": "group_events_response"
     }
 }'
+
+# 9. List all groups for a user
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "770e8400-e29b-41d4-a716-446655440100",
+    "type": "user.groups.list",
+    "data": {
+        "user_id": "'$USER1_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+#####################################################################
+#                       Group Invitations                           #
+#####################################################################
+
+# 10. Create Invitation
+# USER1 invites USER2 to the group
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440100",
+    "type": "group.invite.create",
+    "data": {
+        "group_id": "'$GROUP_UUID'",
+        "user_id": "'$USER2_UUID'",
+        "invited_by": "'$USER1_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 11. Get Invitation
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440101",
+    "type": "group.invite.get",
+    "data": {
+        "invitation_id": "'$INVITATION_ID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 12. List User Invitations (for USER2)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440102",
+    "type": "group.invite.list",
+    "data": {
+        "user_id": "'$USER2_UUID'",
+        "status": "pending"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 13. Accept Invitation (as USER2)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440103",
+    "type": "group.invite.accept",
+    "data": {
+        "invitation_id": "'$INVITATION_ID'",
+        "user_id": "'$USER2_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 14. Create another invitation for testing rejection
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440104",
+    "type": "group.invite.create",
+    "data": {
+        "group_id": "'$GROUP_UUID'",
+        "user_id": "'$USER2_UUID'",
+        "invited_by": "'$USER1_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 15. Reject Invitation (as USER2)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440105",
+    "type": "group.invite.reject",
+    "data": {
+        "invitation_id": "'$INVITATION_ID_REJECT'",
+        "user_id": "'$USER2_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 17. Cancel Invitation (as USER1 who created it)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440107",
+    "type": "group.invite.cancel",
+    "data": {
+        "invitation_id": "'$INVITATION_ID_CANCEL'",
+        "user_id": "'$USER1_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 18. List all invitations for USER2 (all statuses)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "880e8400-e29b-41d4-a716-446655440108",
+    "type": "group.invite.list",
+    "data": {
+        "user_id": "'$USER2_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'

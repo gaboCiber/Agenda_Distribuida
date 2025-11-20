@@ -295,6 +295,39 @@ func (c *DBServiceClient) ListGroupMembers(ctx context.Context, groupID string) 
 	return response.Members, nil
 }
 
+// ListUserGroups returns all groups that a user is a member of
+func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]models.Group, error) {
+	url := fmt.Sprintf("%s/api/v1/groups/users/%s", c.baseURL, userID)
+
+	// Make the request
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Error listing user groups",
+			zap.Error(err),
+			zap.String("user_id", userID))
+		return nil, fmt.Errorf("error listing user groups: %w", err)
+	}
+
+	// The response is a JSON object with a 'groups' field containing the array
+	var response struct {
+		Status string         `json:"status"`
+		Groups []models.Group `json:"groups"`
+	}
+
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		c.logger.Error("Error decoding user groups response",
+			zap.Error(err),
+			zap.String("response", string(respBody)))
+		return nil, fmt.Errorf("error decoding user groups response: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("unexpected status in response: %s", response.Status)
+	}
+
+	return response.Groups, nil
+}
+
 // RemoveGroupMember removes a user from a group
 func (c *DBServiceClient) RemoveGroupMember(ctx context.Context, groupID, userID, removedBy string) error {
 	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
@@ -328,4 +361,168 @@ func (c *DBServiceClient) IsGroupAdmin(ctx context.Context, groupID string, user
 	}
 
 	return false, nil
+}
+
+// CreateInvitation creates a new group invitation
+func (c *DBServiceClient) CreateInvitation(ctx context.Context, groupID, userID, invitedBy string) (*models.GroupInvitation, error) {
+	url := fmt.Sprintf("%s/api/v1/invitations", c.baseURL)
+
+	request := map[string]string{
+		"group_id":   groupID,
+		"user_id":    userID,
+		"invited_by": invitedBy,
+	}
+
+	reqBody, err := json.Marshal(request)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling invitation request: %w", err)
+	}
+
+	respBody, err := c.doRequest(ctx, http.MethodPost, url, reqBody)
+	if err != nil {
+		c.logger.Error("Error creating invitation",
+			zap.Error(err),
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID))
+		return nil, fmt.Errorf("error creating invitation: %w", err)
+	}
+
+	var response struct {
+		Status string                  `json:"status"`
+		Data   *models.GroupInvitation `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, fmt.Errorf("error decoding invitation response: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("unexpected status in response: %s", response.Status)
+	}
+
+	return response.Data, nil
+}
+
+// GetInvitation retrieves an invitation by ID
+func (c *DBServiceClient) GetInvitation(ctx context.Context, invitationID string) (*models.GroupInvitation, error) {
+	url := fmt.Sprintf("%s/api/v1/invitations/%s", c.baseURL, invitationID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Error getting invitation",
+			zap.Error(err),
+			zap.String("invitation_id", invitationID))
+		return nil, fmt.Errorf("error getting invitation: %w", err)
+	}
+
+	var response struct {
+		Status string                  `json:"status"`
+		Data   *models.GroupInvitation `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, fmt.Errorf("error decoding invitation response: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("unexpected status in response: %s", response.Status)
+	}
+
+	return response.Data, nil
+}
+
+// RespondToInvitation updates the status of an invitation
+func (c *DBServiceClient) RespondToInvitation(ctx context.Context, invitationID, status string) error {
+	url := fmt.Sprintf("%s/api/v1/invitations/%s", c.baseURL, invitationID)
+
+	request := map[string]string{
+		"status": status,
+	}
+
+	reqBody, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("error marshaling invitation response: %w", err)
+	}
+
+	_, err = c.doRequest(ctx, http.MethodPut, url, reqBody)
+	if err != nil {
+		c.logger.Error("Error responding to invitation",
+			zap.Error(err),
+			zap.String("invitation_id", invitationID),
+			zap.String("status", status))
+		return fmt.Errorf("error responding to invitation: %w", err)
+	}
+
+	return nil
+}
+
+// ListUserInvitations returns all invitations for a user
+func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, status string) ([]*models.GroupInvitation, error) {
+	url := fmt.Sprintf("%s/api/v1/users/%s/invitations", c.baseURL, userID)
+	if status != "" {
+		url = fmt.Sprintf("%s?status=%s", url, status)
+	}
+
+	body, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Failed to list user invitations",
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to list user invitations: %w", err)
+	}
+
+	var resp struct {
+		Status string                   `json:"status"`
+		Data   []*models.GroupInvitation `json:"data"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		c.logger.Error("Failed to parse user invitations response",
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.ByteString("response", body))
+		return nil, fmt.Errorf("error unmarshaling user invitations response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("unexpected status in response: %s", resp.Status)
+	}
+
+	return resp.Data, nil
+}
+
+// DeleteInvitation deletes an invitation by ID
+func (c *DBServiceClient) DeleteInvitation(ctx context.Context, invitationID string) error {
+	url := fmt.Sprintf("%s/api/v1/invitations/%s", c.baseURL, invitationID)
+
+	body, err := c.doRequest(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		// Check if it's a 404 Not Found error
+		if strings.Contains(err.Error(), "404") {
+			return fmt.Errorf("invitation not found")
+		}
+		c.logger.Error("Failed to delete invitation",
+			zap.String("invitation_id", invitationID),
+			zap.Error(err))
+		return fmt.Errorf("failed to delete invitation: %w", err)
+	}
+
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+
+	if err := json.Unmarshal(body, &resp); err != nil {
+		c.logger.Error("Failed to parse delete invitation response",
+			zap.String("invitation_id", invitationID),
+			zap.Error(err),
+			zap.ByteString("response", body))
+		return fmt.Errorf("error unmarshaling delete invitation response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return fmt.Errorf("failed to delete invitation: %s", resp.Message)
+	}
+
+	return nil
 }

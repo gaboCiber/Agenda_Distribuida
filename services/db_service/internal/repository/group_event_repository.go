@@ -47,6 +47,7 @@ type GroupEventRepository interface {
 	UpdateInvitation(ctx context.Context, id uuid.UUID, status string) error
 	GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitation, error)
 	DeleteUserInvitations(ctx context.Context, userID uuid.UUID) error
+	DeleteUserInvitation(ctx context.Context, invitationID uuid.UUID) error
 }
 
 type groupEventRepository struct {
@@ -1078,6 +1079,36 @@ func (r *groupEventRepository) DeleteUserInvitations(ctx context.Context, userID
 			Str("user_id", userID.String()).
 			Msg("Failed to delete user invitations")
 		return fmt.Errorf("failed to delete user invitations: %w", err)
+	}
+
+	return nil
+}
+
+// DeleteUserInvitation deletes a specific invitation by ID
+func (r *groupEventRepository) DeleteUserInvitation(ctx context.Context, invitationID uuid.UUID) error {
+	result, err := r.db.ExecContext(
+		ctx,
+		`DELETE FROM group_invitations WHERE id = $1`,
+		invitationID,
+	)
+
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("invitation_id", invitationID.String()).
+			Msg("Failed to delete user invitation")
+		return fmt.Errorf("failed to delete user invitation: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		r.log.Error().Err(err).
+			Str("invitation_id", invitationID.String()).
+			Msg("Failed to get rows affected when deleting invitation")
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
 	}
 
 	return nil
