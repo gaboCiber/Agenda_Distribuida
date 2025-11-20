@@ -197,20 +197,6 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
-# 14. Create another invitation for testing rejection
-docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
-    "id": "880e8400-e29b-41d4-a716-446655440104",
-    "type": "group.invite.create",
-    "data": {
-        "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'",
-        "invited_by": "'$USER1_UUID'"
-    },
-    "metadata": {
-        "reply_to": "group_events_response"
-    }
-}'
-
 # 15. Reject Invitation (as USER2)
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "880e8400-e29b-41d4-a716-446655440105",
