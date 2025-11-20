@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agenda Distribuida</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <nav class="navbar">
+        <div class="nav-container">
+            <h1 class="nav-title">Agenda Distribuida</h1>
+            <div id="user-info" style="display:none;">
+                <span id="user-email"></span>
+                <button onclick="logout()" class="btn-secondary">Cerrar Sesión</button>
+            </div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Authentication Section -->
+        <div id="auth-section">
+            <div class="auth-container">
+                <div class="auth-tabs">
+                    <button class="tab-btn active" onclick="showTab('login')">Iniciar Sesión</button>
+                    <button class="tab-btn" onclick="showTab('register')">Registrarse</button>
+                </div>
+
+                <div id="login-form" class="auth-form">
+                    <h2>Iniciar Sesión</h2>
+                    <form onsubmit="login(event)">
+                        <div class="form-group">
+                            <label for="login-email">Correo Electrónico</label>
+                            <input type="email" id="login-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="login-password">Contraseña</label>
+                            <input type="password" id="login-password" required>
+                        </div>
+                        <button type="submit" class="btn-primary">Iniciar Sesión</button>
+                    </form>
+                </div>
+
+                <div id="register-form" class="auth-form" style="display:none;">
+                    <h2>Registrarse</h2>
+                    <form onsubmit="register(event)">
+                        <div class="form-group">
+                            <label for="reg-username">Nombre de Usuario</label>
+                            <input type="text" id="reg-username" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="reg-email">Correo Electrónico</label>
+                            <input type="email" id="reg-email" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="reg-password">Contraseña</label>
+                            <input type="password" id="reg-password" required minlength="6">
+                        </div>
+                        <button type="submit" class="btn-primary">Registrarse</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Main Dashboard -->
+        <div id="dashboard" style="display:none;">
+            <div class="dashboard-grid">
+                <!-- Calendar View -->
+                <div class="dashboard-section">
+                    <h2>Calendario</h2>
+                    <div class="calendar-container">
+                        <div class="calendar-header">
+                            <button onclick="prevMonth()"><</button>
+                            <h3 id="calendar-title"></h3>
+                            <button onclick="nextMonth()">></button>
+                        </div>
+                        <div class="calendar-grid" id="calendar-grid"></div>
+                    </div>
+                </div>
+
+                <!-- Events Section -->
+                <div class="dashboard-section">
+                    <h2>Eventos</h2>
+                    <button onclick="showModal('event-modal')" class="btn-primary">Crear Evento</button>
+                    <div id="events-list" class="item-list"></div>
+                </div>
+
+                <!-- Groups Section -->
+                <div class="dashboard-section">
+                    <h2>Grupos</h2>
+                    <button onclick="showModal('group-modal')" class="btn-primary">Crear Grupo</button>
+                    <div id="groups-list" class="item-list"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modals -->
+    <!-- Event Modal -->
+    <div id="event-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Crear Evento</h3>
+                <span class="close" onclick="closeModal('event-modal')">&times;</span>
+            </div>
+            <form onsubmit="createEvent(event)">
+                <div class="form-group">
+                    <label for="event-title">Título</label>
+                    <input type="text" id="event-title" required>
+                </div>
+                <div class="form-group">
+                    <label for="event-description">Descripción</label>
+                    <textarea id="event-description"></textarea>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="event-start">Fecha y Hora de Inicio</label>
+                        <input type="datetime-local" id="event-start" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="event-end">Fecha y Hora de Fin</label>
+                        <input type="datetime-local" id="event-end" required>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="event-group">Grupo (opcional)</label>
+                    <select id="event-group">
+                        <option value="">Sin grupo</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn-primary">Crear Evento</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Group Modal -->
+    <div id="group-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Crear Grupo</h3>
+                <span class="close" onclick="closeModal('group-modal')">&times;</span>
+            </div>
+            <form onsubmit="createGroup(event)">
+                <div class="form-group">
+                    <label for="group-name">Nombre del Grupo</label>
+                    <input type="text" id="group-name" required>
+                </div>
+                <div class="form-group">
+                    <label for="group-description">Descripción</label>
+                    <textarea id="group-description"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>
+                        <input type="checkbox" id="group-hierarchical">
+                        Grupo Jerárquico
+                    </label>
+                </div>
+                <button type="submit" class="btn-primary">Crear Grupo</button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Notifications -->
+    <div id="notification" class="notification" style="display:none;">
+        <span id="notification-message"></span>
+    </div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>

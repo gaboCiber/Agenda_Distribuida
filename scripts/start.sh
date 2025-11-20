@@ -8,7 +8,7 @@ CURRENT_DIR="$(pwd)"
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|db|user|group]"
+    echo "Usage: $0 [all|redis|db|user|group|api]"
     exit 1
 fi
 
@@ -22,9 +22,9 @@ docker network inspect $NETWORK_NAME >/dev/null 2>&1 || \
 start_redis() {
     echo "Starting Redis container..."
     docker run -d --name agenda-redis-service --network $NETWORK_NAME \
-      -p 6379:6379 \
+      -p 6380:6379 \
       redis:7-alpine
-    echo "Redis started at localhost:6379"
+    echo "Redis started at localhost:6380"
 }
 
 start_db() {
@@ -58,9 +58,19 @@ start_group() {
     echo "Group Service started at localhost:8002"
 }
 
+start_api() {
+    echo "Starting API Gateway Service..."
+    docker run -d --name agenda-api-gateway-service --network $NETWORK_NAME \
+      -p 8080:8080 \
+      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e LOG_LEVEL=debug \
+      agenda-api-gateway
+    echo "API Gateway Service started at localhost:8080"
+}
+
 case $SERVICE in
     all)
-        echo "Starting all services in order: redis → db → user → group"
+        echo "Starting all services in order: redis → db → user → group → api"
         start_redis
         sleep 2
         start_db
@@ -68,11 +78,14 @@ case $SERVICE in
         start_user
         sleep 2
         start_group
+        sleep 2
+        start_api
         echo "All services started successfully!"
-        echo "- Redis: localhost:6379"
+        echo "- Redis: localhost:6380"
         echo "- DB Service: localhost:8000"
         echo "- User Service: localhost:8001"
         echo "- Group Service: localhost:8002"
+        echo "- API Gateway: localhost:8080"
         ;;
         
     redis)
@@ -90,10 +103,14 @@ case $SERVICE in
     group)
         start_group
         ;;
-        
+
+    api)
+        start_api
+        ;;
+
     *)
         echo "Error: Unknown service '$SERVICE'"
-        echo "Available services: redis, db, user, group"
+        echo "Available services: redis, db, user, group, api"
         exit 1
         ;;
 esac

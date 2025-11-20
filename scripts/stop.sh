@@ -2,7 +2,7 @@
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|db|user|group]"
+    echo "Usage: $0 [all|redis|db|user|group|api]"
     exit 1
 fi
 
@@ -19,6 +19,7 @@ stop_container() {
 
 case $SERVICE in
     all)
+        stop_container "agenda-api-gateway-service"
         stop_container "agenda-group-service"
         stop_container "agenda-user-service"
         stop_container "agenda-db-service"
@@ -40,10 +41,14 @@ case $SERVICE in
     group)
         stop_container "agenda-group-service"
         ;;
-        
+
+    api)
+        stop_container "agenda-api-gateway-service"
+        ;;
+
     *)
         echo "Error: Unknown service '$SERVICE'"
-        echo "Available services: all, redis, db, user, group"
+        echo "Available services: all, redis, db, user, group, api"
         exit 1
         ;;
 esac

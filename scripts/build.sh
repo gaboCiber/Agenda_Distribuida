@@ -7,7 +7,7 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Available services
-SERVICES=("db" "user" "group")
+SERVICES=("db" "user" "group" "api")
 
 # Function to show usage
 show_usage() {
@@ -26,10 +26,19 @@ show_usage() {
 
 # Function to build a service
 build_service() {
-    local service_name="${1}_service"
+    local service_name
+    local image_name
+
+    if [ "${1}" == "api" ]; then
+        service_name="api_gateway_service"
+        image_name="agenda-api-gateway"
+    else
+        service_name="${1}_service"
+        image_name="agenda-${1}_event"
+    fi
+
     local context_path="$PROJECT_ROOT/services/${service_name}"
-    local image_name="agenda-${1}_event"
-    
+
     echo "\n=== Building ${service_name} service ==="
     if [ -f "${context_path}/Dockerfile" ]; then
         docker build -t ${image_name} -f "${context_path}/Dockerfile" "${context_path}"
