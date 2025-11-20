@@ -1,82 +1,74 @@
 #!/bin/bash
 
-# Script para construir imágenes de Docker de los servicios
-# Uso: 
-#   Construir todas las imágenes: ./scripts/build.sh
-#   Construir solo un servicio: ./scripts/build.sh group_service
-#   Especificar tag: ./scripts/build.sh --tag v1.0 group_service
-#   Construir múltiples servicios: ./scripts/build.sh group_service api_gateway
+# Exit on error
+set -e
 
-# Configuración
-TAG="latest"
-SERVICES_TO_BUILD=()
-BASE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Get the absolute path of the project root
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Todos los servicios disponibles
-ALL_SERVICES=(
-    "api_gateway"
-    "users_service"
-    "events_service"
-    "group_service"
-    "notifications_service"
-    "streamlit_app"
-)
+# Available services
+SERVICES=("db" "user" "group")
 
-# Procesar argumentos
-while [[ $# -gt 0 ]]; do
-    case $1 in
-        --tag)
-            TAG="$2"
-            shift 2
-            ;;
-        --help|-h)
-            echo "Uso: $0 [OPCIONES] [SERVICIOS...]"
-            echo "Opciones:"
-            echo "  --tag TAG      Especifica el tag para las imágenes (por defecto: latest)"
-            echo "  --help, -h     Muestra esta ayuda"
-            echo ""
-            echo "Ejemplos:"
-            echo "  $0                         # Construye todos los servicios"
-            echo "  $0 group_service           # Construye solo el servicio de grupos"
-            echo "  $0 --tag v1.0 group_service  # Construye con un tag específico"
-            echo "  $0 group_service api_gateway # Construye múltiples servicios"
-            exit 0
-            ;;
-        *)
-            # Verificar si el argumento es un servicio válido
-            if [[ " ${ALL_SERVICES[@]} " =~ " $1 " ]]; then
-                SERVICES_TO_BUILD+=("$1")
-            else
-                echo "❌ Servicio desconocido: $1"
-                echo "   Servicios disponibles: ${ALL_SERVICES[@]}"
-                exit 1
+# Function to show usage
+show_usage() {
+    echo "Usage: $0 [all|db|user|group] [service2] [service3]..."
+    echo "  all      Build all services (default if no arguments provided)"
+    echo "  db       Build only the database service"
+    echo "  user     Build only the user service"
+    echo "  group    Build only the group service"
+    echo ""
+    echo "Examples:"
+    echo "  $0 all           # Build all services"
+    echo "  $0 db user       # Build only db and user services"
+    echo "  $0 group         # Build only group service"
+    exit 1
+}
+
+# Function to build a service
+build_service() {
+    local service_name="${1}_service"
+    local context_path="$PROJECT_ROOT/services/${service_name}"
+    local image_name="agenda-${1}_event"
+    
+    echo "\n=== Building ${service_name} service ==="
+    if [ -f "${context_path}/Dockerfile" ]; then
+        docker build -t ${image_name} -f "${context_path}/Dockerfile" "${context_path}"
+        echo "✅ Successfully built ${image_name}"
+        return 0
+    else
+        echo "❌ Dockerfile not found for ${service_name} service"
+        return 1
+    fi
+}
+
+# If no arguments, build all services
+if [ $# -eq 0 ]; then
+    SERVICES_TO_BUILD=("${SERVICES[@]}")
+else
+    # Check if 'all' is specified
+    if [[ " $* " =~ \ all\  ]]; then
+        SERVICES_TO_BUILD=("${SERVICES[@]}")
+    else
+        # Validate services
+        for service in "$@"; do
+            if [[ ! " ${SERVICES[@]} " =~ " ${service} " ]]; then
+                echo "❌ Error: Unknown service '$service'"
+                show_usage
             fi
-            shift
-            ;;
-    esac
-done
-
-# Si no se especificaron servicios, construir todos
-if [ ${#SERVICES_TO_BUILD[@]} -eq 0 ]; then
-    echo "⚠️  No se especificaron servicios, construyendo todos por defecto"
-    SERVICES_TO_BUILD=("${ALL_SERVICES[@]}")
+        done
+        SERVICES_TO_BUILD=("$@")
+    fi
 fi
 
-# Construir cada imagen
-echo "🏗️  Construyendo imágenes con etiqueta: $TAG"
+echo "Starting build process..."
+
+# Build selected services
 for service in "${SERVICES_TO_BUILD[@]}"; do
-    service_name="${service%_service}"  # Eliminar _service si existe
-    image_name="agenda-${service_name}"
-    
-    echo -e "\n🔨 Construyendo $image_name:$TAG desde $service..."
-    docker build -t "$image_name:$TAG" -f "$BASE_DIR/services/$service/Dockerfile" "$BASE_DIR/services/$service/"
-    
-    if [ $? -eq 0 ]; then
-        echo "✅ $image_name:$TAG construida correctamente"
-    else
-        echo "❌ Error al construir $image_name:$TAG"
-        exit 1
-    fi
+    build_service "$service" || exit 1
 done
 
-echo -e "\n✨ Construcción completada exitosamente!"
+# Special handling for Redis
+echo "\n=== Redis will use the official image: redis:7-alpine ==="
+
+echo "\n=== Build completed successfully! ==="
+echo "You can now start the services using: ./scripts_new/start.sh [all|redis|db|user|group]"

@@ -1,26 +1,51 @@
 #!/bin/bash
 
-# Nombres de los contenedores
-CONTAINERS=(
-    "agenda-api-gateway"
-    "agenda-users-service"
-    "agenda-events-service"
-    "agenda-groups-service"
-    "agenda-notifications-service"
-    "agenda-bus-redis"
-    "agenda-streamlit-app"
-)
+# Check if service name is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 [all|redis|db|user|group]"
+    exit 1
+fi
 
-# Nombre de la red
-NETWORK_NAME="agenda-net"
+SERVICE=$1
 
-echo "Stopping and removing containers..."
-for container in "${CONTAINERS[@]}"; do
-    docker stop $container >/dev/null 2>&1
-    docker rm $container >/dev/null 2>&1
-done
+stop_container() {
+    local container_name=$1
+    echo "Stopping $container_name..."
+    docker stop $container_name 2>/dev/null
+    echo "Removing $container_name..."
+    docker rm $container_name 2>/dev/null
+    echo "$container_name stopped and removed"
+}
 
-echo "Removing Docker network: $NETWORK_NAME..."
-docker network rm $NETWORK_NAME >/dev/null 2>&1
+case $SERVICE in
+    all)
+        stop_container "agenda-group-service"
+        stop_container "agenda-user-service"
+        stop_container "agenda-db-service"
+        stop_container "agenda-redis-service"
+        ;;
+        
+    redis)
+        stop_container "agenda-redis-service"
+        ;;
+        
+    db)
+        stop_container "agenda-db-service"
+        ;;
+        
+    user)
+        stop_container "agenda-user-service"
+        ;;
+        
+    group)
+        stop_container "agenda-group-service"
+        ;;
+        
+    *)
+        echo "Error: Unknown service '$SERVICE'"
+        echo "Available services: all, redis, db, user, group"
+        exit 1
+        ;;
+esac
 
-echo "Cleanup complete."
+echo "Done!"

@@ -1,59 +1,101 @@
 #!/bin/bash
 
-# Nombre de la red de Docker
-NETWORK_NAME="agenda-net"
+# Docker network name
+NETWORK_NAME="agenda-network"
 
-# Crear la red si no existe
-echo "Creating Docker network: $NETWORK_NAME..."
+# Get absolute path of the current directory
+CURRENT_DIR="$(pwd)"
+
+# Check if service name is provided
+if [ $# -eq 0 ]; then
+    echo "Usage: $0 [all|redis|db|user|group]"
+    exit 1
+fi
+
+SERVICE=$1
+
+# Create the network if it doesn't exist
+echo "Checking Docker network..."
 docker network inspect $NETWORK_NAME >/dev/null 2>&1 || \
     docker network create --driver bridge $NETWORK_NAME
 
-# Obtener ruta absoluta del directorio actual
-CURRENT_DIR="$(pwd)"
+start_redis() {
+    echo "Starting Redis container..."
+    docker run -d --name agenda-redis-service --network $NETWORK_NAME \
+      -p 6379:6379 \
+      redis:7-alpine
+    echo "Redis started at localhost:6379"
+}
 
-# --- Iniciar servicios desde imágenes existentes con volúmenes dinámicos ---
+start_db() {
+    echo "Starting DB Service..."
+    docker run -d --name agenda-db-service --network $NETWORK_NAME \
+      -p 8000:8000 \
+      -v "$CURRENT_DIR/services/db_service/data:/data" \
+      agenda-db
+    echo "DB Service started at localhost:8000"
+}
 
-# 1. Bus de Mensajes (Redis)
-echo "Starting Redis container..."
-docker run -d --name agenda-bus-redis --network $NETWORK_NAME redis:7-alpine
+start_user() {
+    echo "Starting User Service..."
+    docker run -d --name agenda-user-service --network $NETWORK_NAME \
+      -p 8001:8001 \
+      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-service:8000 \
+      -e LOG_LEVEL=debug \
+      agenda-user_event
+    echo "User Service started at localhost:8001"
+}
 
-# 2. API Gateway
-echo "Starting API Gateway..."
-docker run -d --name agenda-api-gateway --network $NETWORK_NAME -p 8000:8000 \
-  -v "$CURRENT_DIR/services/api_gateway:/app" agenda-api_gateway:latest
+start_group() {
+    echo "Starting Group Service..."
+    docker run -d --name agenda-group-service --network $NETWORK_NAME \
+      -p 8002:8002 \
+      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-service:8000 \
+      -e LOG_LEVEL=debug \
+      agenda-group_event
+    echo "Group Service started at localhost:8002"
+}
 
-# 3. Users Service
-echo "Starting Users Service..."
-docker run -d --name agenda-users-service --network $NETWORK_NAME -p 8001:8001 \
-  -e REDIS_HOST=agenda-bus-redis \
-  -e REDIS_PORT=6379 \
-  -e REDIS_DB=0 \
-  -e LOG_DIR=/app/logs \
-  -v "$CURRENT_DIR/services/users_service:/app" \
-  -v "$CURRENT_DIR/services/users_service/logs:/app/logs" \
-  agenda-users:latest
+case $SERVICE in
+    all)
+        echo "Starting all services in order: redis → db → user → group"
+        start_redis
+        sleep 2
+        start_db
+        sleep 2
+        start_user
+        sleep 2
+        start_group
+        echo "All services started successfully!"
+        echo "- Redis: localhost:6379"
+        echo "- DB Service: localhost:8000"
+        echo "- User Service: localhost:8001"
+        echo "- Group Service: localhost:8002"
+        ;;
+        
+    redis)
+        start_redis
+        ;;
+        
+    db)
+        start_db
+        ;;
+        
+    user)
+        start_user
+        ;;
+        
+    group)
+        start_group
+        ;;
+        
+    *)
+        echo "Error: Unknown service '$SERVICE'"
+        echo "Available services: redis, db, user, group"
+        exit 1
+        ;;
+esac
 
-# 4. Events Service
-docker run -d --name agenda-events-service --network $NETWORK_NAME -p 8002:8002 \
-  -v "$CURRENT_DIR/services/events_service:/app" agenda-events:latest
-
-# 5. Groups Service
-echo "Starting Groups Service..."
-# Start the container
-docker run -d --name agenda-groups-service --network agenda-net -p 8003:8003 \
-  -e ENVIRONMENT=development \
-  -e DATABASE_PATH=/app/data/groups.db \
-  -e REDIS_URL=redis://agenda-bus-redis:6379/0 \
-  -v "$CURRENT_DIR/services/group_service/data:/app/data" \
-  agenda-group:latest
-
-# # 6. Notifications Service
-# echo "Starting Notifications Service..."
-# docker run -d --name agenda-notifications-service --network $NETWORK_NAME -p 8004:8004 \
-
-# 7. Streamlit App
-echo "Starting Streamlit App..."
-docker run -d --name agenda-streamlit-app --network $NETWORK_NAME -p 8501:8501 \
-  -v "$CURRENT_DIR/services/streamlit_app:/app" agenda-streamlit_app:latest
-
-echo "\nAll services are starting. Use 'docker ps' to check their status."
+echo "Done!"
