@@ -6,3 +6,5 @@ __pycache__/
 services/users_service/data
 services/group_service/data
 images
+services_old
+scripts/OLD
