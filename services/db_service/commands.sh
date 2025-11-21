@@ -187,6 +187,12 @@ curl -X GET "http://localhost:8000/api/v1/groups/<groupId>/events"
 # Remove an event from a group
 curl -X DELETE "http://localhost:8000/api/v1/groups/<groupId>/events/<eventId>"
 
+curl -X PUT http://localhost:8000/api/v1/groups/<groupId>/events/<eventId> \
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "<status>",
+  }'
+
 ### 2. Event Status Management
 
 # Add a new status for an event

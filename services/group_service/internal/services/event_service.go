@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/agenda-distribuida/group-service/internal/clients"
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -13,6 +14,7 @@ import (
 
 // Event type constants
 const (
+	// Group events
 	EventTypeGroupCreate       = "group.create"
 	EventTypeGroupGet          = "group.get"
 	EventTypeGroupUpdate       = "group.update"
@@ -21,12 +23,22 @@ const (
 	EventTypeGroupMemberList   = "group.member.list"
 	EventTypeGroupMemberRemove = "group.member.remove"
 	EventTypeUserGroupsList    = "user.groups.list"
-	EventTypeInviteCreate      = "group.invite.create"
-	EventTypeInviteAccept      = "group.invite.accept"
-	EventTypeInviteReject      = "group.invite.reject"
-	EventTypeInviteList        = "group.invite.list"
-	EventTypeInviteGet         = "group.invite.get"
-	EventTypeInviteCancel      = "group.invite.cancel"
+
+	// Invitation events
+	EventTypeInviteCreate = "group.invite.create"
+	EventTypeInviteAccept = "group.invite.accept"
+	EventTypeInviteReject = "group.invite.reject"
+	EventTypeInviteList   = "group.invite.list"
+	EventTypeInviteGet    = "group.invite.get"
+	EventTypeInviteCancel = "group.invite.cancel"
+
+	// Group event events
+	EventTypeGroupEventCreate       = "group.event.create"
+	EventTypeGroupEventGet          = "group.event.get"
+	EventTypeGroupEventDelete       = "group.event.delete"
+	EventTypeGroupEventList         = "group.event.list"
+	EventTypeGroupEventStatusUpdate = "group.event.status.update"
+	EventTypeGroupEventStatusGet    = "group.event.status.get"
 )
 
 type EventService struct {
@@ -45,6 +57,7 @@ func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *Eve
 // ProcessGroupEvent processes group-related events
 func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	switch event.Type {
+	// Group management events
 	case EventTypeGroupCreate:
 		return s.handleCreateGroup(ctx, event)
 	case EventTypeGroupGet:
@@ -61,6 +74,8 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleRemoveGroupMember(ctx, event)
 	case EventTypeUserGroupsList:
 		return s.handleListUserGroups(ctx, event)
+
+	// Invitation events
 	case EventTypeInviteCreate:
 		return s.handleCreateInvitation(ctx, event)
 	case EventTypeInviteAccept:
@@ -73,8 +88,23 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleGetInvitation(ctx, event)
 	case EventTypeInviteCancel:
 		return s.handleCancelInvitation(ctx, event)
+
+	// Group event events
+	case EventTypeGroupEventCreate:
+		return s.handleCreateGroupEvent(ctx, event)
+	case EventTypeGroupEventGet:
+		return s.handleGetGroupEvent(ctx, event)
+	case EventTypeGroupEventDelete:
+		return s.handleDeleteGroupEvent(ctx, event)
+	case EventTypeGroupEventList:
+		return s.handleListGroupEvents(ctx, event)
+	case EventTypeGroupEventStatusUpdate:
+		return s.handleUpdateGroupEventStatus(ctx, event)
+	case EventTypeGroupEventStatusGet:
+		return s.handleGetGroupEventStatus(ctx, event)
+
 	default:
-		return nil, fmt.Errorf("unsupported event type: %s", event.Type)
+		return nil, fmt.Errorf("unknown event type: %s", event.Type)
 	}
 }
 
@@ -707,6 +737,526 @@ func (s *EventService) handleCancelInvitation(ctx context.Context, event models.
 		Data: map[string]interface{}{
 			"invitation_id": invitationID,
 			"canceled_by":   userID,
+		},
+	}, nil
+}
+
+// handleCreateGroupEvent handles creating a new group event
+func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing create group event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	groupID, ok := event.Data["group_id"].(string)
+	if !ok || groupID == "" {
+		return nil, fmt.Errorf("missing or invalid group_id")
+	}
+
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return nil, fmt.Errorf("missing or invalid event_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Check if the user is a member of the group
+	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error checking group membership: %w", err)
+	}
+	if !isMember {
+		return nil, fmt.Errorf("user is not a member of the group")
+	}
+
+	// Convert groupID to uuid.UUID
+	groupUUID, err := uuid.Parse(groupID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid group ID format: %w", err)
+	}
+
+	// Check if the group is hierarchical
+	group, err := s.dbClient.GetGroup(ctx, groupUUID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting group: %w", err)
+	}
+
+	// In a hierarchical group, only admins can create events
+	if group.IsHierarchical {
+		userUUID, err := uuid.Parse(userID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid user ID: %w", err)
+		}
+
+		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		if err != nil {
+			return nil, fmt.Errorf("error checking admin status: %w", err)
+		}
+
+		if !isAdmin {
+			return nil, fmt.Errorf("unauthorized: only group admins can create events in hierarchical groups")
+		}
+
+		// For hierarchical groups, create the event with status 'accepted'
+		groupEvent, err := s.dbClient.CreateGroupEvent(ctx, groupID, eventID, userID, "accepted", true)
+		if err != nil {
+			return nil, fmt.Errorf("error creating group event: %w", err)
+		}
+
+		// For hierarchical groups, automatically accept the event for all members
+		members, err := s.dbClient.ListGroupMembers(ctx, groupID)
+		if err != nil {
+			return nil, fmt.Errorf("error getting group members: %w", err)
+		}
+
+		// Add and set status for each member
+		for _, member := range members {
+			_, err := s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
+			if err != nil {
+				s.logger.Error("Failed to add event status for member",
+					zap.String("event_id", eventID),
+					zap.String("user_id", member.UserID.String()),
+					zap.Error(err))
+				// Continue with other members even if one fails
+			}
+		}
+
+		return &models.EventResponse{
+			EventID: event.ID,
+			Type:    "group.event.created",
+			Success: true,
+			Data: map[string]interface{}{
+				"group_id":        groupEvent.GroupID,
+				"event_id":        groupEvent.EventID,
+				"status":          groupEvent.Status,
+				"is_hierarchical": true,
+			},
+		}, nil
+	}
+
+	// For non-hierarchical groups, create the event with status 'pending'
+	groupEvent, err := s.dbClient.CreateGroupEvent(ctx, groupID, eventID, userID, "pending", false)
+	if err != nil {
+		return nil, fmt.Errorf("error creating group event: %w", err)
+	}
+
+	// For non-hierarchical groups, set to pending the event for all members
+	members, err := s.dbClient.ListGroupMembers(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting group members: %w", err)
+	}
+
+	// Add and set status for each member
+	for _, member := range members {
+		if member.UserID.String() == userID {
+			_, err = s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
+		} else {
+			_, err = s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "pending")
+		}
+
+		if err != nil {
+			s.logger.Error("Failed to add event status for member",
+				zap.String("event_id", eventID),
+				zap.String("user_id", member.UserID.String()),
+				zap.Error(err))
+			// Continue with other members even if one fails
+		}
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.created",
+		Success: true,
+		Data: map[string]interface{}{
+			"group_id":        groupEvent.GroupID,
+			"event_id":        groupEvent.EventID,
+			"status":          groupEvent.Status,
+			"is_hierarchical": false,
+		},
+	}, nil
+}
+
+// handleGetGroupEvent handles retrieving a group event
+func (s *EventService) handleGetGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing get group event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	groupID, ok := event.Data["group_id"].(string)
+	if !ok || groupID == "" {
+		return nil, fmt.Errorf("missing or invalid group_id")
+	}
+
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return nil, fmt.Errorf("missing or invalid event_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Check if the user is a member of the group
+	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error checking group membership: %w", err)
+	}
+	if !isMember {
+		return nil, fmt.Errorf("user is not a member of the group")
+	}
+
+	// Get the group event
+	groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting group event: %w", err)
+	}
+
+	// Get the user's status for this event
+	eventStatus, err := s.dbClient.GetEventStatus(ctx, eventID, userID)
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return nil, fmt.Errorf("error getting event status: %w", err)
+	}
+
+	// For non-hierarchical groups, check if all members have accepted
+	var allAccepted bool
+	if !groupEvent.IsHierarchical {
+		allAccepted, err = s.dbClient.HasAllMembersAccepted(ctx, eventID, groupID)
+		if err != nil {
+			s.logger.Error("Error checking if all members have accepted",
+				zap.String("event_id", eventID),
+				zap.String("group_id", groupID),
+				zap.Error(err))
+		}
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.retrieved",
+		Success: true,
+		Data: map[string]interface{}{
+			"group_id":        groupEvent.GroupID,
+			"event_id":        groupEvent.EventID,
+			"added_by":        groupEvent.AddedBy,
+			"is_hierarchical": groupEvent.IsHierarchical,
+			"status":          groupEvent.Status,
+			"created_at":      groupEvent.CreatedAt,
+			"user_status":     eventStatus,
+			"all_accepted":    allAccepted,
+		},
+	}, nil
+}
+
+// handleDeleteGroupEvent handles deleting a group event
+func (s *EventService) handleDeleteGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing delete group event",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	groupID, ok := event.Data["group_id"].(string)
+	if !ok || groupID == "" {
+		return nil, fmt.Errorf("missing or invalid group_id")
+	}
+
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return nil, fmt.Errorf("missing or invalid event_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Get the group event first to check permissions
+	groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting group event: %w", err)
+	}
+
+	// Only the user who created the event or a group admin can delete it
+	if groupEvent.AddedBy != userID {
+		// Check if user is a group admin
+		userUUID, err := uuid.Parse(userID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid user ID: %w", err)
+		}
+
+		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		if err != nil {
+			return nil, fmt.Errorf("error checking admin status: %w", err)
+		}
+
+		if !isAdmin {
+			return nil, fmt.Errorf("unauthorized: only the event creator or group admin can delete the event")
+		}
+	}
+
+	// Delete the group event
+	err = s.dbClient.DeleteGroupEvent(ctx, groupID, eventID)
+	if err != nil {
+		return nil, fmt.Errorf("error deleting group event: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.deleted",
+		Success: true,
+		Data: map[string]interface{}{
+			"group_id": groupID,
+			"event_id": eventID,
+		},
+	}, nil
+}
+
+// handleListGroupEvents handles listing all events for a group
+func (s *EventService) handleListGroupEvents(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing list group events",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	groupID, ok := event.Data["group_id"].(string)
+	if !ok || groupID == "" {
+		return nil, fmt.Errorf("missing or invalid group_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Check if the user is a member of the group
+	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error checking group membership: %w", err)
+	}
+	if !isMember {
+		return nil, fmt.Errorf("user is not a member of the group")
+	}
+
+	// Get all events for the group
+	groupEvents, err := s.dbClient.ListGroupEvents(ctx, groupID)
+	if err != nil {
+		return nil, fmt.Errorf("error listing group events: %w", err)
+	}
+
+	// For each event, get the user's status
+	var eventsWithStatus []map[string]interface{}
+	for _, ge := range groupEvents {
+		eventData := map[string]interface{}{
+			"id":              ge.ID,
+			"group_id":        ge.GroupID,
+			"event_id":        ge.EventID,
+			"added_by":        ge.AddedBy,
+			"is_hierarchical": ge.IsHierarchical,
+			"status":          ge.Status,
+			"created_at":      ge.CreatedAt,
+		}
+
+		// Get the user's status for this event
+		eventStatus, err := s.dbClient.GetEventStatus(ctx, ge.EventID, userID)
+		if err == nil && eventStatus != nil {
+			eventData["user_status"] = eventStatus.Status
+		}
+
+		eventsWithStatus = append(eventsWithStatus, eventData)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.listed",
+		Success: true,
+		Data: map[string]interface{}{
+			"group_id": groupID,
+			"events":   eventsWithStatus,
+		},
+	}, nil
+}
+
+// handleUpdateGroupEventStatus handles updating a user's status for a group event
+func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing update group event status",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return nil, fmt.Errorf("missing or invalid event_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	status, ok := event.Data["status"].(string)
+	if !ok || status == "" {
+		return nil, fmt.Errorf("missing or invalid status")
+	}
+
+	// Validate status
+	validStatuses := map[string]bool{
+		"accepted": true,
+		"declined": true,
+		"pending":  true,
+	}
+
+	if !validStatuses[status] {
+		return nil, fmt.Errorf("invalid status: %s. Must be one of: accepted, declined, pending", status)
+	}
+
+	// Get the group event to check permissions
+	groupID, ok := event.Data["group_id"].(string)
+	if !ok || groupID == "" {
+		return nil, fmt.Errorf("missing or invalid group_id")
+	}
+
+	// Check if the user is a member of the group
+	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	if err != nil {
+		return nil, fmt.Errorf("error checking group membership: %w", err)
+	}
+	if !isMember {
+		return nil, fmt.Errorf("user is not a member of the group")
+	}
+
+	// Get the group to check if it's hierarchical
+
+	// Convert groupID to uuid.UUID
+	groupUUID, err := uuid.Parse(groupID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid group ID format: %w", err)
+	}
+
+	// Check if the group is hierarchical
+	group, err := s.dbClient.GetGroup(ctx, groupUUID)
+	if err != nil {
+		return nil, fmt.Errorf("error getting group: %w", err)
+	}
+
+	// In a hierarchical group, only admins can update event status for other users
+	if group.IsHierarchical && status != "accepted" {
+		// Only allow admins to decline events in hierarchical groups
+		userUUID, err := uuid.Parse(userID)
+		if err != nil {
+			return nil, fmt.Errorf("invalid user ID: %w", err)
+		}
+
+		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		if err != nil {
+			return nil, fmt.Errorf("error checking admin status: %w", err)
+		}
+
+		if !isAdmin {
+			return nil, fmt.Errorf("unauthorized: only group admins can decline events in hierarchical groups")
+		}
+	}
+
+	// Update the event status
+	eventStatus, err := s.dbClient.UpdateEventStatus(ctx, eventID, userID, status)
+	if err != nil {
+		return nil, fmt.Errorf("error updating event status: %w", err)
+	}
+
+	// For non-hierarchical groups, check if all members have accepted
+	var allAccepted bool
+	if !group.IsHierarchical && status == "accepted" {
+		allAccepted, err = s.dbClient.HasAllMembersAccepted(ctx, eventID, groupID)
+		if err != nil {
+			s.logger.Error("Error checking if all members have accepted",
+				zap.String("event_id", eventID),
+				zap.String("group_id", groupID),
+				zap.Error(err))
+		}
+
+		// If all members have accepted, update the event status to 'accepted'
+		if allAccepted {
+			// First, get the current event to preserve its hierarchical status
+			groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+			if err != nil {
+				s.logger.Error("Error getting group event details",
+					zap.String("event_id", eventID),
+					zap.String("group_id", groupID),
+					zap.Error(err))
+				return nil, fmt.Errorf("error getting group event details: %w", err)
+			}
+
+			// Update the event status while preserving the existing hierarchical status
+			_, err = s.dbClient.UpdateGroupEvent(ctx, groupID, eventID, "accepted", groupEvent.IsHierarchical)
+			if err != nil {
+				s.logger.Error("Error updating group event status to accepted",
+					zap.String("event_id", eventID),
+					zap.String("group_id", groupID),
+					zap.Error(err))
+			}
+		}
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.status.updated",
+		Success: true,
+		Data: map[string]interface{}{
+			"event_id":     eventID,
+			"user_id":      userID,
+			"status":       eventStatus.Status,
+			"updated_at":   eventStatus.UpdatedAt,
+			"all_accepted": allAccepted,
+		},
+	}, nil
+}
+
+// handleGetGroupEventStatus handles getting a user's status for a group event
+func (s *EventService) handleGetGroupEventStatus(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	s.logger.Debug("Processing get group event status",
+		zap.String("event_id", event.ID),
+		zap.Any("event_data", event.Data))
+
+	// Extract required fields
+	eventID, ok := event.Data["event_id"].(string)
+	if !ok || eventID == "" {
+		return nil, fmt.Errorf("missing or invalid event_id")
+	}
+
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return nil, fmt.Errorf("missing or invalid user_id")
+	}
+
+	// Get the event status
+	eventStatus, err := s.dbClient.GetEventStatus(ctx, eventID, userID)
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			return &models.EventResponse{
+				EventID: event.ID,
+				Type:    "group.event.status.retrieved",
+				Success: true,
+				Data: map[string]interface{}{
+					"event_id": eventID,
+					"user_id":  userID,
+					"status":   "pending", // Default status if not found
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("error getting event status: %w", err)
+	}
+
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.event.status.retrieved",
+		Success: true,
+		Data: map[string]interface{}{
+			"event_id":   eventID,
+			"user_id":    userID,
+			"status":     eventStatus.Status,
+			"updated_at": eventStatus.UpdatedAt,
 		},
 	}, nil
 }

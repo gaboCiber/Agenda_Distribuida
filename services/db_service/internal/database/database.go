@@ -224,7 +224,7 @@ func getMigrations() []migration {
 					event_id TEXT NOT NULL,
 					added_by INTEGER NOT NULL,
 					is_hierarchical BOOLEAN DEFAULT 0,
-					status TEXT DEFAULT 'pending',
+					status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
 					added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 					FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE,
 					FOREIGN KEY (event_id) REFERENCES events(id) ON DELETE CASCADE,

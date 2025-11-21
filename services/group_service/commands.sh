@@ -3,12 +3,6 @@
 #                            Groups                                 #
 #####################################################################
 
-# Replace these with actual IDs from your system
-USER1_UUID="11111111-1111-1111-1111-111111111111"
-USER2_UUID="22222222-2222-2222-2222-222222222222"
-GROUP_UUID="00000000-0000-0000-0000-000000000000"
-
-
 # 1. **Create a Group**:
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "550e8400-e29b-41d4-a716-446655440000",
@@ -229,6 +223,141 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "type": "group.invite.list",
     "data": {
         "user_id": "'$USER2_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+#####################################################################
+#                         Group Events                              #
+#####################################################################
+
+# 1. **Create a Group Event**:
+# For hierarchical groups (admin creates, auto-accepted by all)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174011",
+    "type": "group.event.create",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_1>",
+        "added_by": "<USER1_ID>",
+        "is_hierarchical": true
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# For non-hierarchical groups (any member creates, pending acceptance)
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174012",
+    "type": "group.event.create",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_2>",
+        "added_by": "<USER2_ID>",
+        "is_hierarchical": false
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 2. **Get a Group Event**:
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174013",
+    "type": "group.event.get",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_1>",
+        "user_id": "<USER1_ID>"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 3. **List All Events in a Group**:
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174014",
+    "type": "group.event.list",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "user_id": "<USER1_ID>"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 4. **Update Event Status** (Accept/Decline):
+# Accept an event
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174015",
+    "type": "group.event.status.update",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_2>",
+        "user_id": "<USER1_ID>",
+        "status": "accepted"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# Decline an event
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174016",
+    "type": "group.event.status.update",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_2>",
+        "user_id": "<USER2_ID>",
+        "status": "declined"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 5. **Get Event Status**:
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174017",
+    "type": "group.event.status.get",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_2>",
+        "user_id": "<USER1_ID>"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 6. **Delete a Group Event** (Admin only for hierarchical groups):
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174018",
+    "type": "group.event.delete",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_1>",
+        "user_id": "<USER1_ID>"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
+# 7. **List Event Statuses** (for group admins or event creator):
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "123e4567-e89b-12d3-a456-426614174019",
+    "type": "group.event.status.list",
+    "data": {
+        "group_id": "<GROUP_ID>",
+        "event_id": "<EVENT_ID_2>",
+        "user_id": "<USER1_ID>"
     },
     "metadata": {
         "reply_to": "group_events_response"

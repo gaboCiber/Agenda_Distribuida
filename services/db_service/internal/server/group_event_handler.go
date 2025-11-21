@@ -34,6 +34,7 @@ func (h *GroupEventHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/groups/{groupId}/events", h.AddGroupEvent).Methods("POST")
 	router.HandleFunc("/groups/{groupId}/events", h.GetGroupEvents).Methods("GET")
 	router.HandleFunc("/groups/{groupId}/events/{eventId}", h.RemoveGroupEvent).Methods("DELETE")
+	router.HandleFunc("/groups/{groupId}/events/{eventId}", h.UpdateGroupEvent).Methods("PUT")
 
 	// Event Status Management
 	router.HandleFunc("/events/{eventId}/status", h.AddEventStatus).Methods("POST")
@@ -70,6 +71,7 @@ func (h *GroupEventHandler) AddGroupEvent(w http.ResponseWriter, r *http.Request
 		EventID        uuid.UUID `json:"event_id"`
 		AddedBy        uuid.UUID `json:"added_by"`
 		IsHierarchical bool      `json:"is_hierarchical"`
+		Status         string    `json:"status"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -83,7 +85,7 @@ func (h *GroupEventHandler) AddGroupEvent(w http.ResponseWriter, r *http.Request
 		EventID:        req.EventID,
 		AddedBy:        req.AddedBy,
 		IsHierarchical: req.IsHierarchical,
-		Status:         "pending",
+		Status:         req.Status,
 	}
 
 	if err := h.repo.AddGroupEvent(r.Context(), groupEvent); err != nil {
@@ -133,6 +135,52 @@ func (h *GroupEventHandler) GetGroupEvents(w http.ResponseWriter, r *http.Reques
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
 		"data":   events,
+	})
+}
+
+// UpdateGroupEvent updates a group event's status and hierarchical flag
+func (h *GroupEventHandler) UpdateGroupEvent(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	groupID, err := uuid.Parse(vars["groupId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid group ID")
+		http.Error(w, "Invalid group ID", http.StatusBadRequest)
+		return
+	}
+
+	eventID, err := uuid.Parse(vars["eventId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid event ID")
+		http.Error(w, "Invalid event ID", http.StatusBadRequest)
+		return
+	}
+
+	var requestBody struct {
+		Status         models.EventStatus `json:"status"`
+		IsHierarchical bool               `json:"is_hierarchical"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+		h.log.Error().Err(err).Msg("Failed to decode request body")
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
+	updatedStatus, err := h.repo.UpdateGroupEvent(r.Context(), groupID, eventID, requestBody.Status, requestBody.IsHierarchical)
+	if err != nil {
+		h.log.Error().Err(err).Msg("Failed to update group event")
+		if err.Error() == "group event not found" {
+			http.Error(w, "Group event not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, "Failed to update group event", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"data":   updatedStatus,
 	})
 }
 
@@ -261,10 +309,20 @@ func (h *GroupEventHandler) UpdateEventStatus(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	status, err := h.repo.GetEventStatus(r.Context(), eventID, req.UserID)
+	if err != nil {
+		h.log.Error().Err(err).
+			Str("event_id", eventID.String()).
+			Str("user_id", req.UserID.String()).
+			Msg("Failed to get updated event status")
+		http.Error(w, `{"status":"error","message":"Failed to get updated event status"}`, http.StatusInternalServerError)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":  "success",
-		"message": "Event status updated successfully",
+		"status": "success",
+		"data":   status,
 	})
 }
 
