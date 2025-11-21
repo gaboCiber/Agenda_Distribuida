@@ -24,6 +24,7 @@ type GroupEventRepository interface {
 	GetGroupEvents(ctx context.Context, groupID uuid.UUID) ([]*models.GroupEvent, error)
 	GetGroupEvent(ctx context.Context, eventID uuid.UUID) (*models.GroupEvent, error)
 	RemoveEventFromAllGroups(ctx context.Context, eventID uuid.UUID) error
+	UpdateGroupEvent(ctx context.Context, groupID, eventID uuid.UUID, status models.EventStatus, isHierarchical bool) (*models.GroupEvent, error)
 
 	// Event Status Management
 	AddEventStatus(ctx context.Context, status *models.GroupEventStatus) error
@@ -249,6 +250,44 @@ func (r *groupEventRepository) GetGroupEvents(ctx context.Context, groupID uuid.
 	}
 
 	return events, nil
+}
+
+// UpdateGroupEvent updates a group event's status and hierarchical flag
+func (r *groupEventRepository) UpdateGroupEvent(ctx context.Context, groupID, eventID uuid.UUID, status models.EventStatus, isHierarchical bool) (*models.GroupEvent, error) {
+	query := `
+        UPDATE group_events 
+        SET status = $1, 
+            is_hierarchical = $2
+        WHERE group_id = $3 AND event_id = $4
+        RETURNING id, group_id, event_id, added_by, is_hierarchical, status, added_at
+    `
+
+	var event models.GroupEvent
+	err := r.db.QueryRowContext(
+		ctx,
+		query,
+		status,
+		isHierarchical,
+		groupID,
+		eventID,
+	).Scan(
+		&event.ID,
+		&event.GroupID,
+		&event.EventID,
+		&event.AddedBy,
+		&event.IsHierarchical,
+		&event.Status,
+		&event.AddedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("group event not found")
+		}
+		return nil, fmt.Errorf("failed to update group event: %w", err)
+	}
+
+	return &event, nil
 }
 
 // GetGroupEvent retrieves a group event by ID

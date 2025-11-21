@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
 	"github.com/google/uuid"
@@ -363,6 +364,22 @@ func (c *DBServiceClient) IsGroupAdmin(ctx context.Context, groupID string, user
 	return false, nil
 }
 
+// IsGroupMember checks if a user is a member of a group
+func (c *DBServiceClient) IsGroupMember(ctx context.Context, groupID, userID string) (bool, error) {
+	members, err := c.ListGroupMembers(ctx, groupID)
+	if err != nil {
+		return false, fmt.Errorf("error checking group membership: %w", err)
+	}
+
+	for _, member := range members {
+		if member.UserID.String() == userID {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
 // CreateInvitation creates a new group invitation
 func (c *DBServiceClient) CreateInvitation(ctx context.Context, groupID, userID, invitedBy string) (*models.GroupInvitation, error) {
 	url := fmt.Sprintf("%s/api/v1/invitations", c.baseURL)
@@ -472,7 +489,7 @@ func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, statu
 	}
 
 	var resp struct {
-		Status string                   `json:"status"`
+		Status string                    `json:"status"`
 		Data   []*models.GroupInvitation `json:"data"`
 	}
 
@@ -525,4 +542,426 @@ func (c *DBServiceClient) DeleteInvitation(ctx context.Context, invitationID str
 	}
 
 	return nil
+}
+
+// GroupEvent represents a group event in the database
+type GroupEvent struct {
+	ID             string    `json:"id"`
+	GroupID        string    `json:"group_id"`
+	EventID        string    `json:"event_id"`
+	AddedBy        string    `json:"added_by"`
+	IsHierarchical bool      `json:"is_hierarchical"`
+	Status         string    `json:"status"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// GroupEventStatus represents a user's status for a group event
+type GroupEventStatus struct {
+	ID          string     `json:"id"`
+	GroupID     string     `json:"group_id"`
+	EventID     string     `json:"event_id"`
+	UserID      string     `json:"user_id"`
+	Status      string     `json:"status"`
+	RespondedAt *time.Time `json:"responded_at,omitempty"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
+}
+
+// CreateGroupEvent adds a new event to a group
+func (c *DBServiceClient) CreateGroupEvent(ctx context.Context, groupID, eventID, addedBy string, status string, isHierarchical bool) (*GroupEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/events", c.baseURL, groupID)
+
+	reqBody := map[string]interface{}{
+		"event_id":        eventID,
+		"added_by":        addedBy,
+		"status":          status,
+		"is_hierarchical": isHierarchical,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request body: %w", err)
+	}
+
+	respBody, err := c.doRequest(ctx, http.MethodPost, url, body)
+	if err != nil {
+		c.logger.Error("Failed to create group event",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to create group event: %w", err)
+	}
+
+	var resp struct {
+		Status string      `json:"status"`
+		Data   *GroupEvent `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse create group event response",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling create group event response: %w", err)
+	}
+
+	if resp.Status != "success" || resp.Data == nil {
+		return nil, fmt.Errorf("failed to create group event: unexpected response status")
+	}
+
+	return resp.Data, nil
+}
+
+// GetGroupEvent retrieves a group event by ID
+func (c *DBServiceClient) GetGroupEvent(ctx context.Context, groupID, eventID string) (*GroupEvent, error) {
+	// First, get all events for the group
+	events, err := c.ListGroupEvents(ctx, groupID)
+	if err != nil {
+		c.logger.Error("Failed to list group events",
+			zap.String("group_id", groupID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get group event: %w", err)
+	}
+
+	// Find the specific event by ID
+	for _, event := range events {
+		if event.EventID == eventID {
+			return event, nil
+		}
+	}
+
+	c.logger.Debug("Group event not found",
+		zap.String("group_id", groupID),
+		zap.String("event_id", eventID))
+	return nil, fmt.Errorf("group event not found")
+}
+
+// DeleteGroupEvent removes an event from a group and all its statuses
+func (c *DBServiceClient) DeleteGroupEvent(ctx context.Context, groupID, eventID string) error {
+	// First, delete all statuses for this event
+	statusURL := fmt.Sprintf("%s/api/v1/events/%s/statuses", c.baseURL, eventID)
+	_, err := c.doRequest(ctx, http.MethodDelete, statusURL, nil)
+	if err != nil && !strings.Contains(err.Error(), "404") {
+		c.logger.Error("Failed to delete event statuses",
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		// Continue with group event deletion even if status deletion fails
+	}
+
+	// Then delete the group event
+	eventURL := fmt.Sprintf("%s/api/v1/groups/%s/events/%s", c.baseURL, groupID, eventID)
+	respBody, err := c.doRequest(ctx, http.MethodDelete, eventURL, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			return fmt.Errorf("group event not found")
+		}
+		c.logger.Error("Failed to delete group event",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		return fmt.Errorf("failed to delete group event: %w", err)
+	}
+
+	var resp struct {
+		Status  string `json:"status"`
+		Message string `json:"message"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse delete group event response",
+			zap.String("event_id", eventID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return fmt.Errorf("error unmarshaling delete group event response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return fmt.Errorf("failed to delete group event: %s", resp.Message)
+	}
+
+	return nil
+}
+
+// ListGroupEvents retrieves all events for a group
+func (c *DBServiceClient) ListGroupEvents(ctx context.Context, groupID string) ([]*GroupEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/events", c.baseURL, groupID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Failed to list group events",
+			zap.String("group_id", groupID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to list group events: %w", err)
+	}
+
+	var resp struct {
+		Status string        `json:"status"`
+		Data   []*GroupEvent `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse list group events response",
+			zap.String("group_id", groupID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling list group events response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("failed to list group events: unexpected response status")
+	}
+
+	return resp.Data, nil
+}
+
+// AddEventStatus adds a new status for an event
+func (c *DBServiceClient) AddEventStatus(ctx context.Context, eventID, groupID, userID, status string) (*GroupEventStatus, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s/status", c.baseURL, eventID)
+
+	reqBody := map[string]string{
+		"group_id": groupID,
+		"user_id":  userID,
+		"status":   status,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request body: %w", err)
+	}
+
+	respBody, err := c.doRequest(ctx, http.MethodPost, url, body)
+	if err != nil {
+		c.logger.Error("Failed to add event status",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.String("status", status),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to add event status: %w", err)
+	}
+
+	var resp struct {
+		Status string            `json:"status"`
+		Data   *GroupEventStatus `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse add event status response",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling add event status response: %w", err)
+	}
+
+	if resp.Status != "success" || resp.Data == nil {
+		return nil, fmt.Errorf("failed to add event status: unexpected response status")
+	}
+
+	return resp.Data, nil
+}
+
+// UpdateEventStatus updates a user's status for an event
+func (c *DBServiceClient) UpdateEventStatus(ctx context.Context, eventID, userID, status string) (*GroupEventStatus, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s/status", c.baseURL, eventID)
+
+	reqBody := map[string]string{
+		"user_id": userID,
+		"status":  status,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("error marshaling request body: %w", err)
+	}
+
+	respBody, err := c.doRequest(ctx, http.MethodPut, url, body)
+	if err != nil {
+		c.logger.Error("Failed to update event status",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.String("status", status),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to update event status: %w", err)
+	}
+
+	var resp struct {
+		Status string            `json:"status"`
+		Data   *GroupEventStatus `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse update event status response",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling update event status response: %w", err)
+	}
+
+	if resp.Status != "success" || resp.Data == nil {
+		return nil, fmt.Errorf("failed to update event status: unexpected response status")
+	}
+
+	return resp.Data, nil
+}
+
+// GetEventStatus retrieves a user's status for an event
+func (c *DBServiceClient) GetEventStatus(ctx context.Context, eventID, userID string) (*GroupEventStatus, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s/status/%s", c.baseURL, eventID, userID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		if strings.Contains(err.Error(), "404") {
+			return nil, fmt.Errorf("event status not found")
+		}
+		c.logger.Error("Failed to get event status",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get event status: %w", err)
+	}
+
+	var resp struct {
+		Status string            `json:"status"`
+		Data   *GroupEventStatus `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse get event status response",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling get event status response: %w", err)
+	}
+
+	if resp.Status != "success" || resp.Data == nil {
+		return nil, fmt.Errorf("event status not found")
+	}
+
+	return resp.Data, nil
+}
+
+// HasResponded checks if a user has responded to an event
+func (c *DBServiceClient) HasResponded(ctx context.Context, eventID, userID string) (bool, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s/responded/%s", c.baseURL, eventID, userID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Failed to check if user has responded to event",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return false, fmt.Errorf("failed to check if user has responded to event: %w", err)
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			HasResponded bool `json:"has_responded"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse has responded response",
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return false, fmt.Errorf("error unmarshaling has responded response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return false, fmt.Errorf("failed to check if user has responded to event: unexpected response status")
+	}
+
+	return resp.Data.HasResponded, nil
+}
+
+// HasAllMembersAccepted checks if all members of a group have accepted an event
+func (c *DBServiceClient) HasAllMembersAccepted(ctx context.Context, eventID, groupID string) (bool, error) {
+	url := fmt.Sprintf("%s/api/v1/events/%s/all-accepted/%s", c.baseURL, eventID, groupID)
+
+	respBody, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Failed to check if all members have accepted event",
+			zap.String("event_id", eventID),
+			zap.String("group_id", groupID),
+			zap.Error(err))
+		return false, fmt.Errorf("failed to check if all members have accepted event: %w", err)
+	}
+
+	var resp struct {
+		Status string `json:"status"`
+		Data   struct {
+			AllAccepted bool `json:"all_accepted"`
+		} `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse all members accepted response",
+			zap.String("event_id", eventID),
+			zap.String("group_id", groupID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return false, fmt.Errorf("error unmarshaling all members accepted response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return false, fmt.Errorf("failed to check if all members have accepted event: unexpected response status")
+	}
+
+	return resp.Data.AllAccepted, nil
+}
+
+// UpdateGroupEvent updates a group event's status and hierarchical flag
+func (c *DBServiceClient) UpdateGroupEvent(ctx context.Context, groupID, eventID, status string, isHierarchical bool) (*GroupEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/events/%s", c.baseURL, groupID, eventID)
+
+	reqBody := struct {
+		Status         string `json:"status"`
+		IsHierarchical bool   `json:"is_hierarchical"`
+	}{
+		Status:         status,
+		IsHierarchical: isHierarchical,
+	}
+
+	body, err := json.Marshal(reqBody)
+	if err != nil {
+		c.logger.Error("Failed to marshal update group event request",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		return nil, fmt.Errorf("error marshaling update group event request: %w", err)
+	}
+
+	respBody, err := c.doRequest(ctx, http.MethodPut, url, body)
+	if err != nil {
+		c.logger.Error("Failed to update group event",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to update group event: %w", err)
+	}
+
+	var resp struct {
+		Status string     `json:"status"`
+		Data   GroupEvent `json:"data"`
+	}
+
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		c.logger.Error("Failed to parse update group event response",
+			zap.String("group_id", groupID),
+			zap.String("event_id", eventID),
+			zap.Error(err),
+			zap.ByteString("response", respBody))
+		return nil, fmt.Errorf("error unmarshaling update group event response: %w", err)
+	}
+
+	if resp.Status != "success" {
+		return nil, fmt.Errorf("failed to update group event: unexpected response status")
+	}
+
+	return &resp.Data, nil
 }

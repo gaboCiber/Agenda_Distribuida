@@ -619,6 +619,10 @@ func (r *groupRepository) GetMembers(ctx context.Context, groupID uuid.UUID) ([]
 		return nil, fmt.Errorf("failed to get group: %w", err)
 	}
 
+	if group == nil {
+		return nil, fmt.Errorf("group not found")
+	}
+
 	// If the group is hierarchical and has a parent, get inherited members
 	if group.IsHierarchical && group.ParentGroupID != nil {
 		// Get all admins from parent group

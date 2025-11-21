@@ -32,7 +32,7 @@ start_db() {
     docker run -d --name agenda-db-service --network $NETWORK_NAME \
       -p 8000:8000 \
       -v "$CURRENT_DIR/services/db_service/data:/data" \
-      agenda-db
+      agenda-db_event
     echo "DB Service started at localhost:8000"
 }
 
