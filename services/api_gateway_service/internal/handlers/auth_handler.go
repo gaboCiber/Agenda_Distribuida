@@ -1,19 +1,21 @@
 package handlers
 
 import (
-	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthHandler struct {
 	redis     *redis.Client
+	dbClient  *clients.DBClient
 	jwtSecret string
 	jwtExpiry time.Duration
 	logger    *zap.Logger
@@ -35,9 +37,10 @@ type LoginResponse struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
-func NewAuthHandler(redisClient *redis.Client, jwtSecret string, jwtExpiry time.Duration, logger *zap.Logger) *AuthHandler {
+func NewAuthHandler(redisClient *redis.Client, dbClient *clients.DBClient, jwtSecret string, jwtExpiry time.Duration, logger *zap.Logger) *AuthHandler {
 	return &AuthHandler{
 		redis:     redisClient,
+		dbClient:  dbClient,
 		jwtSecret: jwtSecret,
 		jwtExpiry: jwtExpiry,
 		logger:    logger,
@@ -51,33 +54,23 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Generate user ID
-	userID := uuid.New()
-
-	// Publish to Redis (simulate publishing user_created event)
-	event := map[string]interface{}{
-		"event":     "user_created",
-		"user_id":   userID.String(),
-		"username":  req.Username,
-		"email":     req.Email,
-		"timestamp": time.Now().Unix(),
-	}
-
-	// Marshal to JSON
-	eventJSON, err := json.Marshal(event)
+	// Hash the password
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		h.logger.Error("Failed to marshal user_created event", zap.Error(err))
+		h.logger.Error("Failed to hash password", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process password"})
+		return
+	}
+
+	// Register user directly in database via db_service
+	userID, err := h.dbClient.RegisterUser(req.Username, req.Email, string(hashedPassword))
+	if err != nil {
+		h.logger.Error("Failed to register user in database", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
 		return
 	}
 
-	if err := h.redis.Publish(c.Request.Context(), "agenda-events", eventJSON).Err(); err != nil {
-		h.logger.Error("Failed to publish user_created event", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
-		return
-	}
-
-	h.logger.Info("User registered", zap.String("user_id", userID.String()))
+	h.logger.Info("User registered successfully", zap.String("user_id", userID), zap.String("email", req.Email))
 	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully", "user_id": userID})
 }
 
@@ -88,12 +81,33 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// For demo, assume login is successful and return a JWT
-	// In real implementation, verify credentials via DB service
-	userID := uuid.New() // Mock user ID
+	// Verify credentials directly in database via db_service
+	userData, err := h.dbClient.LoginUser(req.Email, req.Password)
+	if err != nil {
+		h.logger.Warn("Login failed for user", zap.String("email", req.Email), zap.Error(err))
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		return
+	}
 
+	// Extract user ID from response
+	userIDStr, ok := userData["user_id"].(string)
+	if !ok {
+		h.logger.Error("Invalid user data format", zap.Any("userData", userData))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user data"})
+		return
+	}
+
+	userID, err := uuid.Parse(userIDStr)
+	if err != nil {
+		h.logger.Error("Invalid user ID format", zap.String("userID", userIDStr), zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
+		return
+	}
+
+	// Generate JWT token
 	token, err := h.generateJWT(userID)
 	if err != nil {
+		h.logger.Error("Failed to generate JWT token", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
@@ -103,7 +117,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		UserID: userID,
 	}
 
-	h.logger.Info("User logged in", zap.String("user_id", userID.String()))
+	h.logger.Info("User logged in successfully", zap.String("user_id", userID.String()), zap.String("email", req.Email))
 	c.JSON(http.StatusOK, response)
 }
 

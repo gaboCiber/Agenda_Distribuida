@@ -2,6 +2,43 @@ let token = null;
 let userId = null;
 let currentDate = new Date();
 
+// Load session from localStorage on page load
+function loadSession() {
+    const savedToken = localStorage.getItem('agenda_token');
+    const savedUserId = localStorage.getItem('agenda_userId');
+    const savedEmail = localStorage.getItem('agenda_email');
+
+    if (savedToken && savedUserId) {
+        token = savedToken;
+        userId = savedUserId;
+
+        // Update UI
+        document.getElementById('auth-section').style.display = 'none';
+        document.getElementById('dashboard').style.display = 'block';
+        document.getElementById('user-info').style.display = 'flex';
+        document.getElementById('user-email').textContent = savedEmail || '';
+
+        // Load data
+        loadEvents();
+        loadGroups();
+        renderCalendar();
+    }
+}
+
+// Save session to localStorage
+function saveSession(tokenValue, userIdValue, emailValue) {
+    localStorage.setItem('agenda_token', tokenValue);
+    localStorage.setItem('agenda_userId', userIdValue);
+    localStorage.setItem('agenda_email', emailValue || '');
+}
+
+// Clear session from localStorage
+function clearSession() {
+    localStorage.removeItem('agenda_token');
+    localStorage.removeItem('agenda_userId');
+    localStorage.removeItem('agenda_email');
+}
+
 // API request helper
 async function apiRequest(endpoint, method = 'GET', body = null) {
     const headers = { 'Content-Type': 'application/json' };
@@ -19,6 +56,75 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
     }
 
     return response.json();
+}async function createEvent(event) {
+    event.preventDefault();
+
+    console.log('createEvent called');
+
+    try {
+        console.log('Creating event...');
+        console.log('Token:', token);
+        console.log('UserId:', userId);
+
+        const title = document.getElementById('event-title').value;
+        const description = document.getElementById('event-description').value;
+        const startTime = document.getElementById('event-start').value;
+        const endTime = document.getElementById('event-end').value;
+        const groupId = document.getElementById('event-group').value;
+
+        console.log('Form values:', { title, description, startTime, endTime, groupId });
+
+        // Validate required fields
+        if (!title || !startTime || !endTime) {
+            showNotification('Por favor complete todos los campos requeridos', 'error');
+            return;
+        }
+
+        // Validate dates
+        const startDate = new Date(startTime);
+        const endDate = new Date(endTime);
+
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            showNotification('Fechas inválidas', 'error');
+            return;
+        }
+
+        if (startDate >= endDate) {
+            showNotification('La fecha de fin debe ser posterior a la fecha de inicio', 'error');
+            return;
+        }
+
+        // Make the API call using apiRequest helper
+        const requestData = {
+            title,
+            description,
+            start_time: startDate.toISOString(),
+            end_time: endDate.toISOString(),
+            user_id: userId,
+            group_id: groupId || undefined
+        };
+
+        console.log('Sending request:', requestData);
+
+        const result = await apiRequest('/events', 'POST', requestData);
+        
+        console.log('Success response:', result);
+        showNotification('Evento creado exitosamente!', 'success');
+        closeModal('event-modal');
+
+        // Clear form
+        document.getElementById('event-title').value = '';
+        document.getElementById('event-description').value = '';
+        document.getElementById('event-start').value = '';
+        document.getElementById('event-end').value = '';
+
+        loadEvents();
+        renderCalendar();
+
+    } catch (error) {
+        console.error('Error creating event:', error);
+        showNotification('Error al crear evento: ' + error.message, 'error');
+    }
 }
 
 // Notification system
@@ -66,6 +172,9 @@ async function login(event) {
         token = result.token;
         userId = result.user_id;
 
+        // Save session to localStorage
+        saveSession(token, userId, email);
+
         // Update UI
         document.getElementById('auth-section').style.display = 'none';
         document.getElementById('dashboard').style.display = 'block';
@@ -91,6 +200,9 @@ async function login(event) {
 function logout() {
     token = null;
     userId = null;
+
+    // Clear session from localStorage
+    clearSession();
 
     document.getElementById('auth-section').style.display = 'block';
     document.getElementById('dashboard').style.display = 'none';
@@ -118,39 +230,94 @@ function closeModal(modalId) {
 }
 
 // Event functions
-async function createEvent(event) {
-    event.preventDefault();
-
-    const title = document.getElementById('event-title').value;
-    const description = document.getElementById('event-description').value;
-    const startTime = document.getElementById('event-start').value;
-    const endTime = document.getElementById('event-end').value;
-    const groupId = document.getElementById('event-group').value;
+function createEventFromForm() {
+    console.log('createEventFromForm called');
 
     try {
-        const result = await apiRequest('/events', 'POST', {
+        console.log('Creating event...');
+        console.log('Token:', token);
+        console.log('UserId:', userId);
+
+        const title = document.getElementById('event-title').value;
+        const description = document.getElementById('event-description').value;
+        const startTime = document.getElementById('event-start').value;
+        const endTime = document.getElementById('event-end').value;
+        const groupId = document.getElementById('event-group').value;
+
+        console.log('Form values:', { title, description, startTime, endTime, groupId });
+
+        // Validate required fields
+        if (!title || !startTime || !endTime) {
+            showNotification('Por favor complete todos los campos requeridos', 'error');
+            return;
+        }
+
+        // Validate dates
+        const startDate = new Date(startTime);
+        const endDate = new Date(endTime);
+
+        if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+            showNotification('Fechas inválidas', 'error');
+            return;
+        }
+
+        if (startDate >= endDate) {
+            showNotification('La fecha de fin debe ser posterior a la fecha de inicio', 'error');
+            return;
+        }
+
+        // Make the API call
+        const requestData = {
             title,
             description,
-            start_time: new Date(startTime).toISOString(),
-            end_time: new Date(endTime).toISOString(),
+            start_time: startDate.toISOString(),
+            end_time: endDate.toISOString(),
             user_id: userId,
             group_id: groupId || undefined
+        };
+
+        console.log('Sending request:', requestData);
+
+        // Use fetch directly to avoid async issues
+        fetch('/api/events', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+            },
+            body: JSON.stringify(requestData)
+        })
+        .then(response => {
+            console.log('Response status:', response.status);
+            if (!response.ok) {
+                return response.text().then(text => {
+                    throw new Error(text || `HTTP error! status: ${response.status}`);
+                });
+            }
+            return response.json();
+        })
+        .then(result => {
+            console.log('Success response:', result);
+            showNotification('Evento creado exitosamente!', 'success');
+            closeModal('event-modal');
+
+            // Clear form
+            document.getElementById('event-title').value = '';
+            document.getElementById('event-description').value = '';
+            document.getElementById('event-start').value = '';
+            document.getElementById('event-end').value = '';
+
+            loadEvents();
+            renderCalendar();
+        })
+        .catch(error => {
+            console.error('Error creating event:', error);
+            showNotification('Error al crear evento: ' + error.message, 'error');
         });
 
-        showNotification('Evento creado exitosamente!', 'success');
-        closeModal('event-modal');
-
-        // Clear form
-        document.getElementById('event-title').value = '';
-        document.getElementById('event-description').value = '';
-        document.getElementById('event-start').value = '';
-        document.getElementById('event-end').value = '';
-
-        loadEvents();
-        renderCalendar();
-
     } catch (error) {
-        showNotification('Error al crear evento: ' + error.message, 'error');
+        console.error('JavaScript error in createEventFromForm:', error);
+        showNotification('Error de JavaScript: ' + error.message, 'error');
     }
 }
 
@@ -318,6 +485,7 @@ function nextMonth() {
 
 // Initialize
 window.onload = () => {
+    loadSession();
     renderCalendar();
 };
 
