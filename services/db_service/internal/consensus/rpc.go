@@ -1,0 +1,284 @@
+package consensus
+
+import (
+	"fmt"
+	"log"
+	"net"
+	"net/http"
+	"net/rpc"
+	"strings"
+	"time"
+
+	"github.com/agenda-distribuida/db-service/internal/logger"
+)
+
+// --- Métodos RPC del Servidor ---
+
+// RequestVote es el manejador RPC para que un candidato solicite un voto.
+func (rn *RaftNode) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	// 1. Responder falso si el término del candidato es menor que el nuestro.
+	if args.Term < rn.currentTerm {
+		reply.Term = rn.currentTerm
+		reply.VoteGranted = false
+		return nil
+	}
+
+	// 2. Si el término del candidato es mayor, nos convertimos en Follower.
+	if args.Term > rn.currentTerm {
+		rn.state = Follower
+		rn.currentTerm = args.Term
+		rn.votedFor = ""
+	}
+
+	reply.Term = rn.currentTerm
+
+	// 3. Comprobar si ya hemos votado en este término.
+	if rn.votedFor != "" && rn.votedFor != args.CandidateID {
+		reply.VoteGranted = false
+		return nil
+	}
+
+	// 4. Comprobar que el log del candidato esté al menos tan actualizado como el nuestro.
+	lastLogTerm := rn.log[len(rn.log)-1].Term
+	lastLogIndex := len(rn.log) - 1
+	if args.LastLogTerm < lastLogTerm || (args.LastLogTerm == lastLogTerm && args.LastLogIndex < lastLogIndex) {
+		reply.VoteGranted = false
+		return nil
+	}
+
+	// Si todas las comprobaciones pasan, otorgamos el voto.
+	rn.votedFor = args.CandidateID
+	reply.VoteGranted = true
+	log.Printf("[Nodo %s] Voto otorgado a %s para el término %d", rn.id, args.CandidateID, rn.currentTerm)
+
+	// Al otorgar un voto, también reiniciamos nuestro propio temporizador de elección.
+	rn.appendEntriesChan <- struct{}{}
+
+	return nil
+}
+
+// AppendEntries maneja las solicitudes de AppendEntries (heartbeats y entradas de log).
+func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) error {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	// 1. Si el término del líder es menor que el nuestro, rechazar
+	if args.Term < rn.currentTerm {
+		reply.Term = rn.currentTerm
+		reply.Success = false
+		log.Printf("[Nodo %s] Rechazando AppendEntries de líder %s (término %d) - Nuestro término es mayor (%d)",
+			rn.id, args.LeaderID, args.Term, rn.currentTerm)
+		return nil
+	}
+
+	// 2. Si el término es mayor, actualizar nuestro término y convertirnos en seguidor
+	if args.Term > rn.currentTerm {
+		log.Printf("[Nodo %s] Actualizando a término %d (era %d) y convirtiéndome en seguidor",
+			rn.id, args.Term, rn.currentTerm)
+		rn.currentTerm = args.Term
+		rn.state = Follower
+		rn.votedFor = ""
+	}
+
+	// Notificar al bucle principal que hemos recibido un heartbeat
+	select {
+	case rn.appendEntriesChan <- struct{}{}:
+		// Canal no bloqueado, todo bien
+	default:
+		// Si el canal está lleno, no importa, ya sabemos que hay un líder activo
+	}
+
+	// Si es un heartbeat (sin entradas de log)
+	if len(args.Entries) == 0 {
+		log.Printf("[Nodo %s] Recibido heartbeat del líder %s para el término %d",
+			rn.id, args.LeaderID, args.Term)
+	} else {
+		log.Printf("[Nodo %s] Recibidas %d entradas de log del líder %s (término %d)",
+			rn.id, len(args.Entries), args.LeaderID, args.Term)
+	}
+
+	reply.Term = rn.currentTerm
+
+	// 3. Comprobación de consistencia del log.
+	// (Implementación simplificada para el ejemplo)
+	// En una implementación completa, aquí se verificaría la consistencia del log
+	// Un conflicto ocurre si tienen el mismo índice pero diferentes términos.
+	if len(args.Entries) > 0 {
+		log.Printf("[Nodo %s] Recibidas %d entradas para replicar de %s", rn.id, len(args.Entries), args.LeaderID)
+		unconflictingIndex := -1
+		for i := 0; i < len(args.Entries); i++ {
+			logIndex := args.PrevLogIndex + 1 + i
+			if logIndex >= len(rn.log) || rn.log[logIndex].Term != args.Entries[i].Term {
+				unconflictingIndex = i
+				break
+			}
+		}
+
+		if unconflictingIndex != -1 {
+			// Truncar el log y añadir las nuevas entradas.
+			rn.log = rn.log[:args.PrevLogIndex+1+unconflictingIndex]
+			rn.log = append(rn.log, args.Entries[unconflictingIndex:]...)
+		}
+	}
+
+	// 5. Actualizar el commitIndex.
+	if args.LeaderCommit > rn.commitIndex {
+		rn.commitIndex = min(args.LeaderCommit, len(rn.log)-1)
+		// (En el futuro, aquí se aplicarían los logs a la máquina de estados)
+	}
+
+	reply.Success = true
+	return nil
+}
+
+// --- Infraestructura RPC ---
+
+// startRPCServer inicia el servidor RPC para el nodo.
+func (rn *RaftNode) startRPCServer(address string) {
+	// Crear un nuevo servidor RPC
+	server := rpc.NewServer()
+
+	// Registrar manualmente los métodos RPC
+	if err := server.RegisterName("RaftNode", rn); err != nil {
+		log.Fatalf("[Nodo %s] Error al registrar el servicio RPC: %v", rn.id, err)
+	}
+
+	// Registrar los métodos manualmente para asegurar que estén disponibles
+	server.HandleHTTP(rpc.DefaultRPCPath, rpc.DefaultDebugPath)
+
+	// Configurar el mux HTTP
+	mux := http.NewServeMux()
+	mux.Handle(rpc.DefaultRPCPath, server)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/" {
+			w.Write([]byte("Raft Node RPC Server"))
+			return
+		}
+		http.NotFound(w, r)
+	})
+
+	// Resolver la dirección para asegurarnos de que sea válida
+	tcpAddr, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		log.Fatalf("[Nodo %s] Error al resolver la dirección %s: %v", rn.id, address, err)
+	}
+
+	// Crear el listener
+	listener, err := net.ListenTCP("tcp", tcpAddr)
+	if err != nil {
+		logger.ErrorLogger.Printf("[Nodo %s] Error al iniciar el servidor RPC en %s: %v", rn.id, address, err)
+	}
+
+	// Obtener la dirección real en la que estamos escuchando (en caso de que se use el puerto 0)
+	actualAddr := listener.Addr().(*net.TCPAddr)
+	actualAddress := fmt.Sprintf("%s:%d", "localhost", actualAddr.Port)
+	logger.InfoLogger.Printf("Nodo %s: Servidor RPC escuchando en %s", rn.id, listener.Addr())
+
+	// Actualizar la dirección del peer con el puerto real asignado
+	rn.mu.Lock()
+	rn.peerAddress[rn.id] = actualAddress
+	rn.mu.Unlock()
+
+	// Crear el servidor HTTP
+	httpServer := &http.Server{
+		Addr:    actualAddress,
+		Handler: mux,
+	}
+
+	// Señalar que estamos listos para aceptar conexiones
+	rn.serverReady <- true
+
+	// Iniciar el servidor en una goroutine
+	go func() {
+		logger.InfoLogger.Printf("[Nodo %s] Iniciando servidor HTTP en %s", rn.id, actualAddress)
+		if err := httpServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+			logger.ErrorLogger.Printf("Nodo %s: Error al iniciar el servidor RPC: %v", rn.id, err)
+		}
+	}()
+}
+
+// sendRPC realiza una llamada RPC a otro nodo con reintentos.
+func (rn *RaftNode) sendRPC(peerId string, method string, args interface{}, reply interface{}) error {
+	rn.mu.Lock()
+	peerAddress, ok := rn.peerAddress[peerId]
+	rn.mu.Unlock()
+	
+	if !ok {
+		return fmt.Errorf("dirección de peer desconocida para %s", peerId)
+	}
+
+	var lastErr error
+	maxRetries := 3
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		// Skip delay for first attempt
+		if attempt > 0 {
+			time.Sleep(time.Duration(attempt*100) * time.Millisecond) // Exponential backoff
+		}
+
+		// Create a new client for each attempt
+		client, err := rpc.DialHTTP("tcp", peerAddress)
+		if err != nil {
+			lastErr = fmt.Errorf("error al conectar con el peer %s (intento %d/%d): %w",
+				peerAddress, attempt+1, maxRetries, err)
+			logger.ErrorLogger.Printf("[Nodo %s] %v", rn.id, lastErr)
+			continue
+		}
+
+		// Create a channel to handle the RPC call with a timeout
+		done := make(chan error, 1)
+		go func() {
+			// El nombre del método debe ser "RaftNode.NombreDelMétodo"
+			err := client.Call("RaftNode."+method, args, reply)
+			done <- err
+		}()
+
+		// Set a timeout for the RPC call
+		timeout := time.After(2 * time.Second)
+		select {
+		case err := <-done:
+			client.Close()
+			if err == nil {
+				return nil // Success
+			}
+			
+			lastErr = fmt.Errorf("error al llamar al método RaftNode.%s en %s (intento %d/%d): %w",
+				method, peerAddress, attempt+1, maxRetries, err)
+			logger.ErrorLogger.Printf("[Nodo %s] %v", rn.id, lastErr)
+
+			// If the error is not a connection error, don't retry
+			if !isNetworkError(err) {
+				return lastErr
+			}
+
+		case <-timeout:
+			client.Close()
+			lastErr = fmt.Errorf("tiempo de espera agotado para el método RaftNode.%s en %s (intento %d/%d)",
+				method, peerAddress, attempt+1, maxRetries)
+			logger.ErrorLogger.Printf("[Nodo %s] %v", rn.id, lastErr)
+		}
+	}
+
+	return lastErr
+}
+
+// isNetworkError checks if the error is a network-related error that might be worth retrying
+func isNetworkError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for network-related errors
+	return strings.Contains(err.Error(), "connection refused") ||
+		strings.Contains(err.Error(), "no route to host") ||
+		strings.Contains(err.Error(), "network is unreachable")
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
