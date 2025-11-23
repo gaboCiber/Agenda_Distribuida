@@ -56,6 +56,10 @@ type RaftNode struct {
 	id          string            // ID único de este nodo.
 	peerAddress map[string]string // Mapa de IDs de peers a sus direcciones de red.
 	serverReady chan bool         // Canal para señalar cuando el servidor está listo.
+	applyChan   chan struct{}     // Canal para señalar que hay logs para aplicar.
+
+	// --- Logging ---
+	logger *log.Logger // Logger personalizado para el nodo
 
 	// Canales para la comunicación interna y el manejo de temporizadores.
 	electionTimer     *time.Timer
@@ -67,6 +71,11 @@ type RaftNode struct {
 
 // NewRaftNode crea e inicializa un nuevo nodo Raft.
 func NewRaftNode(id string, peerAddress map[string]string) *RaftNode {
+	// Inicializar el logger
+	if err := logger.InitLogger("logs", id); err != nil {
+		log.Fatalf("No se pudo inicializar el logger: %v", err)
+	}
+
 	rn := &RaftNode{
 		id:                id,
 		peerAddress:       peerAddress,
@@ -81,6 +90,7 @@ func NewRaftNode(id string, peerAddress map[string]string) *RaftNode {
 		appendEntriesChan: make(chan struct{}, 1),
 		winElectionChan:   make(chan bool, 1),
 		serverReady:       make(chan bool, 1), // Buffered channel to prevent deadlocks
+		applyChan:         make(chan struct{}, 1),
 		electionTimeout:   randomElectionTimeout(),
 		electionTimer:     time.NewTimer(randomElectionTimeout()),
 		heartbeatCount:    0,
@@ -97,17 +107,69 @@ func (rn *RaftNode) Start() {
 			peers = append(peers, fmt.Sprintf("%s (%s)", peerID, addr))
 		}
 	}
-	log.Printf("[Nodo %s] INFO: Iniciando con %d peers: %v", rn.id, len(peers), strings.Join(peers, ", "))
+	logger.InfoLogger.Printf("[Nodo %s] INFO: Iniciando con %d peers: %v", rn.id, len(peers), strings.Join(peers, ", "))
 
 	// Iniciar el servidor RPC en una gorutina.
 	go rn.startRPCServer(rn.peerAddress[rn.id])
 
 	// Esperar a que el servidor RPC esté listo.
 	<-rn.serverReady
-	log.Printf("[Nodo %s] INFO: Servidor RPC listo en %s.", rn.id, rn.peerAddress[rn.id])
+	logger.InfoLogger.Printf("[Nodo %s] INFO: Servidor RPC listo en %s.", rn.id, rn.peerAddress[rn.id])
+
+	// Iniciar la gorutina que aplica logs a la máquina de estados.
+	go rn.applyLogs()
 
 	// Iniciar el bucle de estado principal del nodo.
 	go rn.run()
+}
+
+// Propose es usado por el cliente para proponer un nuevo comando.
+// Solo el líder puede procesar esta solicitud.
+func (rn *RaftNode) Propose(command interface{}) (bool, int) {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	if rn.state != Leader {
+		return false, -1
+	}
+
+	entry := LogEntry{
+		Term:    rn.currentTerm,
+		Command: command,
+	}
+	rn.log = append(rn.log, entry)
+	logger.InfoLogger.Printf("[Líder %s] INFO: Comando propuesto. Nuevo tamaño del log: %d", rn.id, len(rn.log))
+
+	// No esperamos a que se replique, simplemente lo añadimos y el siguiente
+	// heartbeat se encargará de enviarlo.
+	return true, len(rn.log) - 1
+}
+
+// applyLogs es una gorutina que aplica logs comprometidos a la máquina de estados.
+func (rn *RaftNode) applyLogs() {
+	for range rn.applyChan {
+		rn.mu.Lock()
+		// Copiamos los índices para no mantener el lock durante la aplicación.
+		lastApplied := rn.lastApplied
+		commitIndex := rn.commitIndex
+		entriesToApply := make([]LogEntry, 0)
+
+		if commitIndex > lastApplied {
+			entriesToApply = rn.log[lastApplied+1 : commitIndex+1]
+		}
+		rn.mu.Unlock()
+
+		for i, entry := range entriesToApply {
+			// Aquí es donde se aplicaría el comando a la máquina de estados real.
+			// Por ahora, solo lo logueamos.
+			logger.InfoLogger.Printf("[Nodo %s] Aplicando log %d: Comando='%v'", rn.id, lastApplied+1+i, entry.Command)
+		}
+
+		rn.mu.Lock()
+		// Actualizamos lastApplied solo después de aplicar los logs.
+		rn.lastApplied = commitIndex
+		rn.mu.Unlock()
+	}
 }
 
 // run es el bucle principal que gestiona el estado del nodo.
@@ -127,7 +189,7 @@ func (rn *RaftNode) run() {
 				rn.resetElectionTimer()
 			case <-rn.electionTimer.C:
 				rn.mu.Lock()
-				log.Printf("[Nodo %s] INFO: Tiempo de espera agotado. Convirtiéndose en CANDIDATO para el término %d", rn.id, rn.currentTerm+1)
+				logger.InfoLogger.Printf("[Nodo %s] INFO: Tiempo de espera agotado. Convirtiéndose en CANDIDATO para el término %d", rn.id, rn.currentTerm+1)
 				rn.state = Candidate
 				rn.mu.Unlock()
 			}
@@ -141,19 +203,19 @@ func (rn *RaftNode) run() {
 			case <-rn.appendEntriesChan:
 				rn.mu.Lock()
 				if rn.state == Candidate {
-					log.Printf("[Nodo %s] INFO: Descubierto nuevo líder. Volviendo a Follower.", rn.id)
+					logger.InfoLogger.Printf("[Nodo %s] INFO: Descubierto nuevo líder. Volviendo a Follower.", rn.id)
 					rn.state = Follower
 				}
 				rn.mu.Unlock()
 				rn.resetElectionTimer()
 			case <-rn.winElectionChan:
-				log.Printf("[Nodo %s] INFO: Transición a Líder.", rn.id)
+				logger.InfoLogger.Printf("[Nodo %s] INFO: Transición a Líder.", rn.id)
 				rn.mu.Lock()
 				rn.state = Leader
 				rn.initializeLeaderState()
 				rn.mu.Unlock()
 			case <-rn.electionTimer.C:
-				log.Printf("[Nodo %s] INFO: Elección fallida (timeout). Reiniciando.", rn.id)
+				logger.InfoLogger.Printf("[Nodo %s] INFO: Elección fallida (timeout). Reiniciando.", rn.id)
 			}
 
 		case Leader:
@@ -268,7 +330,7 @@ func (rn *RaftNode) sendHeartbeats() {
 		rn.mu.Unlock()
 		return
 	}
-	
+
 	term := rn.currentTerm
 	// Solo mostramos el log de heartbeats cada 10 envíos
 	if rn.heartbeatCount%10 == 0 {
@@ -291,7 +353,7 @@ func (rn *RaftNode) sendHeartbeats() {
 			}
 			prevLogIndex := nextIdx - 1
 			prevLogTerm := rn.log[prevLogIndex].Term
-			
+
 			// Incluir entradas si hay nuevas para enviar a este peer.
 			var entries []LogEntry
 			if len(rn.log) > nextIdx {
@@ -325,9 +387,10 @@ func (rn *RaftNode) sendHeartbeats() {
 			if rn.state == Leader && args.Term == rn.currentTerm {
 				if reply.Success {
 					// El seguidor aceptó las entradas.
-					rn.nextIndex[peerId] = prevLogIndex + len(entries) + 1
-					rn.matchIndex[peerId] = rn.nextIndex[peerId] - 1
-					// (Aquí se llamaría a updateCommitIndex en una implementación completa)
+					newNextIndex := args.PrevLogIndex + len(args.Entries) + 1
+					rn.nextIndex[peerId] = newNextIndex
+					rn.matchIndex[peerId] = newNextIndex - 1
+					rn.updateCommitIndex() // Se intenta actualizar el commitIndex
 				} else {
 					// El seguidor rechazó por inconsistencia, retrocedemos nextIndex y reintentamos.
 					rn.nextIndex[peerId]--
@@ -337,6 +400,38 @@ func (rn *RaftNode) sendHeartbeats() {
 				}
 			}
 		}(peerId)
+	}
+}
+
+// updateCommitIndex se ejecuta en el líder para avanzar el commitIndex.
+func (rn *RaftNode) updateCommitIndex() {
+	// El commitIndex debe ser al menos el valor que ya tiene.
+	// Iteramos desde el final del log hacia atrás.
+	for N := len(rn.log) - 1; N > rn.commitIndex; N-- {
+		// Solo podemos comprometer logs de nuestro propio término.
+		if rn.log[N].Term != rn.currentTerm {
+			continue
+		}
+
+		// Contamos cuántos nodos han replicado hasta el índice N.
+		matchCount := 1 // Nos contamos a nosotros mismos (el líder).
+		for _, peerID := range rn.peerAddress {
+			if rn.matchIndex[peerID] >= N {
+				matchCount++
+			}
+		}
+
+		// Si una mayoría lo ha replicado, comprometemos el índice.
+		if matchCount > len(rn.peerAddress)/2 {
+			logger.InfoLogger.Printf("[Líder %s] INFO: Avanzando commitIndex a %d", rn.id, N)
+			rn.commitIndex = N
+			// Señalamos a la gorutina de aplicación que hay trabajo que hacer.
+			select {
+			case rn.applyChan <- struct{}{}:
+			default: // No bloquear si el canal ya está lleno.
+			}
+			break // Salimos del bucle una vez que encontramos el N más alto.
+		}
 	}
 }
 
@@ -354,6 +449,9 @@ func (rn *RaftNode) initializeLeaderState() {
 	// Inicializar nextIndex y matchIndex para cada peer
 	lastLogIndex := len(rn.log) - 1
 	for peerID := range rn.peerAddress {
+		if peerID == rn.id {
+			continue // No nos enviamos RPCs a nosotros mismos
+		}
 		rn.nextIndex[peerID] = lastLogIndex + 1
 		rn.matchIndex[peerID] = 0
 	}

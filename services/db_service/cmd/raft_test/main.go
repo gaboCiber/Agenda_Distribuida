@@ -39,7 +39,7 @@ func main() {
 		log.Fatalf("No se pudo obtener el directorio de trabajo actual: %v", err)
 	}
 	logDir := filepath.Join(cwd, "logs")
-	
+
 	if err := logger.InitLogger(logDir, nodeID); err != nil {
 		log.Fatalf("No se pudo inicializar el logger: %v", err)
 	}
@@ -50,6 +50,22 @@ func main() {
 	// --- Crear y Lanzar el Nodo Raft ---
 	raftNode := consensus.NewRaftNode(nodeID, peerAddresses)
 	raftNode.Start()
+
+	// Si este es el nodo1, intentar proponer un comando después de un tiempo
+	// para dar tiempo a que se elija un líder.
+	if nodeID == "node1" {
+		go func() {
+			time.Sleep(5 * time.Second) // Esperar a que se establezca un líder.
+
+			logger.InfoLogger.Println("Intentando proponer un comando...")
+			success, _ := raftNode.Propose("SET x = 10")
+			if success {
+				logger.InfoLogger.Println("Comando propuesto exitosamente por el líder.")
+			} else {
+				logger.InfoLogger.Println("Fallo al proponer el comando (probablemente no soy el líder).")
+			}
+		}()
+	}
 
 	// Mantener el programa en ejecución indefinidamente.
 	// En una aplicación real, aquí estaría la lógica de la máquina de estados.

@@ -65,69 +65,71 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
-	// 1. Si el término del líder es menor que el nuestro, rechazar
+	// 1. Si el término del líder es menor que el nuestro, rechazar.
 	if args.Term < rn.currentTerm {
 		reply.Term = rn.currentTerm
 		reply.Success = false
-		log.Printf("[Nodo %s] Rechazando AppendEntries de líder %s (término %d) - Nuestro término es mayor (%d)",
-			rn.id, args.LeaderID, args.Term, rn.currentTerm)
 		return nil
 	}
 
-	// 2. Si el término es mayor, actualizar nuestro término y convertirnos en seguidor
+	// Si el término del RPC es mayor, nos convertimos en seguidor.
 	if args.Term > rn.currentTerm {
-		log.Printf("[Nodo %s] Actualizando a término %d (era %d) y convirtiéndome en seguidor",
-			rn.id, args.Term, rn.currentTerm)
-		rn.currentTerm = args.Term
-		rn.state = Follower
-		rn.votedFor = ""
+		rn.becomeFollower(args.Term)
 	}
 
-	// Notificar al bucle principal que hemos recibido un heartbeat
+	// En cualquier caso, si recibimos un AppendEntries de un líder legítimo
+	// (con un término igual o mayor), reiniciamos nuestro temporizador.
+	// Esto también nos convierte en seguidor si éramos candidatos.
+	if rn.state == Candidate {
+		rn.state = Follower
+	}
+	// Notificar al bucle principal que hemos recibido un heartbeat/RPC válido.
 	select {
 	case rn.appendEntriesChan <- struct{}{}:
-		// Canal no bloqueado, todo bien
 	default:
-		// Si el canal está lleno, no importa, ya sabemos que hay un líder activo
-	}
-
-	// Si es un heartbeat (sin entradas de log)
-	if len(args.Entries) == 0 {
-		log.Printf("[Nodo %s] Recibido heartbeat del líder %s para el término %d",
-			rn.id, args.LeaderID, args.Term)
-	} else {
-		log.Printf("[Nodo %s] Recibidas %d entradas de log del líder %s (término %d)",
-			rn.id, len(args.Entries), args.LeaderID, args.Term)
 	}
 
 	reply.Term = rn.currentTerm
 
-	// 3. Comprobación de consistencia del log.
-	// (Implementación simplificada para el ejemplo)
-	// En una implementación completa, aquí se verificaría la consistencia del log
-	// Un conflicto ocurre si tienen el mismo índice pero diferentes términos.
-	if len(args.Entries) > 0 {
-		log.Printf("[Nodo %s] Recibidas %d entradas para replicar de %s", rn.id, len(args.Entries), args.LeaderID)
-		unconflictingIndex := -1
-		for i := 0; i < len(args.Entries); i++ {
-			logIndex := args.PrevLogIndex + 1 + i
-			if logIndex >= len(rn.log) || rn.log[logIndex].Term != args.Entries[i].Term {
-				unconflictingIndex = i
-				break
-			}
-		}
+	// 2. Comprobar consistencia del log. Si la entrada en prevLogIndex no existe o
+	// su término no coincide, rechazamos.
+	if args.PrevLogIndex >= len(rn.log) || rn.log[args.PrevLogIndex].Term != args.PrevLogTerm {
+		log.Printf("[Nodo %s] Rechazando AppendEntries por inconsistencia en el log. Nuestro log len: %d, PrevLogIndex: %d",
+			rn.id, len(rn.log), args.PrevLogIndex)
+		reply.Success = false
+		return nil
+	}
 
-		if unconflictingIndex != -1 {
-			// Truncar el log y añadir las nuevas entradas.
-			rn.log = rn.log[:args.PrevLogIndex+1+unconflictingIndex]
-			rn.log = append(rn.log, args.Entries[unconflictingIndex:]...)
+	// 3. Si una entrada existente entra en conflicto con una nueva (mismo índice
+	// pero diferentes términos), eliminar la entrada existente y todas las que le siguen.
+	conflictIndex := -1
+	for i, entry := range args.Entries {
+		index := args.PrevLogIndex + 1 + i
+		if index >= len(rn.log) || rn.log[index].Term != entry.Term {
+			conflictIndex = index
+			break
 		}
 	}
 
-	// 5. Actualizar el commitIndex.
+	if conflictIndex != -1 {
+		log.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Truncando log.", rn.id, conflictIndex)
+		rn.log = rn.log[:conflictIndex]
+		rn.log = append(rn.log, args.Entries[conflictIndex-(args.PrevLogIndex+1):]...)
+	}
+
+	// 4. Si hay nuevas entradas que no están en el log, añadirlas.
+	// (Esta lógica está implícita en el paso 3)
+
+	// 5. Si el commitIndex del líder es mayor que el nuestro, actualizamos el nuestro.
 	if args.LeaderCommit > rn.commitIndex {
-		rn.commitIndex = min(args.LeaderCommit, len(rn.log)-1)
-		// (En el futuro, aquí se aplicarían los logs a la máquina de estados)
+		lastNewEntryIndex := args.PrevLogIndex + len(args.Entries)
+		rn.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
+		// La lógica para aplicar al state machine se podría despertar aquí.
+		// rn.applyLogs()
+	}
+
+	if len(args.Entries) > 0 {
+		log.Printf("[Nodo %s] Log replicado exitosamente hasta el índice %d", rn.id, len(rn.log)-1)
 	}
 
 	reply.Success = true
