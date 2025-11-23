@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/logger"
@@ -67,6 +68,7 @@ type RaftNode struct {
 	appendEntriesChan chan struct{} // Canal para resetear el temporizador al recibir AppendEntries.
 	winElectionChan   chan bool     // Canal para señalar que la elección se ha ganado.
 	heartbeatCount    int           // Contador para controlar la frecuencia de logs de heartbeat
+	voteCount         int32         // Contador atómico de votos recibidos en la elección actual
 }
 
 // NewRaftNode crea e inicializa un nuevo nodo Raft.
@@ -82,7 +84,7 @@ func NewRaftNode(id string, peerAddress map[string]string) *RaftNode {
 		state:             Follower,
 		currentTerm:       0,
 		votedFor:          "",
-		log:               make([]LogEntry, 1), // Log ficticio en índice 0 para simplificar.
+		log:               []LogEntry{{Term: 0, Command: nil}}, // Log ficticio en índice 0 con término 0
 		commitIndex:       0,
 		lastApplied:       0,
 		nextIndex:         make(map[string]int),
@@ -186,6 +188,17 @@ func (rn *RaftNode) run() {
 		case Follower:
 			select {
 			case <-rn.appendEntriesChan:
+				// Drenar el canal para evitar procesar múltiples mensajes
+				for {
+					select {
+					case <-rn.appendEntriesChan:
+						// Continuar drenando
+					default:
+						// Canal vacío, salir
+						goto doneDraining
+					}
+				}
+			doneDraining:
 				rn.resetElectionTimer()
 			case <-rn.electionTimer.C:
 				rn.mu.Lock()
@@ -201,6 +214,15 @@ func (rn *RaftNode) run() {
 
 			select {
 			case <-rn.appendEntriesChan:
+				// Drenar el canal
+				for {
+					select {
+					case <-rn.appendEntriesChan:
+					default:
+						goto doneDrainingCandidate
+					}
+				}
+			doneDrainingCandidate:
 				rn.mu.Lock()
 				if rn.state == Candidate {
 					logger.InfoLogger.Printf("[Nodo %s] INFO: Descubierto nuevo líder. Volviendo a Follower.", rn.id)
@@ -219,10 +241,8 @@ func (rn *RaftNode) run() {
 			}
 
 		case Leader:
-			select {
-			case <-heartbeatTicker.C:
-				rn.sendHeartbeats()
-			}
+			<-heartbeatTicker.C
+			rn.sendHeartbeats()
 		}
 	}
 }
@@ -233,7 +253,16 @@ func randomElectionTimeout() time.Duration {
 }
 
 // resetElectionTimer reinicia el temporizador de elección del nodo.
+// Thread-safe: adquiere el mutex internamente.
 func (rn *RaftNode) resetElectionTimer() {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	rn.resetElectionTimerUnlocked()
+}
+
+// resetElectionTimerUnlocked reinicia el temporizador sin adquirir el mutex.
+// DEBE llamarse solo cuando el mutex ya está adquirido.
+func (rn *RaftNode) resetElectionTimerUnlocked() {
 	if rn.electionTimer != nil {
 		if !rn.electionTimer.Stop() {
 			// Intenta drenar el canal si stop() devuelve false.
@@ -254,12 +283,12 @@ func (rn *RaftNode) startElection() {
 	rn.currentTerm++
 	// Votar por sí mismo.
 	rn.votedFor = rn.id
-	// Resetear el temporizador de elección.
-	rn.resetElectionTimer()
+	// Resetear el temporizador de elección (ya tenemos el mutex).
+	rn.resetElectionTimerUnlocked()
+	// Inicializar contador de votos a 1 (voto por sí mismo)
+	atomic.StoreInt32(&rn.voteCount, 1)
 
 	logger.InfoLogger.Printf("Nodo %s: Iniciando elección para el término %d", rn.id, rn.currentTerm)
-
-	votes := 1 // Voto por sí mismo.
 
 	// Enviar RPCs RequestVote a todos los demás nodos en paralelo.
 	for peerId := range rn.peerAddress {
@@ -307,10 +336,16 @@ func (rn *RaftNode) startElection() {
 			}
 
 			if reply.VoteGranted {
-				votes++
-				logger.InfoLogger.Printf("Nodo %s: Voto recibido de %s. Total de votos: %d", rn.id, peerId, votes)
-				// Comprobar si hemos ganado la elección (mayoría).
-				if votes > len(rn.peerAddress)/2 {
+				// Incrementar contador atómico de votos
+				newVoteCount := atomic.AddInt32(&rn.voteCount, 1)
+				totalPeers := len(rn.peerAddress)
+				majority := totalPeers/2 + 1
+
+				logger.InfoLogger.Printf("Nodo %s: Voto recibido de %s. Total de votos: %d (mayoría necesaria: %d)",
+					rn.id, peerId, newVoteCount, majority)
+
+				// Verificar si tenemos mayoría
+				if int(newVoteCount) >= majority {
 					logger.InfoLogger.Printf("Nodo %s: Elección ganada. Señalizando para convertirse en Líder.", rn.id)
 					select {
 					case rn.winElectionChan <- true:
@@ -415,7 +450,10 @@ func (rn *RaftNode) updateCommitIndex() {
 
 		// Contamos cuántos nodos han replicado hasta el índice N.
 		matchCount := 1 // Nos contamos a nosotros mismos (el líder).
-		for _, peerID := range rn.peerAddress {
+		for peerID := range rn.peerAddress {
+			if peerID == rn.id {
+				continue // Ya contamos al líder
+			}
 			if rn.matchIndex[peerID] >= N {
 				matchCount++
 			}
@@ -436,12 +474,13 @@ func (rn *RaftNode) updateCommitIndex() {
 }
 
 // becomeFollower actualiza el estado del nodo a seguidor.
+// DEBE llamarse cuando el mutex ya está adquirido.
 func (rn *RaftNode) becomeFollower(term int) {
 	rn.state = Follower
 	rn.currentTerm = term
 	rn.votedFor = ""
 	logger.InfoLogger.Printf("Nodo %s: Convertido a SEGUIDOR para el término %d", rn.id, term)
-	rn.resetElectionTimer()
+	rn.resetElectionTimerUnlocked()
 }
 
 // initializeLeaderState inicializa el estado específico del líder.

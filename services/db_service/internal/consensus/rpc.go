@@ -100,21 +100,35 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 		return nil
 	}
 
-	// 3. Si una entrada existente entra en conflicto con una nueva (mismo índice
-	// pero diferentes términos), eliminar la entrada existente y todas las que le siguen.
-	conflictIndex := -1
-	for i, entry := range args.Entries {
-		index := args.PrevLogIndex + 1 + i
-		if index >= len(rn.log) || rn.log[index].Term != entry.Term {
-			conflictIndex = index
-			break
+	// 3. Si hay nuevas entradas, verificar conflictos y añadirlas.
+	// Si prevLogIndex existe y coincide, añadir nuevas entradas
+	if len(args.Entries) > 0 {
+		// Verificar si hay conflictos
+		conflictIndex := -1
+		for i, entry := range args.Entries {
+			index := args.PrevLogIndex + 1 + i
+			if index < len(rn.log) && rn.log[index].Term != entry.Term {
+				conflictIndex = index
+				break
+			}
 		}
-	}
 
-	if conflictIndex != -1 {
-		log.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Truncando log.", rn.id, conflictIndex)
-		rn.log = rn.log[:conflictIndex]
-		rn.log = append(rn.log, args.Entries[conflictIndex-(args.PrevLogIndex+1):]...)
+		if conflictIndex != -1 {
+			log.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Truncando log.", rn.id, conflictIndex)
+			rn.log = rn.log[:conflictIndex]
+			// Calcular el offset correcto en args.Entries
+			entryOffset := conflictIndex - (args.PrevLogIndex + 1)
+			if entryOffset >= 0 && entryOffset < len(args.Entries) {
+				rn.log = append(rn.log, args.Entries[entryOffset:]...)
+			}
+		} else {
+			// No hay conflictos, simplemente añadir las nuevas entradas
+			if args.PrevLogIndex+1 < len(rn.log) {
+				// Ya existen algunas entradas, reemplazarlas
+				rn.log = rn.log[:args.PrevLogIndex+1]
+			}
+			rn.log = append(rn.log, args.Entries...)
+		}
 	}
 
 	// 4. Si hay nuevas entradas que no están en el log, añadirlas.
@@ -122,10 +136,18 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 
 	// 5. Si el commitIndex del líder es mayor que el nuestro, actualizamos el nuestro.
 	if args.LeaderCommit > rn.commitIndex {
+		oldCommitIndex := rn.commitIndex
 		lastNewEntryIndex := args.PrevLogIndex + len(args.Entries)
 		rn.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
-		// La lógica para aplicar al state machine se podría despertar aquí.
-		// rn.applyLogs()
+		
+		// Notificar a applyChan si commitIndex cambió
+		if rn.commitIndex > oldCommitIndex {
+			select {
+			case rn.applyChan <- struct{}{}:
+			default:
+				// No bloquear si el canal ya está lleno
+			}
+		}
 	}
 
 	if len(args.Entries) > 0 {
