@@ -91,6 +91,8 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 		response, err = h.eventService.HandleUpdateAgendaEvent(ctx, event)
 	case "agenda.event.delete":
 		response, err = h.eventService.HandleDeleteAgendaEvent(ctx, event)
+	case "agenda.event.list":
+		response, err = h.eventService.HandleListAgendaEventsByUser(ctx, event)
 	default:
 		h.logger.Warn("Tipo de evento no soportado",
 			zap.String("event_type", event.Type))

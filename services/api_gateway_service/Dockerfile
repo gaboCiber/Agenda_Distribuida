@@ -10,9 +10,7 @@ COPY . .
 
 RUN go build -o api-gateway ./cmd/api-gateway
 
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
+FROM alpine:3.20
 
 WORKDIR /root/
 

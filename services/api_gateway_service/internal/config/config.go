@@ -21,6 +21,9 @@ type Config struct {
 		Secret     string
 		Expiration time.Duration
 	}
+	DBService struct {
+		URL string
+	}
 	LogLevel string
 }
 
@@ -40,6 +43,9 @@ func Load() *Config {
 	// JWT configuration
 	cfg.JWT.Secret = getEnv("JWT_SECRET", "your-secret-key")
 	cfg.JWT.Expiration = getEnvAsDuration("JWT_EXPIRATION", "24h")
+
+	// DB Service configuration
+	cfg.DBService.URL = getEnv("DB_SERVICE_URL", "http://agenda-db-service:8000")
 
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")

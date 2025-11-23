@@ -9,11 +9,14 @@ import (
 	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
+
+	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 )
 
 type EventHandler struct {
-	redis  *redis.Client
-	logger *zap.Logger
+	redis    *redis.Client
+	dbClient *clients.DBClient
+	logger   *zap.Logger
 }
 
 type CreateEventRequest struct {
@@ -25,10 +28,11 @@ type CreateEventRequest struct {
 	GroupID     *string   `json:"group_id,omitempty"`
 }
 
-func NewEventHandler(redisClient *redis.Client, logger *zap.Logger) *EventHandler {
+func NewEventHandler(redisClient *redis.Client, dbClient *clients.DBClient, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
-		redis:  redisClient,
-		logger: logger,
+		redis:    redisClient,
+		dbClient: dbClient,
+		logger:   logger,
 	}
 }
 
@@ -42,7 +46,7 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 	eventID := uuid.New()
 
 	event := map[string]interface{}{
-		"event":       "event_created",
+		"event":       "event_create_requested",
 		"event_id":    eventID.String(),
 		"title":       req.Title,
 		"description": req.Description,
@@ -51,6 +55,7 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		"user_id":     req.UserID,
 		"group_id":    req.GroupID,
 		"timestamp":   time.Now().Unix(),
+		"request_id":  uuid.New().String(),
 	}
 
 	// Marshal to JSON
@@ -62,16 +67,28 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 	}
 
 	if err := h.redis.Publish(c.Request.Context(), "agenda-events", eventJSON).Err(); err != nil {
-		h.logger.Error("Failed to publish event_created", zap.Error(err))
+		h.logger.Error("Failed to publish event_create_requested", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create event"})
 		return
 	}
 
-	h.logger.Info("Event created", zap.String("event_id", eventID.String()))
-	c.JSON(http.StatusCreated, gin.H{"message": "Event created successfully", "event_id": eventID})
+	h.logger.Info("Event creation requested", zap.String("event_id", eventID.String()))
+	c.JSON(http.StatusAccepted, gin.H{"message": "Event creation request sent", "event_id": eventID})
 }
 
 func (h *EventHandler) GetEvents(c *gin.Context) {
-	// Placeholder: in real implementation, query DB service
-	c.JSON(http.StatusOK, gin.H{"events": []string{}})
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	events, err := h.dbClient.GetEvents(userID)
+	if err != nil {
+		h.logger.Error("Failed to get events from DB service", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve events"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"events": events})
 }

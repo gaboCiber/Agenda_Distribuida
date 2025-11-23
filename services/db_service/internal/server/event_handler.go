@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 
 	"github.com/agenda-distribuida/db-service/internal/models"
 	"github.com/agenda-distribuida/db-service/internal/repository"
@@ -178,4 +179,55 @@ func (h *EventHandler) DeleteEvent(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// ListEventsByUser retrieves all events for a given user with pagination
+func (h *EventHandler) ListEventsByUser(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	userID, err := uuid.Parse(vars["user_id"])
+	if err != nil {
+		h.log.Error().Err(err).Str("user_id", vars["user_id"]).Msg("Invalid user ID format")
+		http.Error(w, `{"status":"error","message":"Invalid user ID format"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Get pagination parameters from query string with defaults
+	offset := 0
+	limit := 100 // Default limit
+
+	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
+		offset, err = strconv.Atoi(offsetStr)
+		if err != nil || offset < 0 {
+			h.log.Error().Err(err).Str("offset", offsetStr).Msg("Invalid offset parameter")
+			http.Error(w, `{"status":"error","message":"Invalid offset parameter"}`, http.StatusBadRequest)
+			return
+		}
+	}
+
+	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
+		limit, err = strconv.Atoi(limitStr)
+		if err != nil || limit <= 0 {
+			h.log.Error().Err(err).Str("limit", limitStr).Msg("Invalid limit parameter")
+			http.Error(w, `{"status":"error","message":"Invalid limit parameter"}`, http.StatusBadRequest)
+			return
+		}
+		// Set a maximum limit to prevent abuse
+		if limit > 1000 {
+			limit = 1000
+		}
+	}
+
+	events, err := h.repo.ListByUser(r.Context(), userID, offset, limit)
+	if err != nil {
+		h.log.Error().Err(err).Str("user_id", userID.String()).Msg("Failed to list events by user")
+		http.Error(w, `{"status":"error","message":"Failed to list events"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"events": events,
+		"count":  len(events),
+	})
 }

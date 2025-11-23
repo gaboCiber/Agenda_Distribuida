@@ -495,6 +495,83 @@ func (s *EventService) HandleDeleteAgendaEvent(ctx context.Context, event models
 	), nil
 }
 
+// HandleListAgendaEventsByUser maneja la obtención de todos los eventos de un usuario
+func (s *EventService) HandleListAgendaEventsByUser(ctx context.Context, event models.Event) (models.EventResponse, error) {
+	userID, ok := event.Data["user_id"].(string)
+	if !ok || userID == "" {
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("user_id es requerido"),
+		), nil
+	}
+
+	// Obtener parámetros de paginación (opcionales)
+	offset := 0
+	limit := 100 // Valor por defecto
+
+	if offsetVal, ok := event.Data["offset"].(float64); ok {
+		offset = int(offsetVal)
+		if offset < 0 {
+			offset = 0
+		}
+	}
+
+	if limitVal, ok := event.Data["limit"].(float64); ok {
+		limit = int(limitVal)
+		if limit <= 0 {
+			limit = 100
+		}
+		// Limitar el máximo a 1000 para prevenir abusos
+		if limit > 1000 {
+			limit = 1000
+		}
+	}
+
+	s.logger.Info("Listando eventos de agenda por usuario",
+		zap.String("user_id", userID),
+		zap.Int("offset", offset),
+		zap.Int("limit", limit))
+
+	// Obtener los eventos de la base de datos
+	events, err := s.dbClient.ListAgendaEventsByUser(ctx, userID, offset, limit)
+	if err != nil {
+		s.logger.Error("Error al listar eventos de agenda",
+			zap.String("user_id", userID),
+			zap.Error(err))
+
+		return models.NewErrorResponse(
+			event.ID,
+			event.Type,
+			fmt.Errorf("error al listar eventos: %w", err),
+		), nil
+	}
+
+	// Convertir los eventos a un formato serializable
+	eventsData := make([]map[string]interface{}, 0, len(events))
+	for _, evt := range events {
+		eventsData = append(eventsData, map[string]interface{}{
+			"id":          evt.ID,
+			"title":       evt.Title,
+			"description": evt.Description,
+			"start_time":  evt.StartTime.Format(time.RFC3339),
+			"end_time":    evt.EndTime.Format(time.RFC3339),
+			"user_id":     evt.UserID,
+			"created_at":  evt.CreatedAt.Format(time.RFC3339),
+			"updated_at":  evt.UpdatedAt.Format(time.RFC3339),
+		})
+	}
+
+	return models.NewSuccessResponse(
+		event.ID,
+		event.Type,
+		map[string]interface{}{
+			"events": eventsData,
+			"count":  len(eventsData),
+		},
+	), nil
+}
+
 func (s *EventService) HandleDeleteUser(ctx context.Context, event models.Event) (models.EventResponse, error) {
 	// Extraer el email del evento
 	userID, ok := event.Data["user_id"].(string)
