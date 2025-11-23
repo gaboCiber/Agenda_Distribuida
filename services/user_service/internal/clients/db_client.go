@@ -286,6 +286,33 @@ func (c *DBServiceClient) DeleteAgendaEvent(ctx context.Context, eventID string)
 	return nil
 }
 
+// ListAgendaEventsByUser obtiene todos los eventos de un usuario con paginación
+func (c *DBServiceClient) ListAgendaEventsByUser(ctx context.Context, userID string, offset, limit int) ([]*AgendaEvent, error) {
+	url := fmt.Sprintf("%s/api/v1/events/users/%s?offset=%d&limit=%d", c.baseURL, userID, offset, limit)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var response struct {
+		Status string        `json:"status"`
+		Events []*AgendaEvent `json:"events"`
+		Count  int           `json:"count"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error al deserializar la respuesta", zap.Error(err))
+		return nil, fmt.Errorf("error al deserializar la respuesta: %w", err)
+	}
+
+	if response.Status != "success" {
+		return nil, fmt.Errorf("error al obtener los eventos: %s", string(resp))
+	}
+
+	return response.Events, nil
+}
+
 // DeleteUser elimina un usuario por su ID
 func (c *DBServiceClient) DeleteUser(ctx context.Context, userID string) error {
 	url := fmt.Sprintf("%s/api/v1/users/%s", c.baseURL, userID)

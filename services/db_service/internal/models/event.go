@@ -19,7 +19,7 @@ type Event struct {
 
 type EventRequest struct {
 	Title       string    `json:"title" validate:"required"`
-	Description string    `json:"description" validate:"required"`
+	Description string    `json:"description"`
 	StartTime   time.Time `json:"start_time" validate:"required"`
 	EndTime     time.Time `json:"end_time" validate:"required"`
 	UserID      uuid.UUID `json:"user_id" validate:"required"`

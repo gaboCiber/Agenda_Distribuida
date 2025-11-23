@@ -104,6 +104,19 @@ curl -X POST http://localhost:8000/api/v1/events \
     "user_id": "8318f0ff-02c3-4461-af07-c19e3d144068"
   }'
 
+### 6. Listar todos los eventos de un usuario
+
+# Listar eventos de un usuario (usa valores por defecto: offset=0, limit=100)
+# Reemplaza USER_ID con el ID del usuario
+curl -X GET http://localhost:8000/api/v1/events/users/USER_ID \
+  -H "Content-Type: application/json"
+
+# Listar eventos de un usuario con paginación
+# offset: número de eventos a saltar, limit: número máximo de eventos a retornar
+curl -X GET "http://localhost:8000/api/v1/events/users/USER_ID?offset=0&limit=50" \
+  -H "Content-Type: application/json"
+
+
 #####################################################################
 #                            Groups                                 #
 #####################################################################

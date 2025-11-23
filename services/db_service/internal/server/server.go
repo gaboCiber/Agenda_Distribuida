@@ -83,6 +83,7 @@ func (s *Server) setupRoutes(r *mux.Router) {
 	events.HandleFunc("/{id}", s.eventAPI.GetEvent).Methods("GET")
 	events.HandleFunc("/{id}", s.eventAPI.UpdateEvent).Methods("PUT")
 	events.HandleFunc("/{id}", s.eventAPI.DeleteEvent).Methods("DELETE")
+	events.HandleFunc("/users/{user_id}", s.eventAPI.ListEventsByUser).Methods("GET")
 
 	// Groups routes
 	groups := api.PathPrefix("/groups").Subrouter()

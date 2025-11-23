@@ -122,7 +122,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH users_events '{
   "id": "123e4567-e89b-12d3-a456-426614174012",
   "type": "agenda.event.update",
   "data": {
-    "user_id": "USER_ID_HERE"
+    "user_id": "USER_ID_HERE",
     "event_id": "EVENT_ID_HERE",
     "title": "Reunión de equipo (actualizada)",
     "description": "Revisión del sprint actual - actualizada"
@@ -140,6 +140,36 @@ docker exec -it agenda-redis-service redis-cli PUBLISH users_events '{
   "type": "agenda.event.delete",
   "data": {
     "event_id": "EVENT_ID_HERE"
+  },
+  "metadata": {
+    "reply_to": "users_events_response"
+  }
+}'
+
+
+# 5. **List Events by User** (sin paginación, usa valores por defecto):
+
+docker exec -it agenda-redis-service redis-cli PUBLISH users_events '{
+  "id": "123e4567-e89b-12d3-a456-426614174014",
+  "type": "agenda.event.list",
+  "data": {
+    "user_id": "USER_ID_HERE"
+  },
+  "metadata": {
+    "reply_to": "users_events_response"
+  }
+}'
+
+
+# 6. **List Events by User** (con paginación):
+
+docker exec -it agenda-redis-service redis-cli PUBLISH users_events '{
+  "id": "123e4567-e89b-12d3-a456-426614174015",
+  "type": "agenda.event.list",
+  "data": {
+    "user_id": "USER_ID_HERE",
+    "offset": 0,
+    "limit": 50
   },
   "metadata": {
     "reply_to": "users_events_response"
