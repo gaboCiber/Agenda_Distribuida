@@ -1,24 +1,25 @@
 package handlers
 
 import (
+	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-	"golang.org/x/crypto/bcrypt"
 )
 
 type AuthHandler struct {
-	redis     *redis.Client
-	dbClient  *clients.DBClient
-	jwtSecret string
-	jwtExpiry time.Duration
-	logger    *zap.Logger
+	redis           *redis.Client
+	jwtSecret       string
+	jwtExpiry       time.Duration
+	responseHandler *ResponseHandler
+	logger          *zap.Logger
 }
 
 type RegisterRequest struct {
@@ -37,13 +38,13 @@ type LoginResponse struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
-func NewAuthHandler(redisClient *redis.Client, dbClient *clients.DBClient, jwtSecret string, jwtExpiry time.Duration, logger *zap.Logger) *AuthHandler {
+func NewAuthHandler(redisClient *redis.Client, jwtSecret string, jwtExpiry time.Duration, responseHandler *ResponseHandler, logger *zap.Logger) *AuthHandler {
 	return &AuthHandler{
-		redis:     redisClient,
-		dbClient:  dbClient,
-		jwtSecret: jwtSecret,
-		jwtExpiry: jwtExpiry,
-		logger:    logger,
+		redis:           redisClient,
+		jwtSecret:       jwtSecret,
+		jwtExpiry:       jwtExpiry,
+		responseHandler: responseHandler,
+		logger:          logger,
 	}
 }
 
@@ -54,24 +55,75 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	// Hash the password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	// Create event for user service
+	eventID := uuid.New().String()
+
+	// Create event as map to avoid any struct marshaling issues
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.create",
+		"data": map[string]interface{}{
+			"username": req.Username,
+			"email":    req.Email,
+			"password": req.Password, // user_service will hash it
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Send event and wait for response
+	h.logger.Info("📤 Enviando evento de registro de usuario",
+		zap.String("event_id", eventID),
+		zap.String("email", req.Email))
+
+	// Use background context to avoid cancellation issues
+	response, err := h.sendEventAndWaitForResponse(context.Background(), eventData, "users_events_response")
 	if err != nil {
-		h.logger.Error("Failed to hash password", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process password"})
+		h.logger.Error("❌ Failed to register user",
+			zap.Error(err),
+			zap.String("error_type", "timeout_or_connection"))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user: " + err.Error()})
 		return
 	}
 
-	// Register user directly in database via db_service
-	userID, err := h.dbClient.RegisterUser(req.Username, req.Email, string(hashedPassword))
-	if err != nil {
-		h.logger.Error("Failed to register user in database", zap.Error(err))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to register user"})
+	if !response.Success {
+		h.logger.Warn("⚠️ User registration failed",
+			zap.String("error", response.Error))
+		c.JSON(http.StatusBadRequest, gin.H{"error": response.Error})
 		return
 	}
 
-	h.logger.Info("User registered successfully", zap.String("user_id", userID), zap.String("email", req.Email))
-	c.JSON(http.StatusCreated, gin.H{"message": "User registered successfully", "user_id": userID})
+	// Extract user ID from response
+	h.logger.Info("📦 Procesando respuesta exitosa",
+		zap.String("event_id", eventID),
+		zap.Any("response_data", response.Data))
+
+	data, ok := response.Data.(map[string]interface{})
+	if !ok {
+		h.logger.Error("❌ Invalid response data format",
+			zap.Any("response_data", response.Data))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid response from user service"})
+		return
+	}
+
+	userID, ok := data["id"].(string) // user_service returns "id", not "user_id"
+	if !ok {
+		h.logger.Error("❌ User ID not found in response",
+			zap.Any("response_data", data),
+			zap.Any("full_response", response))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "User ID not found in response"})
+		return
+	}
+
+	h.logger.Info("✅ User registered successfully",
+		zap.String("user_id", userID),
+		zap.String("email", req.Email))
+	c.JSON(http.StatusCreated, gin.H{
+		"message": "User registered successfully",
+		"user_id": userID,
+		"email":   req.Email,
+	})
 }
 
 func (h *AuthHandler) Login(c *gin.Context) {
@@ -81,25 +133,63 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	// Verify credentials directly in database via db_service
-	userData, err := h.dbClient.LoginUser(req.Email, req.Password)
+	// Create event for user service
+	eventID := uuid.New().String()
+
+	// Create event as map to avoid any struct marshaling issues
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.login",
+		"data": map[string]interface{}{
+			"email":    req.Email,
+			"password": req.Password, // Plain text - user service will hash and compare
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// DEBUG: Log the event data before sending
+	h.logger.Info("📤 Evento creado antes de enviar",
+		zap.Any("event_data", eventData),
+		zap.String("event_id", eventID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(context.Background(), eventData, "users_events_response")
 	if err != nil {
-		h.logger.Warn("Login failed for user", zap.String("email", req.Email), zap.Error(err))
+		h.logger.Error("❌ Failed to login user", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to process login: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Login failed",
+			zap.String("email", req.Email),
+			zap.String("error", response.Error))
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
 	}
 
-	// Extract user ID from response
-	userIDStr, ok := userData["user_id"].(string)
+	// Extract user data from response
+	data, ok := response.Data.(map[string]interface{})
 	if !ok {
-		h.logger.Error("Invalid user data format", zap.Any("userData", userData))
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user data"})
+		h.logger.Error("❌ Invalid response data format")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid response from user service"})
+		return
+	}
+
+	userIDStr, ok := data["id"].(string) // user_service returns "id", not "user_id"
+	if !ok {
+		h.logger.Error("❌ User ID not found in response", zap.Any("response_data", data))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid response from user service"})
 		return
 	}
 
 	userID, err := uuid.Parse(userIDStr)
 	if err != nil {
-		h.logger.Error("Invalid user ID format", zap.String("userID", userIDStr), zap.Error(err))
+		h.logger.Error("❌ Invalid user ID format",
+			zap.String("userID", userIDStr),
+			zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
 		return
 	}
@@ -107,18 +197,83 @@ func (h *AuthHandler) Login(c *gin.Context) {
 	// Generate JWT token
 	token, err := h.generateJWT(userID)
 	if err != nil {
-		h.logger.Error("Failed to generate JWT token", zap.Error(err))
+		h.logger.Error("❌ Failed to generate JWT token", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate token"})
 		return
 	}
 
-	response := LoginResponse{
+	result := LoginResponse{
 		Token:  token,
 		UserID: userID,
 	}
 
-	h.logger.Info("User logged in successfully", zap.String("user_id", userID.String()), zap.String("email", req.Email))
-	c.JSON(http.StatusOK, response)
+	h.logger.Info("✅ User logged in successfully",
+		zap.String("user_id", userID.String()),
+		zap.String("email", req.Email))
+	c.JSON(http.StatusOK, result)
+}
+
+// sendEventAndWaitForResponse publishes an event and waits for a response using the response handler
+func (h *AuthHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}, replyChannel string) (*UserEventResponse, error) {
+	// Extract event ID from eventData
+	eventMap, ok := eventData.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("eventData must be a map")
+	}
+
+	eventID, ok := eventMap["id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("eventData must contain an 'id' field")
+	}
+
+	// Create a response channel for this specific event
+	h.logger.Info("⏳ Esperando respuesta para evento",
+		zap.String("event_id", eventID),
+		zap.String("reply_channel", replyChannel))
+
+	responseChan := h.responseHandler.WaitForResponse(eventID)
+
+	// Marshal event to JSON
+	eventJSON, err := json.Marshal(eventData)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	// DEBUG: Log exactly what is being sent
+	h.logger.Info("📤 JSON que se enviará a Redis",
+		zap.String("event_json", string(eventJSON)),
+		zap.Any("event_data", eventData))
+
+	// Publish event to user service channel
+	if err := h.redis.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+		return nil, fmt.Errorf("failed to publish event: %w", err)
+	}
+
+	h.logger.Info("✅ Evento ENVIADO al user_service",
+		zap.String("event_id", eventID),
+		zap.String("channel", "users_events"))
+
+	// Wait for response with timeout
+	select {
+	case response := <-responseChan:
+		h.logger.Info("✅✅✅ Respuesta RECIBIDA del user_service",
+			zap.String("event_id", eventID),
+			zap.Bool("success", response.Success),
+			zap.String("error", response.Error),
+			zap.Any("data", response.Data))
+
+		if !response.Success {
+			return nil, fmt.Errorf("user service error: %s", response.Error)
+		}
+
+		return response, nil
+
+	case <-time.After(30 * time.Second): // Increased timeout for debugging
+		h.logger.Error("❌❌❌ TIMEOUT esperando respuesta del user_service",
+			zap.String("event_id", eventID),
+			zap.String("channel", replyChannel))
+		return nil, fmt.Errorf("timeout waiting for response after 30 seconds")
+	}
 }
 
 func (h *AuthHandler) generateJWT(userID uuid.UUID) (string, error) {

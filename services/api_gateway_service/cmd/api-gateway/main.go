@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime/debug"
+	"strings"
 	"syscall"
 	"time"
 
@@ -40,8 +43,18 @@ func main() {
 	}
 	logger.Info("Connected to Redis", zap.String("url", cfg.Redis.URL))
 
+	// Get Redis info for debugging
+	redisInfo, err := redisClient.Info(context.Background()).Result()
+	if err != nil {
+		logger.Error("Failed to get Redis info", zap.Error(err))
+	} else {
+		logger.Info("Redis info", zap.String("version", extractRedisVersion(redisInfo)))
+	}
+
 	// Initialize DB client
+	logger.Info("🔧 Initializing DB client...")
 	dbClient := clients.NewDBClient(cfg.DBService.URL, logger)
+	logger.Info("✅ DB client initialized")
 
 	// Set Gin mode
 	if cfg.LogLevel == "debug" {
@@ -58,8 +71,82 @@ func main() {
 	r.Use(gin.Recovery())
 	r.Use(corsMiddleware())
 
+	// Initialize response handler for async responses
+	logger.Info("🔧 Initializing ResponseHandler...")
+	responseHandler := handlers.NewResponseHandler(logger)
+	logger.Info("✅ ResponseHandler initialized")
+
+	// Start global response listener with proper error handling
+	logger.Info("🚀 About to start global response listener goroutine...")
+
+	go func() {
+		// Add panic recovery
+		defer func() {
+			if r := recover(); r != nil {
+				logger.Error("💥 PANIC in ResponseHandler goroutine",
+					zap.Any("recover", r),
+					zap.String("stack", string(debug.Stack())))
+			}
+		}()
+
+		logger.Info("🔄 Inside goroutine - Creating Redis subscription...")
+
+		// Subscribe to channels
+		pubsub := redisClient.Subscribe(context.Background(), "users_events_response", "events_response", "groups_events_response")
+		defer func() {
+			pubsub.Close()
+			logger.Info("🔴 Redis subscription closed")
+		}()
+
+		// Verify subscription
+		_, err := pubsub.Receive(context.Background())
+		if err != nil {
+			logger.Error("❌ Failed to subscribe to Redis channels", zap.Error(err))
+			return
+		}
+
+		ch := pubsub.Channel()
+
+		logger.Info("✅✅✅ STARTED GLOBAL RESPONSE LISTENER",
+			zap.Strings("channels", []string{"users_events_response", "events_response", "groups_events_response"}))
+
+		// Test that we can receive messages
+		go func() {
+			time.Sleep(2 * time.Second)
+			logger.Info("🧪 Sending test message to verify pub/sub...")
+			testMsg := map[string]interface{}{
+				"event_id": "test-event-123",
+				"type":     "test",
+				"success":  true,
+				"data":     map[string]string{"id": "test-user-id"},
+			}
+			testJSON, _ := json.Marshal(testMsg)
+			if err := redisClient.Publish(context.Background(), "users_events_response", string(testJSON)).Err(); err != nil {
+				logger.Error("❌ TEST: Error publishing test message", zap.Error(err))
+			} else {
+				logger.Info("✅ TEST: Test message published successfully")
+			}
+		}()
+
+		for msg := range ch {
+			logger.Info("📨📨📨 RESPONSE LISTENER: Received message",
+				zap.String("channel", msg.Channel),
+				zap.String("payload", msg.Payload),
+				zap.Int("payload_length", len(msg.Payload)))
+
+			responseHandler.HandleResponse(msg.Channel, msg.Payload)
+		}
+
+		logger.Warn("❌ Response listener stopped - channel closed")
+	}()
+
+	// Wait for ResponseHandler to initialize
+	logger.Info("⏳ Waiting for ResponseHandler to initialize...")
+	time.Sleep(3 * time.Second)
+	logger.Info("✅ ResponseHandler should be ready now")
+
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(redisClient, dbClient, cfg.JWT.Secret, cfg.JWT.Expiration, logger)
+	authHandler := handlers.NewAuthHandler(redisClient, cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
 	eventHandler := handlers.NewEventHandler(redisClient, dbClient, logger)
 	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, logger)
 
@@ -170,4 +257,14 @@ func corsMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func extractRedisVersion(info string) string {
+	lines := strings.Split(info, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "redis_version:") {
+			return strings.TrimSpace(strings.Split(line, ":")[1])
+		}
+	}
+	return "unknown"
 }
