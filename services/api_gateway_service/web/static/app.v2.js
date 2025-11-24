@@ -76,9 +76,9 @@ async function apiRequest(endpoint, method = 'GET', body = null) {
     let url = endpoint;
 
     // Solo agregar user_id para endpoints específicos que lo necesitan
-    const needsUserId = ['/events', '/groups'].some(path => endpoint.includes(path));
+    const needsUserId = ['/events', '/groups', '/auth/account'].some(path => endpoint.includes(path));
 
-    if (userId && needsUserId && method.toUpperCase() === 'GET') {
+    if (userId && needsUserId && (method.toUpperCase() === 'GET' || method.toUpperCase() === 'DELETE')) {
         const separator = endpoint.includes('?') ? '&' : '?';
         url = `${endpoint}${separator}user_id=${encodeURIComponent(userId)}`;
 
@@ -289,11 +289,16 @@ async function loadEvents() {
                 });
 
                 eventCard.innerHTML = `
-                    <h4>${event.title || 'Sin título'}</h4>
-                    <p>${event.description || 'Sin descripción'}</p>
-                    <div class="date">Inicio: ${startTime.toLocaleString()}</div>
-                    <div class="date">Fin: ${endTime.toLocaleString()}</div>
-                    ${event.location ? `<div class="date">Ubicación: ${event.location}</div>` : ''}
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                        <div style="flex: 1;">
+                            <h4>${event.title || 'Sin título'}</h4>
+                            <p>${event.description || 'Sin descripción'}</p>
+                            <div class="date">Inicio: ${startTime.toLocaleString()}</div>
+                            <div class="date">Fin: ${endTime.toLocaleString()}</div>
+                            ${event.location ? `<div class="date">Ubicación: ${event.location}</div>` : ''}
+                        </div>
+                        <button onclick="deleteEvent('${event.id}')" class="btn-danger" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;" title="Eliminar evento">🗑️</button>
+                    </div>
                 `;
                 container.appendChild(eventCard);
 
@@ -675,6 +680,57 @@ window.onload = () => {
     // Debug cada 10 segundos
     setInterval(debugState, 10000);
 };
+
+// Delete event function
+async function deleteEvent(eventId) {
+    if (!confirm('¿Estás seguro de que quieres eliminar este evento?')) {
+        return;
+    }
+
+    try {
+        console.log('🗑️ Deleting event:', eventId);
+
+        // ✅ CONSTRUIR URL MANUALMENTE CON user_id PARA DELETE
+        const deleteUrl = `/events/${eventId}?user_id=${encodeURIComponent(userId)}`;
+        const result = await apiRequest(deleteUrl, 'DELETE');
+        showNotification('Evento eliminado exitosamente!', 'success');
+
+        // Recargar eventos (renderCalendar ya se llama dentro de loadEvents)
+        await loadEvents();
+    } catch (error) {
+        console.error('❌ Failed to delete event:', error);
+        showNotification('Error al eliminar evento: ' + error.message, 'error');
+    }
+}
+
+// Delete account functions
+function showDeleteAccountModal() {
+    showModal('delete-account-modal');
+}
+
+async function deleteAccount() {
+    if (!confirm('¿Estás completamente seguro? Esta acción no se puede deshacer.')) {
+        return;
+    }
+
+    try {
+        console.log('🗑️ Deleting user account');
+
+        // ✅ CONSTRUIR URL MANUALMENTE CON user_id PARA DELETE
+        const deleteUrl = `/auth/account?user_id=${encodeURIComponent(userId)}`;
+        const result = await apiRequest(deleteUrl, 'DELETE');
+        showNotification('Cuenta eliminada exitosamente. Redirigiendo...', 'success');
+
+        // Clear session and redirect to login
+        clearSession();
+        setTimeout(() => {
+            location.reload();
+        }, 2000);
+    } catch (error) {
+        console.error('❌ Failed to delete account:', error);
+        showNotification('Error al eliminar cuenta: ' + error.message, 'error');
+    }
+}
 
 // Close modals when clicking outside
 window.onclick = (event) => {

@@ -299,3 +299,80 @@ func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		return nil, fmt.Errorf("timeout waiting for response after 30 seconds")
 	}
 }
+
+func (h *EventHandler) DeleteEvent(c *gin.Context) {
+	eventID := c.Param("id")
+	if eventID == "" {
+		h.logger.Warn("⚠️ Event ID is missing in URL")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Event ID is required"})
+		return
+	}
+
+	userID := c.Query("user_id")
+	if userID == "" {
+		h.logger.Warn("⚠️ user_id parameter is missing")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("🗑️ Deleting event",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	// Create event to request event deletion from user service
+	deleteEventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   deleteEventID,
+		"type": "agenda.event.delete",
+		"data": map[string]interface{}{
+			"event_id": eventID,
+			"user_id":  userID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "events_response",
+		},
+	}
+
+	h.logger.Info("📤 Requesting event deletion from user service",
+		zap.String("delete_event_id", deleteEventID),
+		zap.String("target_event_id", eventID),
+		zap.String("user_id", userID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to delete event",
+			zap.Error(err),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete event: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Event deletion failed",
+			zap.String("error", response.Error),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+
+		// User-friendly error messages
+		userMessage := "Failed to delete event"
+		if strings.Contains(response.Error, "not found") {
+			userMessage = "Event not found or already deleted"
+		} else if strings.Contains(response.Error, "permission") {
+			userMessage = "You don't have permission to delete this event"
+		}
+
+		c.JSON(http.StatusBadRequest, gin.H{"error": userMessage})
+		return
+	}
+
+	h.logger.Info("✅ Event deleted successfully",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Event deleted successfully",
+		"event_id": eventID,
+	})
+}

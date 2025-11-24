@@ -157,6 +157,7 @@ func main() {
 		{
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
+			auth.DELETE("/account", authHandler.DeleteAccount)
 		}
 
 		// Protected routes (would need JWT middleware)
@@ -164,6 +165,7 @@ func main() {
 		{
 			events.POST("", eventHandler.CreateEvent)
 			events.GET("", eventHandler.GetEvents)
+			events.DELETE("/:id", eventHandler.DeleteEvent)
 		}
 
 		groups := api.Group("/groups")

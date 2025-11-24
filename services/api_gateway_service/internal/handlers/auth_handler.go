@@ -286,3 +286,46 @@ func (h *AuthHandler) generateJWT(userID uuid.UUID) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString([]byte(h.jwtSecret))
 }
+
+func (h *AuthHandler) DeleteAccount(c *gin.Context) {
+	// Get user_id from query parameter (should be extracted from JWT in production)
+	userID := c.Query("user_id")
+	if userID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("🗑️ Deleting user account", zap.String("user_id", userID))
+
+	// Create event for user deletion
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.delete",
+		"data": map[string]interface{}{
+			"user_id": userID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Marshal event to JSON
+	eventJSON, err := json.Marshal(eventData)
+	if err != nil {
+		h.logger.Error("Failed to marshal user.delete event", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete account"})
+		return
+	}
+
+	// Publish to Redis
+	if err := h.redis.Publish(c.Request.Context(), "users_events", eventJSON).Err(); err != nil {
+		h.logger.Error("Failed to publish user.delete event", zap.Error(err))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete account"})
+		return
+	}
+
+	h.logger.Info("✅ Account deletion requested", zap.String("user_id", userID))
+	c.JSON(http.StatusOK, gin.H{"message": "Account deletion requested successfully"})
+}

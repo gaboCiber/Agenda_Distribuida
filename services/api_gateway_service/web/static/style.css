@@ -160,6 +160,21 @@ textarea {
     background: #545b62;
 }
 
+.btn-danger {
+    background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+    color: white;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.3s;
+}
+
+.btn-danger:hover {
+    background: linear-gradient(135deg, #c82333 0%, #a02622 100%);
+}
+
 /* Dashboard */
 .dashboard-grid {
     display: grid;
