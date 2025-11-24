@@ -48,7 +48,7 @@ El sistema está compuesto por los siguientes microservicios:
 
 Una vez iniciados los servicios, puedes acceder a ellos en los siguientes puertos:
 
-- **API Gateway**: http://localhost:8000
+- **API Gateway**: http://localhost:8080
 - **Users Service**: http://localhost:8001
 - **Events Service**: http://localhost:8002
 - **Groups Service**: http://localhost:8003

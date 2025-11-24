@@ -147,7 +147,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(redisClient, cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
-	eventHandler := handlers.NewEventHandler(redisClient, dbClient, logger)
+	eventHandler := handlers.NewEventHandler(redisClient, dbClient, responseHandler, logger)
 	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, logger)
 
 	// API routes
