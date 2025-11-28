@@ -1,0 +1,50 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
+graph TD
+    subgraph "Red Externa"
+        Client[Cliente]
+    end
+
+    subgraph "Infraestructura Distribuida (Docker Swarm)"
+        
+        API_GW("API Gateway / Balanceador")
+
+        subgraph "Servicios Sin Estado"
+            direction LR
+            US1[User Service 1]
+            US2[User Service 2]
+            USN[... User Service N]
+            GS1[Group Service 1]
+            GS2[Group Service 2]
+            GSN[... Group Service N]
+        end
+        
+        subgraph "Servicios Con Estado"
+            subgraph "Clúster DB Service (Raft)"
+                DB1[Nodo 1]
+                DB2[Nodo 2]
+                DB3[Nodo 3]
+                DB4[Nodo 4]
+                DB5[Nodo 5]
+            end
+        end
+
+        subgraph "Bus de Mensajes"
+            Redis[(Redis)]
+        end
+    end
+
+    Client -- HTTP/S --> API_GW
+    
+    API_GW -- PUBLISH --> Redis
+    Redis -- SUBSCRIBE --> US1 & US2 & USN
+    Redis -- SUBSCRIBE --> GS1 & GS2 & GSN
+
+    US1 & US2 & USN -- HTTP REST --> DB1
+    GS1 & GS2 & GSN -- HTTP REST --> DB1
+
+    DB1 <--> DB2 & DB3 & DB4 & DB5
+    DB2 <--> DB3 & DB4 & DB5
+    DB3 <--> DB4 & DB5
+    DB4 <--> DB5
+
+    style DB1 fill:#f9f,stroke:#333,stroke-width:2px

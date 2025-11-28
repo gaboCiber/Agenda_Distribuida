@@ -1,0 +1,40 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
+graph TD
+    subgraph "Red Externa"
+        Client[Cliente]
+    end
+
+    subgraph "Sistema Distribuido"
+        API_GW("API Gateway")
+        
+        subgraph "Servicios de Lógica de Negocio (Stateless)"
+            US[User Service]
+            GS[Group Service]
+        end
+        
+        subgraph "Servicio de Datos (Stateful)"
+            DB_Cluster["Clúster DB Service (Raft)"]
+        end
+
+        subgraph "Capa de Comunicación Asíncrona"
+            Redis[(Redis Pub/Sub)]
+        end
+    end
+
+    Client -- HTTP/S --> API_GW
+    
+    API_GW -- PUBLISH --> Redis
+    Redis -- SUBSCRIBE --> US
+    Redis -- SUBSCRIBE --> GS
+    
+    US -- HTTP REST --> DB_Cluster
+    GS -- HTTP REST --> DB_Cluster
+
+    US -- PUBLISH (Respuestas) --> Redis
+    GS -- PUBLISH (Respuestas) --> Redis
+    Redis -- SUBSCRIBE (Respuestas) --> API_GW
+
+    style US fill:#bdf,stroke:#333,stroke-width:2px
+    style GS fill:#bfd,stroke:#333,stroke-width:2px
+    style API_GW fill:#bbf,stroke:#333,stroke-width:2px
+    style DB_Cluster fill:#f9f,stroke:#333,stroke-width:2px
