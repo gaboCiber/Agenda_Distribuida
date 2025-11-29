@@ -1,20 +1,37 @@
 %%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
 sequenceDiagram
     participant C as Cliente
-    participant GW as API Gateway
-    participant Redis as Redis Pub/Sub
-    participant US as User/Group Service
-    participant DBL as DB Service (Líder)
-    participant DBF as DB Service (Seguidor)
+    participant GW_A as API GW (Activo)
+    participant Redis_P as Redis (Primario)
+    participant US as User Service
+    participant DBL as DB Líder
+    
+    loop Flujo Normal
+        C->>GW_A: 1. Petición HTTP/S
+        GW_A->>Redis_P: 2. PUBLISH
+        Redis_P-->>US: 3. Recibe Evento
+        US->>DBL: 4. Acceso a Datos
+        DBL-->>US: 5. Respuesta DB
+        US->>Redis_P: 6. PUBLISH Respuesta
+        Redis_P-->>GW_A: 7. Recibe Respuesta
+        GW_A-->>C: 8. Respuesta Final
+    end
 
-    C->>+GW: 1. Petición HTTP/S
-    GW->>Redis: 2. PUBLISH (canal: 'user_events', payload: {...})
-    note right of GW: El Gateway espera una respuesta en un canal específico.
-    Redis-->>US: 3. Recibe evento (SUBSCRIBE)
-    US->>+DBL: 4. Petición HTTP REST a la DB
-    DBL->>+DBF: 5. Replicación (AppendEntries RPC)
-    DBF-->>-DBL: 6. Ack
-    DBL-->>-US: 7. Respuesta de la DB
-    US->>Redis: 8. PUBLISH (canal: 'user_events_response', payload: {...})
-    Redis-->>GW: 9. Recibe respuesta (SUBSCRIBE)
-    GW-->>-C: 10. Respuesta HTTP/S final
+    participant GW_P as API GW (Pasivo)
+    participant Redis_R as Redis (Réplica)
+    participant RS as Redis Supervisor
+
+    alt Falla del API Gateway Activo
+        GW_P--xGW_A: Heartbeat falla
+        Note over GW_P: GW Pasivo asume IP Virtual
+        C->>GW_P: Peticiones ahora llegan aquí
+    end
+
+    alt Falla del Redis Primario
+        RS--xRedis_P: PING falla
+        RS->>Redis_R: Envía comando 'REPLICAOF NO ONE'
+        Note over Redis_R: Réplica es promovida a Primario
+        RS->>DBL: Escribe nueva IP del Primario
+        US->>DBL: Lee nueva IP del Primario
+        US->>Redis_R: Se conecta al nuevo Primario
+    end

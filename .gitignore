@@ -9,3 +9,18 @@ services/db_service/data
 images
 services_old
 scripts/OLD
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.out
+*.pdf
+*.synctex.gz
+*.toc
+*.blg
+*.bbl
+*.fls
+*.fdb_latexmk
+*.dpth
+*.md5
+*.auxlock

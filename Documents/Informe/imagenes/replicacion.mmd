@@ -4,47 +4,56 @@ graph TD
         Client[Cliente]
     end
 
-    subgraph "Infraestructura Distribuida (Docker Swarm)"
-        
-        API_GW("API Gateway / Balanceador")
+    subgraph "Infraestructura Distribuida"
+        VIP(IP Virtual)
 
-        subgraph "Servicios Sin Estado"
-            direction LR
-            US1[User Service 1]
-            US2[User Service 2]
-            USN[... User Service N]
-            GS1[Group Service 1]
-            GS2[Group Service 2]
-            GSN[... Group Service N]
+        subgraph "Punto de Entrada (Failover tipo VRRP)"
+            GW_A[API Gateway - Activo]
+            GW_P[API Gateway - Pasivo]
         end
-        
-        subgraph "Servicios Con Estado"
-            subgraph "Clúster DB Service (Raft)"
-                DB1[Nodo 1]
-                DB2[Nodo 2]
-                DB3[Nodo 3]
-                DB4[Nodo 4]
-                DB5[Nodo 5]
+
+        subgraph "Capa de Mensajería (Alta Disponibilidad)"
+            subgraph "Par Redis"
+                Redis_P[Redis - Primario]
+                Redis_R[Redis - Réplica]
+            end
+            subgraph "Supervisión"
+                Supervisor[Redis Supervisor]
             end
         end
-
-        subgraph "Bus de Mensajes"
-            Redis[(Redis)]
+        
+        subgraph "Servicios de Lógica de Negocio (Stateless)"
+            direction LR
+            US1[User Service R1]
+            US2[User Service R2]
+            GS1[Group Service R1]
+            GS2[Group Service R2]
+        end
+        
+        subgraph "Servicio de Datos (Stateful - Raft)"
+            DB_Cluster["Clúster DB Service"]
         end
     end
 
-    Client -- HTTP/S --> API_GW
+    Client -- HTTP/S --> VIP
+    VIP -- Enrutado a --> GW_A
+    GW_P -. Heartbeat .-> GW_A
     
-    API_GW -- PUBLISH --> Redis
-    Redis -- SUBSCRIBE --> US1 & US2 & USN
-    Redis -- SUBSCRIBE --> GS1 & GS2 & GSN
+    GW_A -- PUBLISH/SUBSCRIBE --> Redis_P
 
-    US1 & US2 & USN -- HTTP REST --> DB1
-    GS1 & GS2 & GSN -- HTTP REST --> DB1
+    Supervisor -- Monitoriza --> Redis_P
+    Supervisor -- Monitoriza --> Redis_R
+    Supervisor -- Promueve --> Redis_R
 
-    DB1 <--> DB2 & DB3 & DB4 & DB5
-    DB2 <--> DB3 & DB4 & DB5
-    DB3 <--> DB4 & DB5
-    DB4 <--> DB5
+    Redis_P -. Replicación .-> Redis_R
+    
+    US -- Pub/Sub --> Redis_P
+    GS -- Pub/Sub --> Redis_P
 
-    style DB1 fill:#f9f,stroke:#333,stroke-width:2px
+    US -- HTTP REST --> DB_Cluster
+    GS -- HTTP REST --> DB_Cluster
+
+    style GW_A fill:#bbf,stroke:green,stroke-width:4px
+    style GW_P fill:#bbf,stroke:#333,stroke-width:2px
+    style Redis_P fill:#f88,stroke:green,stroke-width:4px
+    style Redis_R fill:#f88,stroke:#333,stroke-width:2px

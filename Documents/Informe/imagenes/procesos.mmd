@@ -1,0 +1,38 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
+graph TD
+    subgraph "Máquina Física 1"
+        direction TB
+        subgraph "Docker Engine 1"
+            GWA["API Gateway (Activo)"]
+            RedisP["Redis (Primario)"]
+            RS1["Redis Supervisor 1"]
+            US1["User Service R1"]
+            GS1["Group Service R1"]
+            DB1["DB Service N1"]
+            DB2["DB Service N2"]
+            DB3["DB Service N3"]
+        end
+    end
+
+    subgraph "Máquina Física 2"
+        direction TB
+        subgraph "Docker Engine 2"
+            GWP["API Gateway (Pasivo)"]
+            RedisR["Redis (Réplica)"]
+            RS2["Redis Supervisor 2"]
+            US2["User Service R2"]
+            GS2["Group Service R2"]
+            DB4["DB Service N4"]
+            DB5["DB Service N5"]
+        end
+    end
+
+    GWP -. Heartbeat / VRRP .-> GWA
+    RS1 <--> RS2
+    RS1 & RS2 -- Monitoriza --> RedisP & RedisR
+    RedisP -. Replicación Nativa .-> RedisR
+
+    style GWA fill:#bbf,stroke:green,stroke-width:4px
+    style RedisP fill:#f88,stroke:green,stroke-width:4px
+    style GWP fill:#bbf,stroke:#333,stroke-width:2px
+    style RedisR fill:#f88,stroke:#333,stroke-width:2px
