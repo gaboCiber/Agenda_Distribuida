@@ -147,7 +147,7 @@ func main() {
 
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(redisClient, cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
-	eventHandler := handlers.NewEventHandler(redisClient, dbClient, logger)
+	eventHandler := handlers.NewEventHandler(redisClient, dbClient, responseHandler, logger)
 	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, logger)
 
 	// API routes
@@ -157,6 +157,7 @@ func main() {
 		{
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
+			auth.DELETE("/account", authHandler.DeleteAccount)
 		}
 
 		// Protected routes (would need JWT middleware)
@@ -164,6 +165,7 @@ func main() {
 		{
 			events.POST("", eventHandler.CreateEvent)
 			events.GET("", eventHandler.GetEvents)
+			events.DELETE("/:id", eventHandler.DeleteEvent)
 		}
 
 		groups := api.Group("/groups")

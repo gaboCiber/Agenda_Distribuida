@@ -1,0 +1,37 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
+sequenceDiagram
+    participant C as Cliente
+    participant GW_A as API GW (Activo)
+    participant Redis_P as Redis (Primario)
+    participant US as User Service
+    participant DBL as DB Líder
+    
+    loop Flujo Normal
+        C->>GW_A: 1. Petición HTTP/S
+        GW_A->>Redis_P: 2. PUBLISH
+        Redis_P-->>US: 3. Recibe Evento
+        US->>DBL: 4. Acceso a Datos
+        DBL-->>US: 5. Respuesta DB
+        US->>Redis_P: 6. PUBLISH Respuesta
+        Redis_P-->>GW_A: 7. Recibe Respuesta
+        GW_A-->>C: 8. Respuesta Final
+    end
+
+    participant GW_P as API GW (Pasivo)
+    participant Redis_R as Redis (Réplica)
+    participant RS as Redis Supervisor
+
+    alt Falla del API Gateway Activo
+        GW_P--xGW_A: Heartbeat falla
+        Note over GW_P: GW Pasivo asume IP Virtual
+        C->>GW_P: Peticiones ahora llegan aquí
+    end
+
+    alt Falla del Redis Primario
+        RS--xRedis_P: PING falla
+        RS->>Redis_R: Envía comando 'REPLICAOF NO ONE'
+        Note over Redis_R: Réplica es promovida a Primario
+        RS->>DBL: Escribe nueva IP del Primario
+        US->>DBL: Lee nueva IP del Primario
+        US->>Redis_R: Se conecta al nuevo Primario
+    end

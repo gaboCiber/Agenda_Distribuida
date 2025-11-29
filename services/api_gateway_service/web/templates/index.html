@@ -13,6 +13,7 @@
             <div id="user-info" style="display:none;">
                 <span id="user-email"></span>
                 <button onclick="logout()" class="btn-secondary">Cerrar Sesión</button>
+                <button onclick="showDeleteAccountModal()" class="btn-danger">Eliminar Cuenta</button>
             </div>
         </div>
     </nav>
@@ -160,11 +161,31 @@
         </div>
     </div>
 
+    <!-- Delete Account Modal -->
+    <div id="delete-account-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Eliminar Cuenta</h3>
+                <span class="close" onclick="closeModal('delete-account-modal')">&times;</span>
+            </div>
+            <div style="padding: 20px;">
+                <p style="color: #dc3545; font-weight: bold; margin-bottom: 20px;">
+                    ⚠️ Esta acción no se puede deshacer. Se eliminarán todos tus eventos y grupos.
+                </p>
+                <p>¿Estás seguro de que quieres eliminar tu cuenta permanentemente?</p>
+                <div style="margin-top: 20px; display: flex; gap: 10px;">
+                    <button onclick="deleteAccount()" class="btn-danger" style="flex: 1;">Sí, Eliminar Cuenta</button>
+                    <button onclick="closeModal('delete-account-modal')" class="btn-secondary" style="flex: 1;">Cancelar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Notifications -->
     <div id="notification" class="notification" style="display:none;">
         <span id="notification-message"></span>
     </div>
 
-    <script src="/static/app.js"></script>
+    <script src="/static/app.v2.js"></script>
 </body>
 </html>

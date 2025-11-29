@@ -1,0 +1,59 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
+graph TD
+    subgraph " "
+        direction TB
+        
+        subgraph "Capa de Entrada"
+            GW_A["API Gateway (Activo)"]
+            GW_P["API Gateway (Pasivo)"]
+            GW_P -. Heartbeat .-> GW_A
+        end
+        
+        subgraph "Capa de Lógica"
+            direction LR
+            US1["User Svc R1"]
+            US2["User Svc R2"]
+            US3["User Svc R3"]
+            GS1["Group Svc R1"]
+            GS2["Group Svc R2"]
+            GS3["Group Svc R3"]
+        end
+        
+        subgraph "Capa de Mensajería"
+            subgraph " "
+                direction LR
+                Redis_P["Redis (Primario)"]
+                Redis_R["Redis (Réplica)"]
+            end
+            Supervisor["Redis Supervisor"]
+            Redis_P -. Replicación .-> Redis_R
+            Supervisor -- Gestiona --> Redis_P & Redis_R
+        end
+
+        subgraph "Capa de Datos"
+            subgraph "Clúster de 5 Nodos"
+                DB1["DB Svc R1"]
+                DB2["DB Svc R2"]
+                DB3["DB Svc R3"]
+                DB4["DB Svc R4"]
+                DB5["DB Svc R5"]
+            end
+            DB1 <--> DB2 & DB3 & DB4 & DB5
+            DB2 <--> DB3 & DB4 & DB5
+            DB3 <--> DB4 & DB5
+            DB4 <--> DB5
+        end
+
+        %% Conexiones entre capas
+        GW_A --> US1 & US2 & US3 & GS1 & GS2 & GS3
+        US1 & US2 & US3 & GS1 & GS2 & GS3 -- Pub/Sub --> Redis_P
+        US1 & US2 & US3 & GS1 & GS2 & GS3 -- Lectura/Escritura --> DB1
+
+    end
+
+    %% Estilos
+    style GW_A fill:#bbf,stroke:green,stroke-width:4px
+    style Redis_P fill:#f88,stroke:green,stroke-width:4px
+    style GW_P fill:#bbf,stroke:#333,stroke-width:2px
+    style Redis_R fill:#f88,stroke:#333,stroke-width:2px
+    style DB1 fill:#f9f,stroke:#333,stroke-width:2px

@@ -63,37 +63,8 @@ El sistema está compuesto por los siguientes microservicios:
 
 ### Puertos de los Servicios
 
-- **User Service**: http://localhost:8001
-- **Group Service**: http://localhost:8003
-- **DB Service**: http://localhost:8005
-- **Redis**: redis://localhost:6379
-
-### Comandos Útiles
-
-- Ver logs de los servicios:
-  ```bash
-  docker-compose logs -f
-  ```
-
-- Detener todos los servicios:
-  ```bash
-  docker-compose down
-  ```
-
-## 🛠️ Desarrollo
-
-La estructura del proyecto es la siguiente:
-
-```
-Agenda_Distribuida/
-├── services/
-│   ├── user_service/    # Servicio de usuarios
-│   ├── group_service/   # Servicio de grupos
-│   └── db_service/      # Servicio de base de datos
-├── scripts/             # Scripts de utilidad
-└── README.md            # Este archivo
-```
-
-## 📄 Licencia
-
-Este proyecto está bajo la licencia MIT. Ver el archivo [LICENSE](LICENSE) para más detalles.
+- **API Gateway**: http://localhost:8000
+- **Users Service**: http://localhost:8001
+- **Events Service**: http://localhost:8002
+- **Groups Service**: http://localhost:8003
+- **Notifications Service**: http://localhost:8004
