@@ -32,11 +32,11 @@ graph TD
 
         subgraph "Capa de Datos"
             subgraph "Clúster de 5 Nodos"
-                DB1["Nodo 1"]
-                DB2["Nodo 2"]
-                DB3["Nodo 3"]
-                DB4["Nodo 4"]
-                DB5["Nodo 5"]
+                DB1["DB Svc R1"]
+                DB2["DB Svc R2"]
+                DB3["DB Svc R3"]
+                DB4["DB Svc R4"]
+                DB5["DB Svc R5"]
             end
             DB1 <--> DB2 & DB3 & DB4 & DB5
             DB2 <--> DB3 & DB4 & DB5
