@@ -5,8 +5,15 @@
 \usepackage{graphicx}
 \geometry{a4paper, margin=1in}
 
-\title{Informe de Diseño del Sistema: Agenda Distribuida}
-\author{Integrantes: [Nombres de los Integrantes]}
+\title{ \textbf{\textit{Informe de Diseño: Agenda Distribuida}}}
+\author{
+    \textbf{Gabriel Andrés Pla Lasa} \\
+    Grupo C411 \\[0.5em]
+    \textbf{Carlos Daniel Largacha Leal} \\
+    Grupo C412 \\[1em]
+    \textit{Universidad de La Habana} \\
+    Facultad de Matemática y Computación \\
+}
 \date{\today}
 
 \begin{document}
@@ -20,8 +27,10 @@ El presente informe detalla el diseño y la arquitectura de un sistema de agenda
 \section{Introducción}
 La gestión eficiente del tiempo y la coordinación de actividades en grupo son problemas fundamentales en la interacción humana y profesional. El proyecto de Agenda Distribuida se presenta como una solución tecnológica a este desafío, implementando una arquitectura de microservicios distribuidos en Go. El objetivo de este informe es detallar el diseño de un sistema plenamente funcional y tolerante a fallos, capaz de operar sobre una infraestructura de red virtualizada en múltiples máquinas. Para ello, se resuelven los problemas canónicos de la computación distribuida mediante la implementación de soluciones a medida: un mecanismo de conmutación por error (failover) a nivel de red para el punto de entrada, un servicio supervisor para la capa de mensajería asíncrona, y el algoritmo de consenso Raft para garantizar la consistencia de los datos.
 
+
 \section{Diseño del Sistema Distribuido}
 El diseño del sistema se ha concebido para garantizar la continuidad del servicio ante fallos de componentes individuales. A continuación, se detallan las distintas facetas de la arquitectura distribuida, desde su organización estructural hasta los mecanismos de seguridad implementados.
+
 
 \subsection{Arquitectura}
 La organización del sistema se basa en un paradigma de microservicios, donde cada componente posee un rol definido y se implementan estrategias de alta disponibilidad para eliminar puntos únicos de fallo. La arquitectura se compone de un punto de entrada de alta disponibilidad que utiliza un par de instancias de API Gateway en modo Activo-Pasivo, cuya visibilidad externa se gestiona a través de una Dirección IP Virtual. Tras esta capa, operan los servicios de lógica de negocio, User y Group Service, los cuales son sin estado (stateless) y pueden ser replicados para redundancia. La comunicación asíncrona entre servicios se apoya en una capa de mensajería Redis, también configurada para alta disponibilidad en un par Primario-Réplica. La gestión de este par es orquestada por un servicio dedicado, el Redis Supervisor. Finalmente, la persistencia de los datos se delega en el DB Service, un clúster de cinco nodos que utiliza el algoritmo de consenso Raft para garantizar la consistencia y durabilidad del estado del sistema.

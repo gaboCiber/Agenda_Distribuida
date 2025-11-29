@@ -1,13 +1,20 @@
 %%{init: {'theme': 'base', 'themeVariables': { 'background': '#f5f5f5' }}}%%
-graph TD
+graph TB
     subgraph "Máquina Física 1"
         direction TB
-        subgraph "Docker Engine 1"
+        subgraph "Capa de Entrada"
             GWA["API Gateway (Activo)"]
+        end
+        subgraph "Capa de Mensajería"
             RedisP["Redis (Primario)"]
             RS1["Redis Supervisor 1"]
+        end
+        subgraph "Capa de Lógica"
             US1["User Service R1"]
+            US2["User Service R2"]
             GS1["Group Service R1"]
+        end
+        subgraph "Capa de Datos (Clúster)"
             DB1["DB Service N1"]
             DB2["DB Service N2"]
             DB3["DB Service N3"]
@@ -16,22 +23,38 @@ graph TD
 
     subgraph "Máquina Física 2"
         direction TB
-        subgraph "Docker Engine 2"
+         subgraph "Capa de Entrada"
             GWP["API Gateway (Pasivo)"]
+        end
+        subgraph "Capa de Mensajería"
             RedisR["Redis (Réplica)"]
             RS2["Redis Supervisor 2"]
-            US2["User Service R2"]
+        end
+        subgraph "Capa de Lógica"
+            US3["User Service R3"]
             GS2["Group Service R2"]
+            GS3["Group Service R3"]
+        end
+        subgraph "Capa de Datos (Clúster)"
             DB4["DB Service N4"]
             DB5["DB Service N5"]
         end
     end
 
+    %% Relaciones de Alta Disponibilidad
     GWP -. Heartbeat / VRRP .-> GWA
     RS1 <--> RS2
-    RS1 & RS2 -- Monitoriza --> RedisP & RedisR
     RedisP -. Replicación Nativa .-> RedisR
 
+    %% Flujo de Peticiones y Datos
+    GWA -- Peticiones --> US1 & US2 & GS1
+    GWA -. Peticiones Remotas .-> US3 & GS2 & GS3
+    US1 & US2 & GS1 -- Comunicación --> RedisP
+    US3 & GS2 & GS3 -- Comunicación --> RedisP
+    US1 & US2 & GS1 -- Acceso a Datos --> DB1
+    US3 & GS2 & GS3 -- Acceso a Datos --> DB4
+
+    %% Estilos
     style GWA fill:#bbf,stroke:green,stroke-width:4px
     style RedisP fill:#f88,stroke:green,stroke-width:4px
     style GWP fill:#bbf,stroke:#333,stroke-width:2px
