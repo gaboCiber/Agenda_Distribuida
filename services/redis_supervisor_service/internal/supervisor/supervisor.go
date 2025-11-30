@@ -1,42 +1,154 @@
 package supervisor
 
 import (
+	"errors"
+	"fmt"
 	"log"
 	"time"
+
+	"redis_supervisor_service/internal/clients"
+	"redis_supervisor_service/internal/config"
 )
 
 // Supervisor contains the core logic for monitoring and failover.
 type Supervisor struct {
-	// TODO: Add fields for clients, config, and state (current primary/replica)
+	config         *config.Config
+	redisClient    *clients.RedisClient
+	dbClient       *clients.DBClient
 	currentPrimary string
 	currentReplica string
+	redisNodes     []string
 }
 
 // New creates a new Supervisor
-func New() *Supervisor {
-	return &Supervisor{}
+func New(cfg *config.Config, redisClient *clients.RedisClient, dbClient *clients.DBClient) *Supervisor {
+	return &Supervisor{
+		config:      cfg,
+		redisClient: redisClient,
+		dbClient:    dbClient,
+		redisNodes:  cfg.RedisAddrs,
+	}
 }
 
 // Run starts the main monitoring loop
 func (s *Supervisor) Run() {
-	log.Println("Supervisor is running...")
-	// TODO: 1. Find initial primary
-	// TODO: 2. Start the monitoring loop
+	log.Println("Supervisor is starting...")
+
+	// Initial attempt to find the primary
 	for {
-		time.Sleep(5 * time.Second) // Placeholder loop
-		log.Println("Monitoring...")
+		err := s.findInitialPrimary()
+		if err == nil {
+			log.Printf("Initial primary found: %s. Replica: %s.", s.currentPrimary, s.currentReplica)
+			break
+		}
+		log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
+		time.Sleep(5 * time.Second)
+	}
+
+	// Start the monitoring loop
+	s.monitorLoop()
+}
+
+// findInitialPrimary queries all configured redis nodes to determine the primary and replica.
+func (s *Supervisor) findInitialPrimary() error {
+	log.Println("Searching for initial Redis primary among:", s.redisNodes)
+	var foundPrimary string
+	var foundReplicas []string
+
+	for _, addr := range s.redisNodes {
+		role, err := s.redisClient.GetRole(addr)
+		if err != nil {
+			log.Printf("Could not get role for %s: %v", addr, err)
+			continue
+		}
+
+		if role == "master" {
+			if foundPrimary != "" {
+				return fmt.Errorf("split-brain detected: multiple primaries found (%s and %s)", foundPrimary, addr)
+			}
+			foundPrimary = addr
+		} else {
+			foundReplicas = append(foundReplicas, addr)
+		}
+	}
+
+	if foundPrimary == "" {
+		return errors.New("no primary found")
+	}
+
+	s.currentPrimary = foundPrimary
+	if len(foundReplicas) > 0 {
+		// For simplicity, we assume a single replica in this setup
+		s.currentReplica = foundReplicas[0]
+	} else {
+		log.Println("Warning: No replica found.")
+	}
+
+	return nil
+}
+
+// monitorLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
+func (s *Supervisor) monitorLoop() {
+	ticker := time.NewTicker(time.Duration(s.config.PingInterval) * time.Second)
+	defer ticker.Stop()
+
+	failureCount := 0
+
+	for range ticker.C {
+		err := s.redisClient.Ping(s.currentPrimary)
+		if err != nil {
+			failureCount++
+			log.Printf("Failed to ping primary %s (%d/%d): %v", s.currentPrimary, failureCount, s.config.FailureThreshold, err)
+
+			if failureCount >= s.config.FailureThreshold {
+				log.Printf("Primary %s has reached failure threshold. Initiating failover.", s.currentPrimary)
+				s.initiateFailover()
+				// Reset failure count after failover attempt
+				failureCount = 0
+			}
+		} else {
+			if failureCount > 0 {
+				log.Printf("Successfully pinged primary %s. Resetting failure count.", s.currentPrimary)
+				failureCount = 0 // Reset on successful ping
+			}
+		}
 	}
 }
 
-func (s *Supervisor) findInitialPrimary() {
-	// TODO: Implement logic to query all redis nodes and find the primary
-	log.Println("Finding initial Redis primary...")
-}
-
+// initiateFailover promotes the replica to be the new primary.
 func (s *Supervisor) initiateFailover() {
-	// TODO: Implement the failover logic
+	if s.currentReplica == "" {
+		log.Println("Cannot initiate failover: no replica is configured or available.")
+		// We will keep trying to ping the old primary in the monitor loop
+		return
+	}
+
+	log.Printf("Attempting to promote %s to primary...", s.currentReplica)
+
 	// 1. Promote replica
-	// 2. Update DB service
+	err := s.redisClient.PromoteToPrimary(s.currentReplica)
+	if err != nil {
+		log.Printf("CRITICAL: Failed to promote replica %s: %v", s.currentReplica, err)
+		// If promotion fails, we do not proceed. The monitor loop will continue.
+		return
+	}
+	log.Printf("Successfully promoted %s to be the new primary.", s.currentReplica)
+
+	// 2. Update DB service with the new primary's address
+	log.Printf("Updating DB service with new primary address: %s", s.currentReplica)
+	err = s.dbClient.SetRedisPrimary(s.currentReplica)
+	if err != nil {
+		// This is a critical state. The replica is promoted but the system doesn't know.
+		// A more advanced supervisor might try to revert the promotion or retry the DB update.
+		log.Printf("CRITICAL: Failed to update DB service with new primary address: %v. System may be in an inconsistent state.", err)
+		return
+	}
+	log.Println("Successfully updated DB service.")
+
 	// 3. Update internal state
-	log.Println("Initiating failover...")
+	oldPrimary := s.currentPrimary
+	s.currentPrimary = s.currentReplica
+	s.currentReplica = oldPrimary // The old primary is now the (unresponsive) replica
+
+	log.Printf("Failover complete. New primary: %s. Old primary %s is now considered the replica.", s.currentPrimary, s.currentReplica)
 }
