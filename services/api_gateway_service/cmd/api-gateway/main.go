@@ -92,7 +92,7 @@ func main() {
 		logger.Info("🔄 Inside goroutine - Creating Redis subscription...")
 
 		// Subscribe to channels
-		pubsub := redisClient.Subscribe(context.Background(), "users_events_response", "events_response", "groups_events_response")
+		pubsub := redisClient.Subscribe(context.Background(), "users_events_response", "events_response", "groups_events_response", "group_events_response")
 		defer func() {
 			pubsub.Close()
 			logger.Info("🔴 Redis subscription closed")
@@ -148,7 +148,7 @@ func main() {
 	// Initialize handlers
 	authHandler := handlers.NewAuthHandler(redisClient, cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
 	eventHandler := handlers.NewEventHandler(redisClient, dbClient, responseHandler, logger)
-	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, logger)
+	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, responseHandler, logger)
 
 	// API routes
 	api := r.Group("/api")
