@@ -263,6 +263,11 @@ func getMigrations() []migration {
 					UNIQUE(event_id, group_id, user_id)
 				);
 
+				CREATE TABLE IF NOT EXISTS config (
+					name TEXT PRIMARY KEY,
+					value TEXT NOT NULL
+				);
+
 				CREATE TRIGGER IF NOT EXISTS update_group_event_status_timestamp
 				AFTER UPDATE ON group_event_status
 				BEGIN

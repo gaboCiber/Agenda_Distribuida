@@ -30,12 +30,14 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 	eventRepo := repository.NewEventRepository(db, *log)
 	groupRepo := repository.NewGroupRepository(db, *log)
 	groupEventRepo := repository.NewGroupEventRepository(db, *log)
+	configRepo := repository.NewConfigRepository(db)
 
 	// Initialize handlers
 	userAPI := NewUserHandler(userRepo, log)
 	eventAPI := NewEventHandler(eventRepo, log)
 	groupAPI := NewGroupHandler(groupRepo, log)
 	groupEventAPI := NewGroupEventHandler(groupEventRepo, log)
+	configHandler := NewConfigHandler(configRepo)
 
 	s := &Server{
 		Server: &http.Server{
@@ -53,13 +55,13 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 	}
 
 	r := mux.NewRouter()
-	s.setupRoutes(r)
+	s.setupRoutes(r, configHandler)
 	s.Server.Handler = r
 
 	return s
 }
 
-func (s *Server) setupRoutes(r *mux.Router) {
+func (s *Server) setupRoutes(r *mux.Router, configHandler *ConfigHandler) {
 	// Use the logging middleware for all routes
 	r.Use(s.loggingMiddleware)
 
@@ -92,6 +94,9 @@ func (s *Server) setupRoutes(r *mux.Router) {
 	// Group Event routes
 	groupEvents := api.PathPrefix("").Subrouter() // Base path is already /api/v1
 	s.groupEventAPI.RegisterRoutes(groupEvents)
+
+	// Config routes
+	configHandler.RegisterRoutes(api)
 }
 
 // Start starts the HTTP server

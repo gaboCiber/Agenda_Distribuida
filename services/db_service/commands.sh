@@ -275,3 +275,28 @@ curl -X PUT http://localhost:8000/api/v1/invitations/<invitationId> \
 
 # Get all invitations for a user
 curl -X GET "http://localhost:8000/api/v1/users/<userId>/invitations"
+
+
+#####################################################################
+#                          Config                                   #
+#####################################################################
+
+
+# 1. Crear un config (POST):
+curl -X POST http://localhost:8000/api/v1/configs \
+  -H "Content-Type: application/json" \
+  -d '{"name":"exampleName", "value":"exampleValue"}'
+
+# 2. Obtener un config por nombre (GET):
+curl http://localhost:8000/api/v1/configs/exampleName
+
+# 3. Listar todos los configs (GET):
+curl http://localhost:8000/api/v1/configs
+
+# 4. Actualizar un config (PUT):
+curl -X PUT http://localhost:8000/api/v1/configs/exampleName \
+  -H "Content-Type: application/json" \
+  -d '{"value":"newValue"}'
+
+# 5. Eliminar un config (DELETE):
+curl -X DELETE http://localhost:8000/api/v1/configs/exampleName
