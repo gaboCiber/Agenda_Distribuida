@@ -8,7 +8,7 @@ CURRENT_DIR="$(pwd)"
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|db|user|group|api]"
+    echo "Usage: $0 [all|redis|db|user|group|api|redis-supervisor]"
     exit 1
 fi
 
@@ -68,6 +68,18 @@ start_api() {
     echo "API Gateway Service started at localhost:8080"
 }
 
+start_redis_supervisor() {
+    echo "Starting Redis Supervisor Service..."
+    docker run -d --name agenda-redis-supervisor-service --network $NETWORK_NAME \
+      -e REDIS_ADDRS="agenda-redis-a-service:6379,agenda-redis-b-service:6379" \
+      -e DB_SERVICE_URL="http://agenda-db-service:8000" \
+      -e PING_INTERVAL=1 \
+      -e FAILURE_THRESHOLD=3 \
+      -e LOG_LEVEL=debug \
+      agenda-redis-supervisor
+    echo "Redis Supervisor Service started"
+}
+
 case $SERVICE in
     all)
         echo "Starting all services in order: redis → db → user → group → api"
@@ -80,6 +92,8 @@ case $SERVICE in
         start_group
         sleep 2
         start_api
+        sleep 2
+        start_redis_supervisor
         echo "All services started successfully!"
         echo "- Redis: localhost:6380"
         echo "- DB Service: localhost:8000"
@@ -107,10 +121,12 @@ case $SERVICE in
     api)
         start_api
         ;;
-
+    redis-supervisor)
+        start_redis_supervisor
+        ;;
     *)
         echo "Error: Unknown service '$SERVICE'"
-        echo "Available services: redis, db, user, group, api"
+        echo "Available services: redis, db, user, group, api, redis-supervisor, all"
         exit 1
         ;;
 esac

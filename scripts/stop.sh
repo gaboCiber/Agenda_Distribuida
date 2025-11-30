@@ -24,6 +24,7 @@ case $SERVICE in
         stop_container "agenda-user-service"
         stop_container "agenda-db-service"
         stop_container "agenda-redis-service"
+        stop_container "agenda-redis-supervisor-service"
         ;;
         
     redis)
@@ -45,10 +46,12 @@ case $SERVICE in
     api)
         stop_container "agenda-api-gateway-service"
         ;;
-
+    redis-supervisor)
+        stop_container "agenda-redis-supervisor-service"
+        ;;
     *)
         echo "Error: Unknown service '$SERVICE'"
-        echo "Available services: all, redis, db, user, group, api"
+        echo "Available services: all, redis, db, user, group, api, redis-supervisor"
         exit 1
         ;;
 esac

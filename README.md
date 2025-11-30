@@ -59,12 +59,3 @@ El sistema está compuesto por los siguientes microservicios:
    ./scripts/start.sh
    ```
 
-## 🚀 Uso
-
-### Puertos de los Servicios
-
-- **API Gateway**: http://localhost:8000
-- **Users Service**: http://localhost:8001
-- **Events Service**: http://localhost:8002
-- **Groups Service**: http://localhost:8003
-- **Notifications Service**: http://localhost:8004

@@ -7,7 +7,7 @@ set -e
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Available services
-SERVICES=("db" "user" "group" "api")
+SERVICES=("db" "user" "group" "api" "redis-supervisor")
 
 # Function to show usage
 show_usage() {
@@ -32,6 +32,9 @@ build_service() {
     if [ "${1}" == "api" ]; then
         service_name="api_gateway_service"
         image_name="agenda-api-gateway"
+    elif [ "${1}" == "redis-supervisor" ]; then
+        service_name="redis_supervisor_service"
+        image_name="agenda-redis-supervisor"
     else
         service_name="${1}_service"
         image_name="agenda-${1}_event"
