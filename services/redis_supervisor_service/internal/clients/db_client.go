@@ -25,7 +25,7 @@ type configPayload struct {
 
 // GetConfig retrieves a specific configuration value by name.
 func (c *DBClient) GetConfig(name string) (string, error) {
-	url := fmt.Sprintf("%s/config/%s", c.baseURL, name)
+	url := fmt.Sprintf("%s/api/v1/configs/%s", c.baseURL, name)
 	resp, err := http.Get(url)
 	if err != nil {
 		return "", fmt.Errorf("failed to send GET request to db service: %w", err)
@@ -69,11 +69,11 @@ func (c *DBClient) SetRedisPrimary(primaryAddr string) error {
 	if existingValue != "" {
 		// Value exists, so we update it
 		method = "PUT"
-		url = fmt.Sprintf("%s/config/%s", c.baseURL, configName)
+		url = fmt.Sprintf("%s/api/v1/configs/%s", c.baseURL, configName)
 	} else {
 		// Value does not exist, so we create it
 		method = "POST"
-		url = fmt.Sprintf("%s/config", c.baseURL)
+		url = fmt.Sprintf("%s/api/v1/configs", c.baseURL)
 	}
 
 	req, err := http.NewRequest(method, url, bytes.NewBuffer(jsonPayload))

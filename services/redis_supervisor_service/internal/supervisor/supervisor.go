@@ -89,27 +89,30 @@ func (s *Supervisor) findInitialPrimary() error {
 
 // monitorLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
 func (s *Supervisor) monitorLoop() {
-	ticker := time.NewTicker(time.Duration(s.config.PingInterval) * time.Second)
+	ticker := time.NewTicker(s.config.PingInterval)
 	defer ticker.Stop()
 
 	failureCount := 0
 
 	for range ticker.C {
+		log.Printf("Pinging primary: %s", s.currentPrimary)
 		err := s.redisClient.Ping(s.currentPrimary)
 		if err != nil {
 			failureCount++
-			log.Printf("Failed to ping primary %s (%d/%d): %v", s.currentPrimary, failureCount, s.config.FailureThreshold, err)
+			log.Printf("Ping failed for primary %s. Failure count: %d/%d. Error: %v", s.currentPrimary, failureCount, s.config.FailureThreshold, err)
 
 			if failureCount >= s.config.FailureThreshold {
-				log.Printf("Primary %s has reached failure threshold. Initiating failover.", s.currentPrimary)
+				log.Printf("Primary %s has reached failure threshold of %d. Initiating failover.", s.currentPrimary, s.config.FailureThreshold)
 				s.initiateFailover()
-				// Reset failure count after failover attempt
+				// Reset failure count after failover attempt to avoid immediate re-triggering
 				failureCount = 0
 			}
 		} else {
 			if failureCount > 0 {
-				log.Printf("Successfully pinged primary %s. Resetting failure count.", s.currentPrimary)
+				log.Printf("Successfully pinged primary %s after %d failures. Resetting failure count.", s.currentPrimary, failureCount)
 				failureCount = 0 // Reset on successful ping
+			} else {
+				log.Println("Ping successful.")
 			}
 		}
 	}
