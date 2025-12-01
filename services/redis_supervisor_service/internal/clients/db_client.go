@@ -88,7 +88,7 @@ func (c *DBClient) SetRedisPrimary(primaryAddr string) error {
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusNoContent {
 		return fmt.Errorf("db service returned non-ok status for %s: %d", method, resp.StatusCode)
 	}
 

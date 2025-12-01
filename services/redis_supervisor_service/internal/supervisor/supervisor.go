@@ -38,9 +38,18 @@ func (s *Supervisor) Run() {
 	for {
 		err := s.findInitialPrimary()
 		if err == nil {
-			log.Printf("Initial primary found: %s. Replica: %s.", s.currentPrimary, s.currentReplica)
-			break
-		}
+					log.Printf("Initial primary found: %s. Replica: %s.", s.currentPrimary, s.currentReplica)
+			
+					// Synchronize DB service with the initial primary
+					log.Println("Synchronizing DB service with initial primary...")
+					err = s.dbClient.SetRedisPrimary(s.currentPrimary)
+					if err != nil {
+						log.Printf("CRITICAL: Failed to synchronize DB service with initial primary: %v", err)
+						// Decide if we should exit here or continue. For robustness, we'll continue but log as critical.
+					} else {
+						log.Println("DB service synchronized with initial primary.")
+					}
+					break		}
 		log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
 		time.Sleep(5 * time.Second)
 	}
@@ -137,21 +146,21 @@ func (s *Supervisor) initiateFailover() {
 	}
 	log.Printf("Successfully promoted %s to be the new primary.", s.currentReplica)
 
-	// 2. Update DB service with the new primary's address
-	log.Printf("Updating DB service with new primary address: %s", s.currentReplica)
-	err = s.dbClient.SetRedisPrimary(s.currentReplica)
+	// 2. Update internal state *immediately*. From this point on, we ping the new primary.
+	oldPrimary := s.currentPrimary
+	s.currentPrimary = s.currentReplica
+	s.currentReplica = oldPrimary
+	log.Printf("Internal state updated. New primary: %s. Old primary %s is now considered the replica.", s.currentPrimary, s.currentReplica)
+
+	// 3. Update DB service with the new primary's address
+	log.Printf("Updating DB service with new primary address: %s", s.currentPrimary)
+	err = s.dbClient.SetRedisPrimary(s.currentPrimary)
 	if err != nil {
-		// This is a critical state. The replica is promoted but the system doesn't know.
-		// A more advanced supervisor might try to revert the promotion or retry the DB update.
-		log.Printf("CRITICAL: Failed to update DB service with new primary address: %v. System may be in an inconsistent state.", err)
+		// This is still a critical state, but the supervisor will now correctly monitor the new primary.
+		log.Printf("CRITICAL: Failed to update DB service with new primary address: %v. The supervisor will continue monitoring the new primary, but other services may not be aware of the change.", err)
 		return
 	}
 	log.Println("Successfully updated DB service.")
 
-	// 3. Update internal state
-	oldPrimary := s.currentPrimary
-	s.currentPrimary = s.currentReplica
-	s.currentReplica = oldPrimary // The old primary is now the (unresponsive) replica
-
-	log.Printf("Failover complete. New primary: %s. Old primary %s is now considered the replica.", s.currentPrimary, s.currentReplica)
+	log.Println("Failover complete.")
 }
