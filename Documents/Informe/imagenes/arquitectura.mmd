@@ -7,13 +7,13 @@ graph TD
     subgraph "Sistema Distribuido"
         API_GW("API Gateway")
         
-        subgraph "Servicios de Lógica de Negocio (Stateless)"
+        subgraph "Servicios de Lógica de Negocio"
             US[User Service]
             GS[Group Service]
         end
         
         subgraph "Servicio de Datos (Stateful)"
-            DB_Cluster["Clúster DB Service (Raft)"]
+            DB_Cluster["DB Service"]
         end
 
         subgraph "Capa de Comunicación Asíncrona"
