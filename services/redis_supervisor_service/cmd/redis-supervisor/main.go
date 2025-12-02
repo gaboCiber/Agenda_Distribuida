@@ -25,9 +25,13 @@ func main() {
 	// Initialize clients
 	redisClient := clients.NewRedisClient()
 	dbClient := clients.NewDBClient(cfg.DBServiceURL)
+	dockerClient, err := clients.NewDockerClient()
+	if err != nil {
+		log.Fatalf("Failed to create Docker client: %v", err)
+	}
 
 	// Create and run the supervisor
-	sup := supervisor.New(cfg, redisClient, dbClient)
+	sup := supervisor.New(cfg, redisClient, dbClient, dockerClient)
 	go sup.Run()
 
 	// Wait for a shutdown signal

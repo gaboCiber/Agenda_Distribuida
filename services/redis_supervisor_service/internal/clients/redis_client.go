@@ -92,3 +92,21 @@ func (c *RedisClient) PromoteToPrimary(addr string) error {
 	}
 	return nil
 }
+
+// SetAsReplicaOf configures a Redis instance to be a replica of another.
+func (c *RedisClient) SetAsReplicaOf(replicaAddr, masterAddr string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	rdb := c.newRedisUniversalClient(replicaAddr)
+	defer rdb.Close()
+
+	masterHost := strings.Split(masterAddr, ":")[0]
+	masterPort := strings.Split(masterAddr, ":")[1]
+
+	_, err := rdb.SlaveOf(ctx, masterHost, masterPort).Result()
+	if err != nil {
+		return fmt.Errorf("failed to set %s as replica of %s: %w", replicaAddr, masterAddr, err)
+	}
+	return nil
+}
