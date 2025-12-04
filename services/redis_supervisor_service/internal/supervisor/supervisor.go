@@ -16,7 +16,7 @@ type Supervisor struct {
 	config         *config.Config
 	redisClient    *clients.RedisClient
 	dbClient       *clients.DBClient
-	dockerClient   *clients.DockerClient // New field for Docker client
+	dockerClient   *clients.DockerClient
 	currentPrimary string
 	currentReplica string
 	redisNodes     []string
@@ -25,15 +25,15 @@ type Supervisor struct {
 // New creates a new Supervisor
 func New(cfg *config.Config, redisClient *clients.RedisClient, dbClient *clients.DBClient, dockerClient *clients.DockerClient) *Supervisor {
 	return &Supervisor{
-		config:      cfg,
-		redisClient: redisClient,
-		dbClient:    dbClient,
+		config:       cfg,
+		redisClient:  redisClient,
+		dbClient:     dbClient,
 		dockerClient: dockerClient,
-		redisNodes:  cfg.RedisAddrs,
+		redisNodes:   cfg.RedisAddrs,
 	}
 }
 
-// Run starts the main monitoring loop
+// Run starts the main monitoring loops.
 func (s *Supervisor) Run() {
 	log.Println("Supervisor is starting...")
 
@@ -42,24 +42,29 @@ func (s *Supervisor) Run() {
 		err := s.findInitialPrimary()
 		if err == nil {
 			log.Printf("Initial primary found: %s. Replica: %s.", s.currentPrimary, s.currentReplica)
-
-			// Synchronize DB service with the initial primary
-			log.Println("Synchronizing DB service with initial primary...")
-			err = s.dbClient.SetRedisPrimary(s.currentPrimary)
-			if err != nil {
-				log.Printf("CRITICAL: Failed to synchronize DB service with initial primary: %v", err)
-				// Decide if we should exit here or continue. For robustness, we'll continue but log as critical.
-			} else {
-				log.Println("DB service synchronized with initial primary.")
-			}
+			s.synchronizeDB()
 			break
 		}
 		log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
 		time.Sleep(5 * time.Second)
 	}
 
-	// Start the monitoring loop
-	s.monitorLoop()
+	// Start the monitoring loops for both primary and replica
+	go s.monitorPrimaryLoop()
+	go s.monitorReplicaLoop()
+
+	// Block forever. The main function will handle graceful shutdown.
+	select {}
+}
+
+func (s *Supervisor) synchronizeDB() {
+	log.Println("Synchronizing DB service with initial primary...")
+	err := s.dbClient.SetRedisPrimary(s.currentPrimary)
+	if err != nil {
+		log.Printf("CRITICAL: Failed to synchronize DB service with initial primary: %v", err)
+	} else {
+		log.Println("DB service synchronized with initial primary.")
+	}
 }
 
 // findInitialPrimary queries all configured redis nodes to determine the primary and replica.
@@ -91,7 +96,6 @@ func (s *Supervisor) findInitialPrimary() error {
 
 	s.currentPrimary = foundPrimary
 	if len(foundReplicas) > 0 {
-		// For simplicity, we assume a single replica in this setup
 		s.currentReplica = foundReplicas[0]
 	} else {
 		log.Println("Warning: No replica found.")
@@ -100,8 +104,8 @@ func (s *Supervisor) findInitialPrimary() error {
 	return nil
 }
 
-// monitorLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
-func (s *Supervisor) monitorLoop() {
+// monitorPrimaryLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
+func (s *Supervisor) monitorPrimaryLoop() {
 	ticker := time.NewTicker(s.config.PingInterval)
 	defer ticker.Stop()
 
@@ -117,15 +121,48 @@ func (s *Supervisor) monitorLoop() {
 			if failureCount >= s.config.FailureThreshold {
 				log.Printf("Primary %s has reached failure threshold of %d. Initiating failover.", s.currentPrimary, s.config.FailureThreshold)
 				s.initiateFailover()
-				// Reset failure count after failover attempt to avoid immediate re-triggering
 				failureCount = 0
 			}
 		} else {
 			if failureCount > 0 {
 				log.Printf("Successfully pinged primary %s after %d failures. Resetting failure count.", s.currentPrimary, failureCount)
-				failureCount = 0 // Reset on successful ping
+				failureCount = 0
 			} else {
 				log.Println("Ping successful.")
+			}
+		}
+	}
+}
+
+// monitorReplicaLoop periodically pings the current replica and resurrects it if it fails.
+func (s *Supervisor) monitorReplicaLoop() {
+	// A slightly longer interval for the replica is fine.
+	ticker := time.NewTicker(s.config.PingInterval * 2)
+	defer ticker.Stop()
+
+	failureCount := 0
+	const replicaFailureThreshold = 3
+
+	for range ticker.C {
+		if s.currentReplica == "" {
+			continue // Do nothing if there's no replica to monitor
+		}
+
+		log.Printf("Pinging replica: %s", s.currentReplica)
+		err := s.redisClient.Ping(s.currentReplica)
+		if err != nil {
+			failureCount++
+			log.Printf("Ping failed for replica %s. Failure count: %d/%d. Error: %v", s.currentReplica, failureCount, replicaFailureThreshold, err)
+
+			if failureCount >= replicaFailureThreshold {
+				log.Printf("Replica %s has reached failure threshold. Attempting resurrection.", s.currentReplica)
+				go s.resurrectNodeAsReplica(s.currentReplica, s.currentPrimary)
+				failureCount = 0
+			}
+		} else {
+			if failureCount > 0 {
+				log.Printf("Successfully pinged replica %s after %d failures. Resetting.", s.currentReplica, failureCount)
+				failureCount = 0
 			}
 		}
 	}
@@ -154,31 +191,29 @@ func (s *Supervisor) initiateFailover() {
 	oldPrimaryAddr := s.currentPrimary
 	s.currentPrimary = s.currentReplica
 	s.currentReplica = oldPrimaryAddr
-	log.Printf("Internal state updated. New primary: %s. Old primary %s is now considered the replica.", s.currentPrimary, s.currentReplica)
+	log.Printf("Internal state updated. New primary: %s. Old primary %s is now replica.", s.currentPrimary, s.currentReplica)
 
 	// 3. Update DB service with the new primary's address
 	log.Printf("Updating DB service with new primary address: %s", s.currentPrimary)
 	err = s.dbClient.SetRedisPrimary(s.currentPrimary)
 	if err != nil {
-		// This is still a critical state, but the supervisor will now correctly monitor the new primary.
-		log.Printf("CRITICAL: Failed to update DB service with new primary address: %v. The supervisor will continue monitoring the new primary, but other services may not be aware of the change.", err)
-		// However, we still want to attempt resurrection even if DB update fails
+		log.Printf("CRITICAL: Failed to update DB about new primary: %v.", err)
+	} else {
+		log.Println("Successfully updated DB service.")
 	}
-	log.Println("Successfully updated DB service.")
 
 	log.Println("Failover complete.")
 
-	// 4. Attempt to resurrect the old primary
-	go s.resurrectOldPrimary(oldPrimaryAddr, s.currentPrimary) // Run in a goroutine to not block the main loop
+	// 4. Attempt to resurrect the old primary as a replica of the new primary
+	go s.resurrectNodeAsReplica(oldPrimaryAddr, s.currentPrimary)
 }
 
-// resurrectOldPrimary attempts to restart the given Redis node and configure it as a replica.
-func (s *Supervisor) resurrectOldPrimary(oldPrimaryAddr, newPrimaryAddr string) {
-	log.Printf("Attempting to resurrect old primary %s and configure it as replica of %s...", oldPrimaryAddr, newPrimaryAddr)
+// resurrectNodeAsReplica attempts to restart a given Redis node and configure it as a replica of the current primary.
+func (s *Supervisor) resurrectNodeAsReplica(nodeToResurrectAddr, currentPrimaryAddr string) {
+	log.Printf("Attempting to resurrect %s as replica of %s...", nodeToResurrectAddr, currentPrimaryAddr)
 
-	containerName := strings.Split(oldPrimaryAddr, ":")[0] // Assuming container name is the host part of the address
+	containerName := strings.Split(nodeToResurrectAddr, ":")[0]
 
-	// 1. Restart the container
 	log.Printf("Restarting Docker container %s...", containerName)
 	err := s.dockerClient.RestartContainer(containerName)
 	if err != nil {
@@ -187,14 +222,13 @@ func (s *Supervisor) resurrectOldPrimary(oldPrimaryAddr, newPrimaryAddr string) 
 	}
 	log.Printf("Container %s restarted. Waiting for Redis to become ready...", containerName)
 
-	time.Sleep(5 * time.Second) // Give Redis some time to start up
+	time.Sleep(5 * time.Second)
 
-	// 2. Configure as replica of the new primary
-	log.Printf("Configuring %s as replica of %s...", oldPrimaryAddr, newPrimaryAddr)
-	err = s.redisClient.SetAsReplicaOf(oldPrimaryAddr, newPrimaryAddr)
+	log.Printf("Configuring %s as replica of %s...", nodeToResurrectAddr, currentPrimaryAddr)
+	err = s.redisClient.SetAsReplicaOf(nodeToResurrectAddr, currentPrimaryAddr)
 	if err != nil {
-		log.Printf("ERROR: Failed to configure %s as replica of %s: %v", oldPrimaryAddr, newPrimaryAddr, err)
+		log.Printf("ERROR: Failed to configure %s as replica: %v", nodeToResurrectAddr, err)
 		return
 	}
-	log.Printf("Successfully resurrected %s and configured it as replica of %s.", oldPrimaryAddr, newPrimaryAddr)
+	log.Printf("Successfully resurrected and reconfigured %s as a replica.", nodeToResurrectAddr)
 }

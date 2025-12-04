@@ -39,6 +39,7 @@ sleep 2
 
 echo "--- Starting Redis Supervisor Service ---"
 docker run -d --name $REDIS_SUPERVISOR_NAME --network $NETWORK_NAME \
+  -v /var/run/docker.sock:/var/run/docker.sock \
   -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379" \
   -e DB_SERVICE_URL="http://${DB_SERVICE_NAME}:8000" \
   -e PING_INTERVAL=1 \
