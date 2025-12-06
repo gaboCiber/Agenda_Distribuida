@@ -31,6 +31,7 @@ func (rn *RaftNode) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) 
 		rn.state = Follower
 		rn.currentTerm = args.Term
 		rn.votedFor = ""
+		rn.persist()
 	}
 
 	reply.Term = rn.currentTerm
@@ -52,6 +53,7 @@ func (rn *RaftNode) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) 
 	// Si todas las comprobaciones pasan, otorgamos el voto.
 	rn.votedFor = args.CandidateID
 	reply.VoteGranted = true
+	rn.persist()
 	log.Printf("[Nodo %s] Voto otorgado a %s para el término %d", rn.id, args.CandidateID, rn.currentTerm)
 
 	// Al otorgar un voto, también reiniciamos nuestro propio temporizador de elección.
@@ -75,6 +77,7 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 	// Si el término del RPC es mayor, nos convertimos en seguidor.
 	if args.Term > rn.currentTerm {
 		rn.becomeFollower(args.Term)
+		rn.persist()
 	}
 
 	// En cualquier caso, si recibimos un AppendEntries de un líder legítimo
@@ -129,6 +132,7 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 			}
 			rn.log = append(rn.log, args.Entries...)
 		}
+		rn.persist()
 	}
 
 	// 4. Si hay nuevas entradas que no están en el log, añadirlas.

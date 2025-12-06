@@ -1,16 +1,24 @@
 package consensus
 
 import (
+	"encoding/gob"
 	"fmt"
 	"log"
 	"math/rand"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/agenda-distribuida/db-service/internal/database"
 	"github.com/agenda-distribuida/db-service/internal/logger"
 )
+
+func init() {
+	// Register DBCommand type for gob encoding/decoding
+	gob.Register(DBCommand{})
+}
 
 // RaftState define los posibles estados de un nodo Raft.
 type RaftState int
@@ -28,11 +36,17 @@ const (
 	heartbeatInterval  time.Duration = time.Second // Heartbeat interval should be less than election timeout
 )
 
+// DBCommand representa un comando de base de datos a ser replicado por Raft.
+type DBCommand struct {
+	Query string        // La consulta SQL a ejecutar.
+	Args  []interface{} // Los argumentos para la consulta.
+}
+
 // LogEntry representa una entrada en el log de Raft.
 // Contendrá el comando a ejecutar por la máquina de estados.
 type LogEntry struct {
 	Term    int         // El término en el que se recibió la entrada.
-	Command interface{} // El comando para la máquina de estados (ej. una consulta SQL).
+	Command DBCommand // El comando para la máquina de estados (ej. una consulta SQL).
 }
 
 // RaftNode es la estructura principal que representa un nodo en el clúster de Raft.
@@ -40,9 +54,10 @@ type RaftNode struct {
 	mu sync.Mutex // Mutex para proteger el acceso concurrente al estado del nodo.
 
 	// --- Estado Persistente (debe guardarse en almacenamiento estable) ---
-	currentTerm int        // Último término que el servidor ha visto.
-	votedFor    string     // ID del candidato que recibió el voto en el término actual.
-	log         []LogEntry // Entradas del log.
+	currentTerm int          // Último término que el servidor ha visto.
+	votedFor    string       // ID del candidato que recibió el voto en el término actual.
+	log         []LogEntry   // Entradas del log.
+	stateDB     *RaftStateDB // Manejador de la base de datos para el estado persistente.
 
 	// --- Estado Volátil (se pierde en reinicios) ---
 	state       RaftState // Estado actual del nodo (Follower, Candidate, o Leader).
@@ -59,8 +74,8 @@ type RaftNode struct {
 	serverReady chan bool         // Canal para señalar cuando el servidor está listo.
 	applyChan   chan struct{}     // Canal para señalar que hay logs para aplicar.
 
-	// --- Logging ---
-	logger *log.Logger // Logger personalizado para el nodo
+	// --- Base de datos de la aplicación ---
+	db *database.Database // La base de datos de la aplicación a la que se aplican los comandos.
 
 	// Canales para la comunicación interna y el manejo de temporizadores.
 	electionTimer     *time.Timer
@@ -72,19 +87,37 @@ type RaftNode struct {
 }
 
 // NewRaftNode crea e inicializa un nuevo nodo Raft.
-func NewRaftNode(id string, peerAddress map[string]string) *RaftNode {
+func NewRaftNode(id string, peerAddress map[string]string, baseDir string, appDB *database.Database) *RaftNode {
 	// Inicializar el logger
 	if err := logger.InitLogger("logs", id); err != nil {
 		log.Fatalf("No se pudo inicializar el logger: %v", err)
 	}
 
+	// Inicializar la base de datos de persistencia
+	dbDir := filepath.Join(baseDir, id)
+	stateDB, err := NewRaftStateDB(dbDir)
+	if err != nil {
+		log.Fatalf("No se pudo inicializar la base de datos de Raft: %v", err)
+	}
+
+	// Cargar el estado persistente desde la base de datos.
+	currentTerm, votedFor, logEntries, err := stateDB.LoadState()
+	if err != nil {
+		log.Fatalf("No se pudo cargar el estado de Raft: %v", err)
+	}
+
+	// Si el log está vacío (primer arranque), añadir la entrada ficticia.
+	if len(logEntries) == 0 {
+		logEntries = []LogEntry{{Term: 0, Command: DBCommand{}}}}
+
 	rn := &RaftNode{
 		id:                id,
 		peerAddress:       peerAddress,
 		state:             Follower,
-		currentTerm:       0,
-		votedFor:          "",
-		log:               []LogEntry{{Term: 0, Command: nil}}, // Log ficticio en índice 0 con término 0
+		currentTerm:       currentTerm,
+		votedFor:          votedFor,
+		log:               logEntries,
+		stateDB:           stateDB,
 		commitIndex:       0,
 		lastApplied:       0,
 		nextIndex:         make(map[string]int),
@@ -96,8 +129,17 @@ func NewRaftNode(id string, peerAddress map[string]string) *RaftNode {
 		electionTimeout:   randomElectionTimeout(),
 		electionTimer:     time.NewTimer(randomElectionTimeout()),
 		heartbeatCount:    0,
+		db:                appDB,
 	}
 	return rn
+}
+
+// DEBE llamarse solo cuando el mutex ya está adquirido.
+func (rn *RaftNode) persist() {
+	if err := rn.stateDB.SaveState(rn.currentTerm, rn.votedFor, rn.log); err != nil {
+		log.Fatalf("Error al persistir el estado de Raft: %v", err)
+	}
+	logger.InfoLogger.Printf("[Nodo %s]: Estado persistido. Término: %d, VotadoPor: %s, Tamaño del log: %d", rn.id, rn.currentTerm, rn.votedFor, len(rn.log))
 }
 
 // Start inicia el nodo Raft, incluyendo su servidor RPC y el bucle principal.
@@ -137,7 +179,7 @@ func (rn *RaftNode) Propose(command interface{}) (bool, int) {
 
 	entry := LogEntry{
 		Term:    rn.currentTerm,
-		Command: command,
+		Command: command.(DBCommand),
 	}
 	rn.log = append(rn.log, entry)
 	logger.InfoLogger.Printf("[Líder %s]: Comando propuesto. Nuevo tamaño del log: %d", rn.id, len(rn.log))
@@ -162,9 +204,17 @@ func (rn *RaftNode) applyLogs() {
 		rn.mu.Unlock()
 
 		for i, entry := range entriesToApply {
-			// Aquí es donde se aplicaría el comando a la máquina de estados real.
-			// Por ahora, solo lo logueamos.
-			logger.InfoLogger.Printf("[Nodo %s] Aplicando log %d: Comando='%v'", rn.id, lastApplied+1+i, entry.Command)
+			// Solo aplicamos comandos si no son la entrada ficticia inicial (Command.Query vacío).
+			if entry.Command.Query != "" {
+				logger.InfoLogger.Printf("[Nodo %s] Aplicando log %d: Comando='%s' Args='%v'", rn.id, lastApplied+1+i, entry.Command.Query, entry.Command.Args)
+				_, err := rn.db.Exec(entry.Command.Query, entry.Command.Args...)
+				if err != nil {
+					logger.ErrorLogger.Printf("[Nodo %s] ERROR al aplicar log %d: %v", rn.id, lastApplied+1+i, err)
+					// TODO: Manejar errores de aplicación de comandos. En Raft, un error aquí es crítico.
+					// Podría significar que la máquina de estados está en un estado inconsistente.
+					// Por ahora, solo lo logueamos y continuamos, pero esto debe ser robusto.
+				}
+			}
 		}
 
 		rn.mu.Lock()
@@ -284,6 +334,8 @@ func (rn *RaftNode) startElection() {
 	rn.currentTerm++
 	// Votar por sí mismo.
 	rn.votedFor = rn.id
+	// Persistir el nuevo término y el voto antes de enviar RPCs.
+	rn.persist()
 	// Resetear el temporizador de elección (ya tenemos el mutex).
 	rn.resetElectionTimerUnlocked()
 	// Inicializar contador de votos a 1 (voto por sí mismo)
