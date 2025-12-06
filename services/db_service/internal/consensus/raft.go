@@ -23,9 +23,9 @@ const (
 
 // Constantes de tiempo
 const (
-	electionTimeoutMin time.Duration = 150 * time.Millisecond
-	electionTimeoutMax time.Duration = 300 * time.Millisecond
-	heartbeatInterval  time.Duration = 50 * time.Millisecond // Heartbeat interval should be less than election timeout
+	electionTimeoutMin time.Duration = 3 * time.Second
+	electionTimeoutMax time.Duration = 6 * time.Second
+	heartbeatInterval  time.Duration = time.Second // Heartbeat interval should be less than election timeout
 )
 
 // LogEntry representa una entrada en el log de Raft.
@@ -109,14 +109,14 @@ func (rn *RaftNode) Start() {
 			peers = append(peers, fmt.Sprintf("%s (%s)", peerID, addr))
 		}
 	}
-	logger.InfoLogger.Printf("[Nodo %s] INFO: Iniciando con %d peers: %v", rn.id, len(peers), strings.Join(peers, ", "))
+	logger.InfoLogger.Printf("[Nodo %s]: Iniciando con %d peers: %v", rn.id, len(peers), strings.Join(peers, ", "))
 
 	// Iniciar el servidor RPC en una gorutina.
 	go rn.startRPCServer(rn.peerAddress[rn.id])
 
 	// Esperar a que el servidor RPC esté listo.
 	<-rn.serverReady
-	logger.InfoLogger.Printf("[Nodo %s] INFO: Servidor RPC listo en %s.", rn.id, rn.peerAddress[rn.id])
+	logger.InfoLogger.Printf("[Nodo %s]: Servidor RPC listo en %s.", rn.id, rn.peerAddress[rn.id])
 
 	// Iniciar la gorutina que aplica logs a la máquina de estados.
 	go rn.applyLogs()
@@ -140,7 +140,7 @@ func (rn *RaftNode) Propose(command interface{}) (bool, int) {
 		Command: command,
 	}
 	rn.log = append(rn.log, entry)
-	logger.InfoLogger.Printf("[Líder %s] INFO: Comando propuesto. Nuevo tamaño del log: %d", rn.id, len(rn.log))
+	logger.InfoLogger.Printf("[Líder %s]: Comando propuesto. Nuevo tamaño del log: %d", rn.id, len(rn.log))
 
 	// No esperamos a que se replique, simplemente lo añadimos y el siguiente
 	// heartbeat se encargará de enviarlo.
@@ -199,10 +199,11 @@ func (rn *RaftNode) run() {
 					}
 				}
 			doneDraining:
+				logger.InfoLogger.Printf("[Nodo %s]: FOLLOWER del lider %s en el término %d", rn.id, rn.votedFor, rn.currentTerm+1)
 				rn.resetElectionTimer()
 			case <-rn.electionTimer.C:
 				rn.mu.Lock()
-				logger.InfoLogger.Printf("[Nodo %s] INFO: Tiempo de espera agotado. Convirtiéndose en CANDIDATO para el término %d", rn.id, rn.currentTerm+1)
+				logger.InfoLogger.Printf("[Nodo %s]: Tiempo de espera agotado. Convirtiéndose en CANDIDATO para el término %d", rn.id, rn.currentTerm+1)
 				rn.state = Candidate
 				rn.mu.Unlock()
 			}
@@ -225,19 +226,19 @@ func (rn *RaftNode) run() {
 			doneDrainingCandidate:
 				rn.mu.Lock()
 				if rn.state == Candidate {
-					logger.InfoLogger.Printf("[Nodo %s] INFO: Descubierto nuevo líder. Volviendo a Follower.", rn.id)
+					logger.InfoLogger.Printf("[Nodo %s]: Descubierto nuevo líder. Volviendo a Follower.", rn.id)
 					rn.state = Follower
 				}
 				rn.mu.Unlock()
 				rn.resetElectionTimer()
 			case <-rn.winElectionChan:
-				logger.InfoLogger.Printf("[Nodo %s] INFO: Transición a Líder.", rn.id)
+				logger.InfoLogger.Printf("[Nodo %s]: Transición a Líder.", rn.id)
 				rn.mu.Lock()
 				rn.state = Leader
 				rn.initializeLeaderState()
 				rn.mu.Unlock()
 			case <-rn.electionTimer.C:
-				logger.InfoLogger.Printf("[Nodo %s] INFO: Elección fallida (timeout). Reiniciando.", rn.id)
+				logger.InfoLogger.Printf("[Nodo %s]: Elección fallida (timeout). Reiniciando.", rn.id)
 			}
 
 		case Leader:
@@ -274,7 +275,7 @@ func (rn *RaftNode) resetElectionTimerUnlocked() {
 	}
 	rn.electionTimeout = randomElectionTimeout()
 	rn.electionTimer = time.NewTimer(rn.electionTimeout)
-	logger.InfoLogger.Printf("Nodo %s: Temporizador de elección reseteado a %s", rn.id, rn.electionTimeout)
+	logger.InfoLogger.Printf("[Nodo %s]: Temporizador de elección reseteado a %s", rn.id, rn.electionTimeout)
 }
 
 // startElection inicia el proceso de elección para un nodo candidato.
@@ -288,7 +289,7 @@ func (rn *RaftNode) startElection() {
 	// Inicializar contador de votos a 1 (voto por sí mismo)
 	atomic.StoreInt32(&rn.voteCount, 1)
 
-	logger.InfoLogger.Printf("Nodo %s: Iniciando elección para el término %d", rn.id, rn.currentTerm)
+	logger.InfoLogger.Printf("[Nodo %s]: Iniciando elección para el término %d", rn.id, rn.currentTerm)
 
 	// Enviar RPCs RequestVote a todos los demás nodos en paralelo.
 	for peerId := range rn.peerAddress {
@@ -312,9 +313,9 @@ func (rn *RaftNode) startElection() {
 			rn.mu.Unlock()
 			var reply RequestVoteReply
 
-			logger.InfoLogger.Printf("Nodo %s: Enviando RequestVote a %s", rn.id, peerId)
+			logger.InfoLogger.Printf("[Nodo %s]: Enviando RequestVote a %s", rn.id, peerId)
 			if err := rn.sendRPC(peerId, "RequestVote", &args, &reply); err != nil {
-				logger.InfoLogger.Printf("Nodo %s: Error al enviar RequestVote a %s: %v", rn.id, peerId, err)
+				logger.ErrorLogger.Printf("[Nodo %s]: Error al enviar RequestVote a %s: %v", rn.id, peerId, err)
 				return
 			}
 
@@ -328,7 +329,7 @@ func (rn *RaftNode) startElection() {
 
 			if reply.Term > rn.currentTerm {
 				// Descubrimos un término más alto, nos convertimos en Follower.
-				logger.InfoLogger.Printf("Nodo %s: Término obsoleto. Volviendo a Follower.", rn.id)
+				logger.InfoLogger.Printf("[Nodo %s]: Término obsoleto. Volviendo a Follower.", rn.id)
 				rn.currentTerm = reply.Term
 				rn.state = Follower
 				rn.votedFor = ""
@@ -341,12 +342,12 @@ func (rn *RaftNode) startElection() {
 				totalPeers := len(rn.peerAddress)
 				majority := totalPeers/2 + 1
 
-				logger.InfoLogger.Printf("Nodo %s: Voto recibido de %s. Total de votos: %d (mayoría necesaria: %d)",
+				logger.InfoLogger.Printf("[Nodo %s]: Voto recibido de %s. Total de votos: %d (mayoría necesaria: %d)",
 					rn.id, peerId, newVoteCount, majority)
 
 				// Verificar si tenemos mayoría
 				if int(newVoteCount) >= majority {
-					logger.InfoLogger.Printf("Nodo %s: Elección ganada. Señalizando para convertirse en Líder.", rn.id)
+					logger.InfoLogger.Printf("[Nodo %s]: Elección ganada. Señalizando para convertirse en Líder.", rn.id)
 					select {
 					case rn.winElectionChan <- true:
 					default:
@@ -368,9 +369,7 @@ func (rn *RaftNode) sendHeartbeats() {
 
 	term := rn.currentTerm
 	// Solo mostramos el log de heartbeats cada 10 envíos
-	if rn.heartbeatCount%10 == 0 {
-		logger.InfoLogger.Printf("Nodo %s: Enviando heartbeats/logs a seguidores... (término %d)", rn.id, term)
-	}
+	logger.InfoLogger.Printf("[Nodo %s]: Enviando heartbeats/logs a seguidores... (término %d)", rn.id, term)
 	rn.heartbeatCount++
 	rn.mu.Unlock()
 
@@ -479,7 +478,7 @@ func (rn *RaftNode) becomeFollower(term int) {
 	rn.state = Follower
 	rn.currentTerm = term
 	rn.votedFor = ""
-	logger.InfoLogger.Printf("Nodo %s: Convertido a SEGUIDOR para el término %d", rn.id, term)
+	logger.InfoLogger.Printf("[Nodo %s]: Convertido a SEGUIDOR para el término %d", rn.id, term)
 	rn.resetElectionTimerUnlocked()
 }
 

@@ -19,16 +19,19 @@ sleep 1
 echo "Iniciando nodos Raft..."
 echo ""
 
-# Iniciar los 3 nodos en background usando go run
+# Iniciar los 3 nodos en background usando go run en grupos de procesos
 cd "$SCRIPT_DIR"
-go run main.go node1 > /dev/null 2>&1 &
+setsid go run main.go node1 > /dev/null 2>&1 &
 NODE1_PID=$!
+echo "Iniciado node1 con PID $NODE1_PID"
 
-go run main.go node2 > /dev/null 2>&1 &
+setsid go run main.go node2 > /dev/null 2>&1 &
 NODE2_PID=$!
+echo "Iniciado node2 con PID $NODE2_PID"
 
-go run main.go node3 > /dev/null 2>&1 &
+setsid go run main.go node3 > /dev/null 2>&1 &
 NODE3_PID=$!
+echo "Iniciado node3 con PID $NODE3_PID"
 
 echo "Nodos iniciados:"
 echo "  - node1 (PID: $NODE1_PID)"
@@ -42,7 +45,10 @@ echo ""
 sleep 15
 
 echo "Deteniendo nodos..."
-kill $NODE1_PID $NODE2_PID $NODE3_PID 2>/dev/null || true
+kill -- -$NODE1_PID 2>/dev/null || true
+kill -- -$NODE2_PID 2>/dev/null || true
+kill -- -$NODE3_PID 2>/dev/null || true
+
 sleep 1
 
 # Forzar kill si aún están corriendo
@@ -61,4 +67,3 @@ for log in logs/*.log; do
         echo "  $node: $lines líneas"
     fi
 done
-
