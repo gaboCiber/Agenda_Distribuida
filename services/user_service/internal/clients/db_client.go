@@ -200,7 +200,7 @@ func (c *DBServiceClient) CreateAgendaEvent(ctx context.Context, event *AgendaEv
 	}
 
 	var response struct {
-		Status string     `json:"status"`
+		Status string       `json:"status"`
 		Event  *AgendaEvent `json:"event"`
 	}
 
@@ -226,7 +226,7 @@ func (c *DBServiceClient) GetAgendaEvent(ctx context.Context, eventID string) (*
 	}
 
 	var response struct {
-		Status string     `json:"status"`
+		Status string       `json:"status"`
 		Event  *AgendaEvent `json:"event"`
 	}
 
@@ -258,7 +258,7 @@ func (c *DBServiceClient) UpdateAgendaEvent(ctx context.Context, eventID string,
 	}
 
 	var response struct {
-		Status string     `json:"status"`
+		Status string       `json:"status"`
 		Event  *AgendaEvent `json:"event"`
 	}
 
@@ -296,9 +296,9 @@ func (c *DBServiceClient) ListAgendaEventsByUser(ctx context.Context, userID str
 	}
 
 	var response struct {
-		Status string        `json:"status"`
+		Status string         `json:"status"`
 		Events []*AgendaEvent `json:"events"`
-		Count  int           `json:"count"`
+		Count  int            `json:"count"`
 	}
 
 	if err := json.Unmarshal(resp, &response); err != nil {
@@ -313,11 +313,156 @@ func (c *DBServiceClient) ListAgendaEventsByUser(ctx context.Context, userID str
 	return response.Events, nil
 }
 
-// DeleteUser elimina un usuario por su ID
-func (c *DBServiceClient) DeleteUser(ctx context.Context, userID string) error {
-	url := fmt.Sprintf("%s/api/v1/users/%s", c.baseURL, userID)
+// GroupMember represents a member of a group
+type GroupMember struct {
+	ID          string    `json:"id"`
+	GroupID     string    `json:"group_id"`
+	UserID      string    `json:"user_id"`
+	Role        string    `json:"role"` // "admin" or "member"
+	IsInherited bool      `json:"is_inherited"`
+	JoinedAt    time.Time `json:"joined_at"`
+}
 
-	_, err := c.doRequest(ctx, http.MethodDelete, url, nil)
+// Group represents a user group in the system
+type Group struct {
+	ID             string    `json:"id"`
+	Name           string    `json:"name"`
+	Description    *string   `json:"description,omitempty"`
+	CreatedBy      string    `json:"created_by"`
+	IsHierarchical bool      `json:"is_hierarchical"`
+	ParentGroupID  *string   `json:"parent_group_id,omitempty"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+// DeleteUser elimina un usuario por su ID después de manejar la transferencia de propiedad de grupos
+func (c *DBServiceClient) DeleteUser(ctx context.Context, userID string) error {
+	// Primero, obtener todos los grupos del usuario
+	groupsURL := fmt.Sprintf("%s/api/v1/groups/users/%s", c.baseURL, userID)
+	groupsResp, err := c.doRequest(ctx, http.MethodGet, groupsURL, nil)
+	if err != nil {
+		c.logger.Error("Error al obtener los grupos del usuario", zap.Error(err))
+		return fmt.Errorf("error al obtener los grupos del usuario: %w", err)
+	}
+
+	var groupsResponse struct {
+		Status string   `json:"status"`
+		Groups []*Group `json:"groups"`
+	}
+
+	if err := json.Unmarshal(groupsResp, &groupsResponse); err != nil {
+		c.logger.Error("Error al deserializar la respuesta de grupos", zap.Error(err))
+		return fmt.Errorf("error al deserializar la respuesta de grupos: %w", err)
+	}
+
+	if groupsResponse.Status != "success" {
+		return fmt.Errorf("error al obtener los grupos del usuario: %s", string(groupsResp))
+	}
+
+	// Procesar cada grupo donde el usuario es el creador
+	for _, group := range groupsResponse.Groups {
+		if group.CreatedBy == userID {
+			// Obtener todos los miembros del grupo
+			membersURL := fmt.Sprintf("%s/api/v1/groups/%s/members", c.baseURL, group.ID)
+			membersResp, err := c.doRequest(ctx, http.MethodGet, membersURL, nil)
+			if err != nil {
+				c.logger.Error("Error al obtener los miembros del grupo",
+					zap.String("group_id", group.ID),
+					zap.Error(err))
+				continue
+			}
+
+			var membersResponse struct {
+				Status  string         `json:"status"`
+				Members []*GroupMember `json:"members"`
+			}
+
+			if err := json.Unmarshal(membersResp, &membersResponse); err != nil {
+				c.logger.Error("Error al deserializar la respuesta de miembros",
+					zap.String("group_id", group.ID),
+					zap.Error(err))
+				continue
+			}
+
+			if membersResponse.Status != "success" {
+				c.logger.Error("Error en la respuesta de miembros",
+					zap.String("group_id", group.ID),
+					zap.String("response", string(membersResp)))
+				continue
+			}
+
+			// Filtrar miembros que no son el usuario actual
+			var otherMembers []*GroupMember
+			for _, member := range membersResponse.Members {
+				if member.UserID != userID {
+					otherMembers = append(otherMembers, member)
+				}
+			}
+
+			if len(otherMembers) == 0 {
+				// No hay otros miembros, eliminar el grupo
+				deleteURL := fmt.Sprintf("%s/api/v1/groups/%s", c.baseURL, group.ID)
+				_, err = c.doRequest(ctx, http.MethodDelete, deleteURL, nil)
+				if err != nil {
+					c.logger.Error("Error al eliminar el grupo",
+						zap.String("group_id", group.ID),
+						zap.Error(err))
+				}
+			} else {
+				// Buscar un nuevo propietario (preferentemente un admin)
+				var newOwner *GroupMember
+				for _, member := range otherMembers {
+					if member.Role == "admin" {
+						newOwner = member
+						break
+					}
+					if newOwner == nil {
+						newOwner = member // Tomar el primer miembro como respaldo
+					}
+				}
+
+				// Actualizar el creador del grupo
+				updateURL := fmt.Sprintf("%s/api/v1/groups/%s", c.baseURL, group.ID)
+				updateData := map[string]interface{}{
+					"creator_id": newOwner.UserID,
+				}
+
+				jsonData, err := json.Marshal(updateData)
+				if err != nil {
+					c.logger.Error("Error al serializar los datos de actualización",
+						zap.String("group_id", group.ID),
+						zap.Error(err))
+					continue
+				}
+
+				_, err = c.doRequest(ctx, http.MethodPut, updateURL, jsonData)
+				if err != nil {
+					c.logger.Error("Error al actualizar el propietario del grupo",
+						zap.String("group_id", group.ID),
+						zap.String("new_owner_id", newOwner.UserID),
+						zap.Error(err))
+				}
+
+				// Asegurarse de que el nuevo propietario sea admin
+				if newOwner.Role != "admin" {
+					updateMemberURL := fmt.Sprintf("%s/api/v1/groups/%s/members/%s",
+						c.baseURL, group.ID, newOwner.UserID)
+					updateData := map[string]interface{}{
+						"role": "admin",
+					}
+
+					jsonData, err := json.Marshal(updateData)
+					if err == nil {
+						c.doRequest(ctx, http.MethodPut, updateMemberURL, jsonData)
+					}
+				}
+			}
+		}
+	}
+
+	// Finalmente, eliminar el usuario
+	url := fmt.Sprintf("%s/api/v1/users/%s", c.baseURL, userID)
+	_, err = c.doRequest(ctx, http.MethodDelete, url, nil)
 	return err
 }
 

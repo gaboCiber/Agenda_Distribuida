@@ -37,6 +37,7 @@ func (h *GroupHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/users/{userId}", h.ListUserGroups).Methods("GET")
 	router.HandleFunc("/{groupId}/members", h.AddGroupMember).Methods("POST")
 	router.HandleFunc("/{groupId}/members", h.ListGroupMembers).Methods("GET")
+	router.HandleFunc("/{groupId}/members/{userId}", h.UpdateGroupMember).Methods("PUT")
 	router.HandleFunc("/{groupId}/members/{userId}", h.RemoveGroupMember).Methods("DELETE")
 }
 
@@ -180,9 +181,16 @@ func (h *GroupHandler) UpdateGroup(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Update fields
-	existing.Name = req.Name
-	existing.Description = req.Description
-	existing.IsHierarchical = req.IsHierarchical
+
+	if req.Name != "" {
+		existing.Name = req.Name
+	}
+
+	if req.Description != nil {
+		existing.Description = req.Description
+	}
+
+	existing.CreatedBy = req.CreatorID
 
 	// Handle parent group update if needed
 	if req.ParentGroupID != nil {
@@ -358,6 +366,59 @@ func (h *GroupHandler) ListGroupMembers(w http.ResponseWriter, r *http.Request) 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status":  "success",
 		"members": members,
+	})
+}
+
+// UpdateGroupMember updates a group member's role
+func (h *GroupHandler) UpdateGroupMember(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	groupID, err := uuid.Parse(vars["groupId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid group ID")
+		http.Error(w, `{"status":"error","message":"Invalid group ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	userID, err := uuid.Parse(vars["userId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid user ID")
+		http.Error(w, `{"status":"error","message":"Invalid user ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	var req struct {
+		Role string `json:"role" validate:"required,oneof=admin member"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.log.Error().Err(err).Msg("Failed to decode request body")
+		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if err := validate.Struct(req); err != nil {
+		h.log.Error().Err(err).Msg("Validation failed")
+		http.Error(w, `{"status":"error","message":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Update the group member
+	err = h.repo.UpdateGroupMember(r.Context(), groupID, userID, req.Role)
+	if err != nil {
+		h.log.Error().Err(err).
+			Str("group_id", groupID.String()).
+			Str("user_id", userID.String()).
+			Msg("Failed to update group member")
+		http.Error(w, `{"status":"error","message":"Failed to update group member"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]string{
+		"status":  "success",
+		"message": "Group member updated successfully",
 	})
 }
 

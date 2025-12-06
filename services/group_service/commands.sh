@@ -122,6 +122,17 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "660e8400-e29b-41d4-a716-446655440103",
+    "type": "group.member.update",
+    "data": {
+        "role": "admin",
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
 # 9. List all groups for a user
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "770e8400-e29b-41d4-a716-446655440100",
