@@ -21,6 +21,7 @@ type GroupRepository interface {
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.Group, error)
 	AddMember(ctx context.Context, member *models.GroupMember) error
 	GetMembers(ctx context.Context, groupID uuid.UUID) ([]*models.GroupMember, error)
+	UpdateGroupMember(ctx context.Context, groupID, userID uuid.UUID, role string) error
 	RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error
 	IsMember(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	IsAdmin(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
@@ -172,14 +173,16 @@ func (r *groupRepository) Update(ctx context.Context, group *models.Group) error
 			description = $2, 
 			is_hierarchical = $3, 
 			parent_group_id = $4, 
-			updated_at = $5
-		WHERE id = $6
+			updated_at = $5,
+			created_by = $6
+		WHERE id = $7
 	`,
 		group.Name,
 		group.Description,
 		group.IsHierarchical,
 		group.ParentGroupID,
 		group.UpdatedAt,
+		group.CreatedBy,
 		group.ID,
 	)
 
@@ -549,6 +552,23 @@ func (r *groupRepository) AddMember(ctx context.Context, member *models.GroupMem
 	}
 
 	return tx.Commit()
+}
+
+func (r *groupRepository) UpdateGroupMember(ctx context.Context, groupID, userID uuid.UUID, role string) error {
+	query := `
+        UPDATE group_members
+        SET role = $1
+        WHERE group_id = $2 AND user_id = $3
+        RETURNING id
+    `
+
+	var id uuid.UUID
+	err := r.db.QueryRowContext(ctx, query, role, groupID, userID).Scan(&id)
+	if err != nil {
+		return fmt.Errorf("error updating group member: %w", err)
+	}
+
+	return nil
 }
 
 // RemoveGroupMember removes a user from a group

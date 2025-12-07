@@ -22,7 +22,9 @@ const (
 	EventTypeGroupMemberAdd    = "group.member.add"
 	EventTypeGroupMemberList   = "group.member.list"
 	EventTypeGroupMemberRemove = "group.member.remove"
-	EventTypeUserGroupsList    = "user.groups.list"
+	EventTypeGroupMemberUpdate = "group.member.update"
+
+	EventTypeUserGroupsList = "user.groups.list"
 
 	// Invitation events
 	EventTypeInviteCreate = "group.invite.create"
@@ -70,6 +72,8 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleAddGroupMember(ctx, event)
 	case EventTypeGroupMemberList:
 		return s.handleListGroupMembers(ctx, event)
+	case EventTypeGroupMemberUpdate:
+		return s.handleUpdateGroupMember(ctx, event)
 	case EventTypeGroupMemberRemove:
 		return s.handleRemoveGroupMember(ctx, event)
 	case EventTypeUserGroupsList:
@@ -359,6 +363,46 @@ func (s *EventService) handleListGroupMembers(ctx context.Context, event models.
 
 	resp := models.NewSuccessResponse(event.ID, "group.member.list", members)
 	return &resp, nil
+}
+
+// handleUpdateGroup handles group updates
+func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse the request data
+	var req struct {
+		GroupID string `json:"group_id"`
+		UserID  string `json:"user_id"`
+		Role    string `json:"role"`
+	}
+
+	if err := mapToStruct(event.Data, &req); err != nil {
+		errMsg := fmt.Errorf("invalid request data: %w", err)
+		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+		return &resp, nil
+	}
+
+	// Parse the UUID
+	_, err := uuid.Parse(req.GroupID)
+	if err != nil {
+		return nil, fmt.Errorf("invalid group ID: %w", err)
+	}
+
+	_, err2 := uuid.Parse(req.UserID)
+	if err2 != nil {
+		return nil, fmt.Errorf("invalid user ID: %w", err)
+	}
+
+	// Update the group
+	err3 := s.dbClient.UpdateGroupMember(ctx, req.GroupID, req.UserID, req.Role)
+	if err3 != nil {
+		return nil, fmt.Errorf("error updating group: %w", err)
+	}
+
+	// Return success response
+	return &models.EventResponse{
+		EventID: event.ID,
+		Type:    "group.member.updated",
+		Success: true,
+	}, nil
 }
 
 // handleRemoveGroupMember handles removing a member from a group

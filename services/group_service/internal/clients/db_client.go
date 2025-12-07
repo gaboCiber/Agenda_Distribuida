@@ -330,6 +330,31 @@ func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]
 }
 
 // RemoveGroupMember removes a user from a group
+func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userID, role string) error {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
+
+	request := map[string]interface{}{
+		"role": role,
+	}
+
+	reqBody, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("error marshaling add member request: %w", err)
+	}
+
+	_, err2 := c.doRequest(ctx, http.MethodPut, url, reqBody)
+	if err2 != nil {
+		c.logger.Error("Error removing group member",
+			zap.Error(err),
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID))
+		return fmt.Errorf("error removing group member: %w", err)
+	}
+
+	return nil
+}
+
+// RemoveGroupMember removes a user from a group
 func (c *DBServiceClient) RemoveGroupMember(ctx context.Context, groupID, userID, removedBy string) error {
 	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
 
