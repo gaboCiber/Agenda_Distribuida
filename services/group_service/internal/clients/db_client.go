@@ -329,7 +329,48 @@ func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]
 	return response.Groups, nil
 }
 
-// RemoveGroupMember removes a user from a group
+// GetGroupMember retrieves a specific member from a group
+func (c *DBServiceClient) GetGroupMember(ctx context.Context, groupID, userID string) (*models.GroupMember, error) {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", strings.TrimSuffix(c.baseURL, "/"), groupID, userID)
+
+	resp, err := c.doRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		c.logger.Error("Error getting group member",
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return nil, fmt.Errorf("error getting group member: %w", err)
+	}
+
+	var response struct {
+		Status string             `json:"status"`
+		Member *models.GroupMember `json:"member"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		c.logger.Error("Error decoding group member response",
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID),
+			zap.Error(err))
+		return nil, fmt.Errorf("error decoding group member response: %w", err)
+	}
+
+	if response.Status != "success" {
+		c.logger.Error("Error in group member response",
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID),
+			zap.String("status", response.Status))
+		return nil, fmt.Errorf("error in group member response: %s", response.Status)
+	}
+
+	if response.Member == nil {
+		return nil, fmt.Errorf("member not found")
+	}
+
+	return response.Member, nil
+}
+
+// UpdateGroupMember updates a group member's role
 func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userID, role string) error {
 	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
 

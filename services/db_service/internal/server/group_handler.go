@@ -37,6 +37,7 @@ func (h *GroupHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/users/{userId}", h.ListUserGroups).Methods("GET")
 	router.HandleFunc("/{groupId}/members", h.AddGroupMember).Methods("POST")
 	router.HandleFunc("/{groupId}/members", h.ListGroupMembers).Methods("GET")
+	router.HandleFunc("/{groupId}/members/{userId}", h.GetGroupMember).Methods("GET")
 	router.HandleFunc("/{groupId}/members/{userId}", h.UpdateGroupMember).Methods("PUT")
 	router.HandleFunc("/{groupId}/members/{userId}", h.RemoveGroupMember).Methods("DELETE")
 }
@@ -419,6 +420,51 @@ func (h *GroupHandler) UpdateGroupMember(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(map[string]string{
 		"status":  "success",
 		"message": "Group member updated successfully",
+	})
+}
+
+// GetGroupMember retrieves a specific member from a group
+func (h *GroupHandler) GetGroupMember(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	groupID, err := uuid.Parse(vars["groupId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid group ID")
+		http.Error(w, `{"status":"error","message":"Invalid group ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	userID, err := uuid.Parse(vars["userId"])
+	if err != nil {
+		h.log.Error().Err(err).Msg("Invalid user ID")
+		http.Error(w, `{"status":"error","message":"Invalid user ID"}`, http.StatusBadRequest)
+		return
+	}
+
+	member, err := h.repo.GetGroupMember(r.Context(), groupID, userID)
+	if err != nil {
+		if err.Error() == "member not found in group" {
+			h.log.Debug().
+				Str("group_id", groupID.String()).
+				Str("user_id", userID.String()).
+				Msg("Member not found in group")
+			http.Error(w, `{"status":"error","message":"Member not found in group"}`, http.StatusNotFound)
+			return
+		}
+
+		h.log.Error().
+			Err(err).
+			Str("group_id", groupID.String()).
+			Str("user_id", userID.String()).
+			Msg("Failed to get group member")
+		http.Error(w, `{"status":"error","message":"Failed to get group member"}`, http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status": "success",
+		"member": member,
 	})
 }
 

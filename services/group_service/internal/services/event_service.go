@@ -20,6 +20,7 @@ const (
 	EventTypeGroupUpdate       = "group.update"
 	EventTypeGroupDelete       = "group.delete"
 	EventTypeGroupMemberAdd    = "group.member.add"
+	EventTypeGroupMemberGet    = "group.member.get"
 	EventTypeGroupMemberList   = "group.member.list"
 	EventTypeGroupMemberRemove = "group.member.remove"
 	EventTypeGroupMemberUpdate = "group.member.update"
@@ -72,6 +73,8 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleAddGroupMember(ctx, event)
 	case EventTypeGroupMemberList:
 		return s.handleListGroupMembers(ctx, event)
+	case EventTypeGroupMemberGet:
+		return s.handleGetGroupMember(ctx, event)
 	case EventTypeGroupMemberUpdate:
 		return s.handleUpdateGroupMember(ctx, event)
 	case EventTypeGroupMemberRemove:
@@ -365,7 +368,48 @@ func (s *EventService) handleListGroupMembers(ctx context.Context, event models.
 	return &resp, nil
 }
 
-// handleUpdateGroup handles group updates
+// handleGetGroupMember handles getting a specific group member
+func (s *EventService) handleGetGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
+	// Parse request data
+	var requestData struct {
+		GroupID string `json:"group_id" validate:"required"`
+		UserID  string `json:"user_id" validate:"required"`
+	}
+
+	if err := s.mapToStruct(event.Data, &requestData); err != nil {
+		s.logger.Error("Error parsing get group member request", zap.Error(err))
+		return nil, fmt.Errorf("invalid request data: %w", err)
+	}
+
+	// Validate request data
+	if _, err := uuid.Parse(requestData.GroupID); err != nil {
+		return nil, fmt.Errorf("invalid group ID format: %w", err)
+	}
+
+	if _, err := uuid.Parse(requestData.UserID); err != nil {
+		return nil, fmt.Errorf("invalid user ID format: %w", err)
+	}
+
+	// Get the group member from the database
+	member, err := s.dbClient.GetGroupMember(ctx, requestData.GroupID, requestData.UserID)
+	if err != nil {
+		s.logger.Error("Error getting group member",
+			zap.String("group_id", requestData.GroupID),
+			zap.String("user_id", requestData.UserID),
+			zap.Error(err))
+		return nil, fmt.Errorf("failed to get group member: %w", err)
+	}
+
+	// Return the group member
+	return &models.EventResponse{
+		Type: event.Type + ".response",
+		Data: map[string]interface{}{
+			"member": member,
+		},
+	}, nil
+}
+
+// handleUpdateGroupMember handles group updates
 func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	// Parse the request data
 	var req struct {

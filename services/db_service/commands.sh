@@ -173,6 +173,9 @@ curl http://localhost:8000/api/v1/groups/{subgroupId}/members
 # Replace {groupId} and {userId} with actual values
 curl -X DELETE http://localhost:8000/api/v1/groups/{groupId}/members/{userId}
 
+# 6. Get a Member
+curl -X GET http://localhost:8000/api/v1/groups/{groupId}/members/{userId}
+
 # 7. List User's Groups
 
 # List all groups a user is member of
