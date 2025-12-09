@@ -18,7 +18,7 @@ type GroupRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (*models.Group, error)
 	Update(ctx context.Context, group *models.Group) error
 	Delete(ctx context.Context, id uuid.UUID) error
-	ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.Group, error)
+	ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.GroupExtended, error)
 	AddMember(ctx context.Context, member *models.GroupMember) error
 	GetMembers(ctx context.Context, groupID uuid.UUID) ([]*models.GroupMember, error)
 	UpdateGroupMember(ctx context.Context, groupID, userID uuid.UUID, role string) error
@@ -349,9 +349,9 @@ func (r *groupRepository) Delete(ctx context.Context, id uuid.UUID) error {
 }
 
 // ListByUser returns all groups a user is a member of
-func (r *groupRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.Group, error) {
+func (r *groupRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.GroupExtended, error) {
 	query := `
-		SELECT g.id, g.name, g.description, g.created_by, g.is_hierarchical, g.parent_group_id, g.created_at, g.updated_at
+		SELECT g.id, g.name, g.description, g.created_by, g.is_hierarchical, g.parent_group_id, g.created_at, g.updated_at, gm.role
 		FROM groups g
 		JOIN group_members gm ON g.id = gm.group_id
 		WHERE gm.user_id = $1
@@ -368,9 +368,9 @@ func (r *groupRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*
 	}
 	defer rows.Close()
 
-	var groups []*models.Group
+	var groups []*models.GroupExtended
 	for rows.Next() {
-		var group models.Group
+		var group models.GroupExtended
 		var parentGroupID *uuid.UUID
 
 		err := rows.Scan(
@@ -382,6 +382,7 @@ func (r *groupRepository) ListByUser(ctx context.Context, userID uuid.UUID) ([]*
 			&parentGroupID,
 			&group.CreatedAt,
 			&group.UpdatedAt,
+			&group.Role,
 		)
 		if err != nil {
 			r.log.Error().
