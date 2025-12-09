@@ -18,6 +18,18 @@ type Group struct {
 	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
 }
 
+type GroupExtended struct {
+	ID             uuid.UUID  `json:"id" db:"id"`
+	Name           string     `json:"name" db:"name"`
+	Description    *string    `json:"description,omitempty" db:"description"`
+	CreatedBy      uuid.UUID  `json:"created_by" db:"created_by"`
+	IsHierarchical bool       `json:"is_hierarchical" db:"is_hierarchical"`
+	ParentGroupID  *uuid.UUID `json:"parent_group_id,omitempty" db:"parent_group_id"`
+	CreatedAt      time.Time  `json:"created_at" db:"created_at"`
+	UpdatedAt      time.Time  `json:"updated_at" db:"updated_at"`
+	Role           string     `json:"role" db:"role"` // "admin" or "member"
+}
+
 // GroupRequest represents the data needed to create or update a group
 type GroupRequest struct {
 	Name           string     `json:"name" validate:"required"`

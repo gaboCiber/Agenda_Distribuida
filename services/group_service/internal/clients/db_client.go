@@ -297,7 +297,7 @@ func (c *DBServiceClient) ListGroupMembers(ctx context.Context, groupID string) 
 }
 
 // ListUserGroups returns all groups that a user is a member of
-func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]models.Group, error) {
+func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]models.GroupExtended, error) {
 	url := fmt.Sprintf("%s/api/v1/groups/users/%s", c.baseURL, userID)
 
 	// Make the request
@@ -311,8 +311,8 @@ func (c *DBServiceClient) ListUserGroups(ctx context.Context, userID string) ([]
 
 	// The response is a JSON object with a 'groups' field containing the array
 	var response struct {
-		Status string         `json:"status"`
-		Groups []models.Group `json:"groups"`
+		Status string                 `json:"status"`
+		Groups []models.GroupExtended `json:"groups"`
 	}
 
 	if err := json.Unmarshal(respBody, &response); err != nil {
@@ -343,7 +343,7 @@ func (c *DBServiceClient) GetGroupMember(ctx context.Context, groupID, userID st
 	}
 
 	var response struct {
-		Status string             `json:"status"`
+		Status string              `json:"status"`
 		Member *models.GroupMember `json:"member"`
 	}
 
