@@ -107,6 +107,19 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
+# 7. **Get Group Member**
+docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
+    "id": "660e8400-e29b-41d4-a716-446655440102",
+    "type": "group.member.get",
+    "data": {
+        "group_id": "'$GROUP_UUID'",
+        "user_id": "'$USER2_UUID'"
+    },
+    "metadata": {
+        "reply_to": "group_events_response"
+    }
+}'
+
 # 8. **Remove Member from Group**
 # Removes USER2_UUID from the group (removed by USER1_UUID)
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
@@ -122,6 +135,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
+# 9. **Update Member Role**
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "660e8400-e29b-41d4-a716-446655440103",
     "type": "group.member.update",

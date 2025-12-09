@@ -25,6 +25,7 @@ type GroupRepository interface {
 	RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error
 	IsMember(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	IsAdmin(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
+	GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*models.GroupMember, error)
 }
 
 type groupRepository struct {
@@ -929,6 +930,39 @@ func (r *groupRepository) IsMember(ctx context.Context, groupID, userID uuid.UUI
 	}
 
 	return false, nil
+}
+
+// GetGroupMember retrieves a specific member from a group
+func (r *groupRepository) GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*models.GroupMember, error) {
+	query := `
+		SELECT id, group_id, user_id, role, is_inherited, joined_at
+		FROM group_members
+		WHERE group_id = $1 AND user_id = $2
+	`
+
+	member := &models.GroupMember{}
+	err := r.db.QueryRowContext(ctx, query, groupID, userID).Scan(
+		&member.ID,
+		&member.GroupID,
+		&member.UserID,
+		&member.Role,
+		&member.IsInherited,
+		&member.JoinedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("member not found in group")
+		}
+		r.log.Error().
+			Err(err).
+			Str("group_id", groupID.String()).
+			Str("user_id", userID.String()).
+			Msg("Failed to get group member")
+		return nil, fmt.Errorf("failed to get group member: %w", err)
+	}
+
+	return member, nil
 }
 
 // IsAdmin checks if a user is an admin of a group
