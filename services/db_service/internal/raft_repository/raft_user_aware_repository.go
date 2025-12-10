@@ -1,4 +1,4 @@
-package server
+package raft_repository
 
 import (
 	"context"
@@ -15,17 +15,17 @@ import (
 
 var ErrNotLeader = errors.New("not the leader, please redirect")
 
-// RaftAwareUserRepository es un wrapper para los reposoties que interactúa con el clúster Raft.
-type RaftAwareUserRepository struct {
+// RaftUserRepository is a wrapper for the user repository that interacts with the Raft cluster.
+type RaftUserRepository struct {
 	baseRepo  repository.UserRepository
 	raftNode  *consensus.RaftNode
 	log       *zerolog.Logger
 	leaderURL string // URL del líder actual, para redirecciones.
 }
 
-// NewRaftAwareUserRepository crea una nueva instancia de RaftAwareUserRepository.
-func NewRaftAwareUserRepository(baseRepo repository.UserRepository, raftNode *consensus.RaftNode, log *zerolog.Logger) repository.UserRepository {
-	return &RaftAwareUserRepository{
+// NewRaftUserRepository creates a new instance of RaftUserRepository.
+func NewRaftUserRepository(baseRepo repository.UserRepository, raftNode *consensus.RaftNode, log *zerolog.Logger) repository.UserRepository {
+	return &RaftUserRepository{
 		baseRepo:  baseRepo,
 		raftNode:  raftNode,
 		log:       log,
@@ -34,12 +34,27 @@ func NewRaftAwareUserRepository(baseRepo repository.UserRepository, raftNode *co
 }
 
 // Create proposes a user creation command to the Raft cluster.
-func (r *RaftAwareUserRepository) Create(ctx context.Context, user *models.User) error {
+func (r *RaftUserRepository) Create(ctx context.Context, user *models.User) error {
 	if !r.raftNode.IsLeader() {
 		return ErrNotLeader
 	}
 
-	payload, err := json.Marshal(user)
+	// Explicitly include hashed password since json:"-" on models.User omits it
+	type createPayload struct {
+		ID             uuid.UUID `json:"id"`
+		Username       string    `json:"username"`
+		Email          string    `json:"email"`
+		HashedPassword string    `json:"hashed_password"`
+		IsActive       bool      `json:"is_active"`
+	}
+
+	payload, err := json.Marshal(createPayload{
+		ID:             user.ID,
+		Username:       user.Username,
+		Email:          user.Email,
+		HashedPassword: user.HashedPassword,
+		IsActive:       user.IsActive,
+	})
 	if err != nil {
 		return fmt.Errorf("error al serializar usuario: %w", err)
 	}
@@ -61,7 +76,7 @@ func (r *RaftAwareUserRepository) Create(ctx context.Context, user *models.User)
 
 // Update proposes a user update command to the Raft cluster.
 // It waits for the command to be applied and then fetches the updated user.
-func (r *RaftAwareUserRepository) Update(ctx context.Context, id uuid.UUID, updateReq *models.UpdateUserRequest) (*models.User, error) {
+func (r *RaftUserRepository) Update(ctx context.Context, id uuid.UUID, updateReq *models.UpdateUserRequest) (*models.User, error) {
 	if !r.raftNode.IsLeader() {
 		return nil, ErrNotLeader
 	}
@@ -98,7 +113,7 @@ func (r *RaftAwareUserRepository) Update(ctx context.Context, id uuid.UUID, upda
 }
 
 // Delete proposes a user deletion command to the Raft cluster.
-func (r *RaftAwareUserRepository) Delete(ctx context.Context, id uuid.UUID) error {
+func (r *RaftUserRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	if !r.raftNode.IsLeader() {
 		return ErrNotLeader
 	}
@@ -123,31 +138,16 @@ func (r *RaftAwareUserRepository) Delete(ctx context.Context, id uuid.UUID) erro
 }
 
 // GetByID delegates the read operation to the base repository.
-func (r *RaftAwareUserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
+func (r *RaftUserRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.User, error) {
 	return r.baseRepo.GetByID(ctx, id)
 }
 
 // GetByEmail delegates the read operation to the base repository.
-func (r *RaftAwareUserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
+func (r *RaftUserRepository) GetByEmail(ctx context.Context, email string) (*models.User, error) {
 	return r.baseRepo.GetByEmail(ctx, email)
 }
 
 // List delegates the read operation to the base repository.
-func (r *RaftAwareUserRepository) List(ctx context.Context, offset, limit int) ([]*models.User, error) {
+func (r *RaftUserRepository) List(ctx context.Context, offset, limit int) ([]*models.User, error) {
 	return r.baseRepo.List(ctx, offset, limit)
-}
-
-// IsLeader checks if the current node is the Raft leader.
-func (r *RaftAwareUserRepository) IsLeader() bool {
-	return r.raftNode.IsLeader()
-}
-
-// GetLeaderID returns the ID of the current leader.
-func (r *RaftAwareUserRepository) GetLeaderID() string {
-	return r.raftNode.GetLeaderID()
-}
-
-// GetLeaderAddress returns the network address of the current leader.
-func (r *RaftAwareUserRepository) GetLeaderAddress() string {
-	return r.raftNode.GetLeaderAddress()
 }

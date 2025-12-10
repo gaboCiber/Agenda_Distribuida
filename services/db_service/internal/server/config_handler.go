@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"log"
 	"net/http"
@@ -11,10 +12,22 @@ import (
 )
 
 type ConfigHandler struct {
-	repo *repository.ConfigRepository
+	repo interface {
+		Create(ctx context.Context, config repository.Config) error
+		GetByName(ctx context.Context, name string) (repository.Config, error)
+		List(ctx context.Context) ([]repository.Config, error)
+		Update(ctx context.Context, config repository.Config) error
+		Delete(ctx context.Context, name string) error
+	}
 }
 
-func NewConfigHandler(repo *repository.ConfigRepository) *ConfigHandler {
+func NewConfigHandler(repo interface {
+	Create(ctx context.Context, config repository.Config) error
+	GetByName(ctx context.Context, name string) (repository.Config, error)
+	List(ctx context.Context) ([]repository.Config, error)
+	Update(ctx context.Context, config repository.Config) error
+	Delete(ctx context.Context, name string) error
+}) *ConfigHandler {
 	return &ConfigHandler{repo: repo}
 }
 

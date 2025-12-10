@@ -315,7 +315,291 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 		default:
 			return fmt.Errorf("método desconocido para UserRepository: %s", cmd.Method)
 		}
-	// TODO: Add cases for other repositories (EventRepository, etc.)
+	case "EventRepository":
+		eventRepo, ok := rn.repositories["EventRepository"].(repository.EventRepository)
+		if !ok {
+			return fmt.Errorf("EventRepository no encontrado en el mapa de repositorios")
+		}
+
+		switch cmd.Method {
+		case "Create":
+			// Handle the new payload structure with leader-generated ID
+			type createPayload struct {
+				ID          uuid.UUID `json:"id"`
+				Title       string    `json:"title"`
+				Description string    `json:"description"`
+				StartTime   time.Time `json:"start_time"`
+				EndTime     time.Time `json:"end_time"`
+				UserID      uuid.UUID `json:"user_id"`
+			}
+			var payload createPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para EventRepository.Create: %w", err)
+			}
+
+			// Create Event object from payload
+			event := &models.Event{
+				ID:          payload.ID,
+				Title:       payload.Title,
+				Description: payload.Description,
+				StartTime:   payload.StartTime,
+				EndTime:     payload.EndTime,
+				UserID:      payload.UserID,
+			}
+			return eventRepo.Create(context.Background(), event)
+
+		case "Update":
+			type updatePayload struct {
+				ID        uuid.UUID            `json:"id"`
+				UpdateReq *models.EventRequest `json:"update_req"`
+			}
+			var payload updatePayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para EventRepository.Update: %w", err)
+			}
+			_, err := eventRepo.Update(context.Background(), payload.ID, payload.UpdateReq)
+			return err
+
+		case "Delete":
+			var eventID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &eventID); err != nil {
+				return fmt.Errorf("error al deserializar payload para EventRepository.Delete: %w", err)
+			}
+			return eventRepo.Delete(context.Background(), eventID)
+
+		default:
+			return fmt.Errorf("método desconocido para EventRepository: %s", cmd.Method)
+		}
+	case "GroupRepository":
+		groupRepo, ok := rn.repositories["GroupRepository"].(repository.GroupRepository)
+		if !ok {
+			return fmt.Errorf("GroupRepository no encontrado en el mapa de repositorios")
+		}
+
+		switch cmd.Method {
+		case "Create":
+			// Handle the new payload structure with leader-generated ID
+			type createPayload struct {
+				ID             uuid.UUID  `json:"id"`
+				Name           string     `json:"name"`
+				Description    string     `json:"description"`
+				CreatedBy      uuid.UUID  `json:"created_by"`
+				IsHierarchical bool       `json:"is_hierarchical"`
+				ParentGroupID  *uuid.UUID `json:"parent_group_id"`
+			}
+			var payload createPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.Create: %w", err)
+			}
+
+			// Create Group object from payload
+			group := &models.Group{
+				ID:             payload.ID,
+				Name:           payload.Name,
+				Description:    &payload.Description,
+				CreatedBy:      payload.CreatedBy,
+				IsHierarchical: payload.IsHierarchical,
+				ParentGroupID:  payload.ParentGroupID,
+			}
+			return groupRepo.Create(context.Background(), group)
+
+		case "Update":
+			var group models.Group
+			if err := json.Unmarshal(cmd.Payload, &group); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.Update: %w", err)
+			}
+			return groupRepo.Update(context.Background(), &group)
+
+		case "Delete":
+			var groupID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &groupID); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.Delete: %w", err)
+			}
+			return groupRepo.Delete(context.Background(), groupID)
+
+		case "AddMember":
+			// Handle the new payload structure with leader-generated ID
+			type addMemberPayload struct {
+				ID          uuid.UUID `json:"id"`
+				GroupID     uuid.UUID `json:"group_id"`
+				UserID      uuid.UUID `json:"user_id"`
+				Role        string    `json:"role"`
+				IsInherited bool      `json:"is_inherited"`
+				JoinedAt    time.Time `json:"joined_at"`
+			}
+			var payload addMemberPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.AddMember: %w", err)
+			}
+
+			// Create GroupMember object from payload
+			member := &models.GroupMember{
+				ID:          payload.ID,
+				GroupID:     payload.GroupID,
+				UserID:      payload.UserID,
+				Role:        payload.Role,
+				IsInherited: payload.IsInherited,
+				JoinedAt:    payload.JoinedAt,
+			}
+			return groupRepo.AddMember(context.Background(), member)
+
+		case "UpdateGroupMember":
+			type updateMemberPayload struct {
+				GroupID uuid.UUID `json:"group_id"`
+				UserID  uuid.UUID `json:"user_id"`
+				Role    string    `json:"role"`
+			}
+			var payload updateMemberPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.UpdateGroupMember: %w", err)
+			}
+			return groupRepo.UpdateGroupMember(context.Background(), payload.GroupID, payload.UserID, payload.Role)
+
+		case "RemoveMember":
+			type removeMemberPayload struct {
+				GroupID uuid.UUID `json:"group_id"`
+				UserID  uuid.UUID `json:"user_id"`
+			}
+			var payload removeMemberPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.RemoveMember: %w", err)
+			}
+			return groupRepo.RemoveMember(context.Background(), payload.GroupID, payload.UserID)
+
+		default:
+			return fmt.Errorf("método desconocido para GroupRepository: %s", cmd.Method)
+		}
+	case "GroupEventRepository":
+		groupEventRepo, ok := rn.repositories["GroupEventRepository"].(repository.GroupEventRepository)
+		if !ok {
+			return fmt.Errorf("GroupEventRepository no encontrado en el mapa de repositorios")
+		}
+
+		switch cmd.Method {
+		case "AddGroupEvent":
+			var groupEvent models.GroupEvent
+			if err := json.Unmarshal(cmd.Payload, &groupEvent); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddGroupEvent: %w", err)
+			}
+			return groupEventRepo.AddGroupEvent(context.Background(), &groupEvent)
+
+		case "RemoveGroupEvent":
+			type removeGroupEventPayload struct {
+				GroupID uuid.UUID `json:"group_id"`
+				EventID uuid.UUID `json:"event_id"`
+			}
+			var payload removeGroupEventPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.RemoveGroupEvent: %w", err)
+			}
+			return groupEventRepo.RemoveGroupEvent(context.Background(), payload.GroupID, payload.EventID)
+
+		case "RemoveEventFromAllGroups":
+			var eventID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &eventID); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.RemoveEventFromAllGroups: %w", err)
+			}
+			return groupEventRepo.RemoveEventFromAllGroups(context.Background(), eventID)
+
+		case "UpdateGroupEvent":
+			type updateGroupEventPayload struct {
+				GroupID        uuid.UUID          `json:"group_id"`
+				EventID        uuid.UUID          `json:"event_id"`
+				Status         models.EventStatus `json:"status"`
+				IsHierarchical bool               `json:"is_hierarchical"`
+			}
+			var payload updateGroupEventPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateGroupEvent: %w", err)
+			}
+			_, err := groupEventRepo.UpdateGroupEvent(context.Background(), payload.GroupID, payload.EventID, payload.Status, payload.IsHierarchical)
+			return err
+
+		case "AddEventStatus":
+			var status models.GroupEventStatus
+			if err := json.Unmarshal(cmd.Payload, &status); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddEventStatus: %w", err)
+			}
+			return groupEventRepo.AddEventStatus(context.Background(), &status)
+
+		case "UpdateEventStatus":
+			type updateEventStatusPayload struct {
+				EventID uuid.UUID          `json:"event_id"`
+				UserID  uuid.UUID          `json:"user_id"`
+				Status  models.EventStatus `json:"status"`
+			}
+			var payload updateEventStatusPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateEventStatus: %w", err)
+			}
+			return groupEventRepo.UpdateEventStatus(context.Background(), payload.EventID, payload.UserID, payload.Status)
+
+		case "CreateInvitation":
+			var invitation models.GroupInvitation
+			if err := json.Unmarshal(cmd.Payload, &invitation); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.CreateInvitation: %w", err)
+			}
+			return groupEventRepo.CreateInvitation(context.Background(), &invitation)
+
+		case "UpdateInvitation":
+			type updateInvitationPayload struct {
+				ID     uuid.UUID `json:"id"`
+				Status string    `json:"status"`
+			}
+			var payload updateInvitationPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateInvitation: %w", err)
+			}
+			return groupEventRepo.UpdateInvitation(context.Background(), payload.ID, payload.Status)
+
+		case "DeleteUserInvitations":
+			var userID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &userID); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteUserInvitations: %w", err)
+			}
+			return groupEventRepo.DeleteUserInvitations(context.Background(), userID)
+
+		case "DeleteUserInvitation":
+			var invitationID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &invitationID); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteUserInvitation: %w", err)
+			}
+			return groupEventRepo.DeleteUserInvitation(context.Background(), invitationID)
+
+		default:
+			return fmt.Errorf("método desconocido para GroupEventRepository: %s", cmd.Method)
+		}
+	case "ConfigRepository":
+		configRepo, ok := rn.repositories["ConfigRepository"].(*repository.ConfigRepository)
+		if !ok {
+			return fmt.Errorf("ConfigRepository no encontrado en el mapa de repositorios")
+		}
+
+		switch cmd.Method {
+		case "Create":
+			var config repository.Config
+			if err := json.Unmarshal(cmd.Payload, &config); err != nil {
+				return fmt.Errorf("error al deserializar payload para ConfigRepository.Create: %w", err)
+			}
+			return configRepo.Create(context.Background(), config)
+
+		case "Update":
+			var config repository.Config
+			if err := json.Unmarshal(cmd.Payload, &config); err != nil {
+				return fmt.Errorf("error al deserializar payload para ConfigRepository.Update: %w", err)
+			}
+			return configRepo.Update(context.Background(), config)
+
+		case "Delete":
+			var name string
+			if err := json.Unmarshal(cmd.Payload, &name); err != nil {
+				return fmt.Errorf("error al deserializar payload para ConfigRepository.Delete: %w", err)
+			}
+			return configRepo.Delete(context.Background(), name)
+
+		default:
+			return fmt.Errorf("método desconocido para ConfigRepository: %s", cmd.Method)
+		}
 	default:
 		return fmt.Errorf("lógica de despacho no implementada para el repositorio: %s", cmd.Repository)
 	}

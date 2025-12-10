@@ -56,7 +56,6 @@ func (r *groupRepository) Create(ctx context.Context, group *models.Group) error
 	}()
 
 	// Generate new UUID for the group
-	group.ID = uuid.New()
 	group.CreatedAt = time.Now().UTC()
 	group.UpdatedAt = group.CreatedAt
 

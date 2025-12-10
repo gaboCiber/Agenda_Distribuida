@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/consensus"
+	"github.com/agenda-distribuida/db-service/internal/raft_repository"
 	"github.com/agenda-distribuida/db-service/internal/repository"
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/mux"
@@ -30,21 +31,33 @@ type Server struct {
 
 func New(addr string, db *sql.DB, log *zerolog.Logger, raftNode *consensus.RaftNode) *Server {
 	// Initialize repositories
-	sqlUserRepo := repository.NewUserRepository(db, *log)
-	// Wrap the user repository with the Raft-aware repository
-	raftUserRepo := NewRaftAwareUserRepository(sqlUserRepo, raftNode, log)
 
+	// Wrap the user repository with the Raft-aware repository
+	sqlUserRepo := repository.NewUserRepository(db, *log)
+	raftUserRepo := raft_repository.NewRaftUserRepository(sqlUserRepo, raftNode, log)
+
+	// Wrap the event repository with the Raft-aware repository
 	eventRepo := repository.NewEventRepository(db, *log)
+	raftEventRepo := raft_repository.NewRaftEventRepository(eventRepo, raftNode, log)
+
+	// Wrap the group repository with the Raft-aware repository
 	groupRepo := repository.NewGroupRepository(db, *log)
+	raftGroupRepo := raft_repository.NewRaftGroupRepository(groupRepo, raftNode, log)
+
+	// Wrap the group event repository with the Raft-aware repository
 	groupEventRepo := repository.NewGroupEventRepository(db, *log)
+	raftGroupEventRepo := raft_repository.NewRaftGroupEventRepository(groupEventRepo, raftNode, log)
+
+	// Wrap the config repository with the Raft-aware repository
 	configRepo := repository.NewConfigRepository(db)
+	raftConfigRepo := raft_repository.NewRaftConfigRepository(configRepo, raftNode, log)
 
 	// Initialize handlers
 	userAPI := NewUserHandler(raftUserRepo, log)
-	eventAPI := NewEventHandler(eventRepo, log)
-	groupAPI := NewGroupHandler(groupRepo, log)
-	groupEventAPI := NewGroupEventHandler(groupEventRepo, log)
-	configHandler := NewConfigHandler(configRepo)
+	eventAPI := NewEventHandler(raftEventRepo, log)
+	groupAPI := NewGroupHandler(raftGroupRepo, log)
+	groupEventAPI := NewGroupEventHandler(raftGroupEventRepo, log)
+	configHandler := NewConfigHandler(raftConfigRepo)
 
 	s := &Server{
 		Server: &http.Server{
