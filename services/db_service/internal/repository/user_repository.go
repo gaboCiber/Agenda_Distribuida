@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"golang.org/x/crypto/bcrypt"
+
 	"github.com/agenda-distribuida/db-service/internal/models"
 	"github.com/google/uuid"
 	"github.com/rs/zerolog"
@@ -199,8 +201,12 @@ func (r *userRepository) Update(ctx context.Context, id uuid.UUID, updateReq *mo
 	}
 
 	if updateReq.Password != nil {
-		// In a real application, you would hash the password here
-		user.HashedPassword = *updateReq.Password // TODO: Hash the password
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*updateReq.Password), bcrypt.DefaultCost)
+		if err != nil {
+			r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to hash password")
+			return nil, err
+		}
+		user.HashedPassword = string(hashedPassword)
 	}
 
 	if updateReq.IsActive != nil {
