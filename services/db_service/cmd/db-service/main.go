@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/config"
+	"github.com/agenda-distribuida/db-service/internal/consensus"
 	"github.com/agenda-distribuida/db-service/internal/database"
+	"github.com/agenda-distribuida/db-service/internal/repository"
 	"github.com/agenda-distribuida/db-service/internal/server"
 	"github.com/rs/zerolog"
 )
@@ -31,18 +33,42 @@ func main() {
 	// Load configuration
 	cfg := config.Load()
 
-	// Initialize database
-	db, err := database.New(cfg.Database.Path)
+	// Initialize application database (SQLite)
+	appDB, err := database.New(cfg.Database.Path)
 	if err != nil {
-		logger.Fatal().Err(err).Msg("Failed to initialize database")
+		logger.Fatal().Err(err).Msg("Failed to initialize application database")
 	}
-	defer db.Close()
+	defer appDB.Close()
 
-	// Create and start server
+	// Initialize repositories
+	userRepo := repository.NewUserRepository(appDB.DB(), logger)
+	// Add other repositories here as they are created
+	// eventRepo := repository.NewEventRepository(appDB.DB(), logger)
+
+	// Create a map of repositories to pass to the Raft node
+	repos := map[string]interface{}{
+		"UserRepository": userRepo,
+		// "EventRepository": eventRepo,
+	}
+
+	// Initialize Raft node
+	raftNode := consensus.NewRaftNode(
+		cfg.Raft.ID,
+		cfg.Raft.Peers,
+		cfg.Raft.DataDir, // Directory for Raft's persistent state (BoltDB)
+		repos,            // Pass the map of repositories
+	)
+	defer raftNode.Close() // Close Raft's BoltDB when main exits
+
+	// Start Raft node (RPC server and main loop)
+	raftNode.Start()
+
+	// Create and start HTTP server
 	srv := server.New(
 		cfg.Server.Host+":"+cfg.Server.Port,
-		db.DB(),
+		appDB.DB(),
 		&logger,
+		raftNode, // Pass the Raft node to the HTTP server
 	)
 
 	// Channel to listen for errors from server

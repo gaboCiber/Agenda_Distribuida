@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -16,6 +17,11 @@ type Config struct {
 	}
 	Database struct {
 		Path string
+	}
+	Raft struct {
+		ID      string
+		DataDir string
+		Peers   map[string]string
 	}
 	LogLevel string
 }
@@ -33,10 +39,40 @@ func Load() *Config {
 	// Database configuration
 	cfg.Database.Path = getEnv("DB_PATH", "./data/agenda_distribuida.db")
 
+	// Raft configuration
+	cfg.Raft.ID = getEnv("RAFT_ID", "node1")
+	cfg.Raft.DataDir = getEnv("RAFT_DATA_DIR", "./data/raft")
+	cfg.Raft.Peers = parsePeers(getEnv("RAFT_PEERS", "node1=127.0.0.1:9001,node2=127.0.0.1:9002,node3=127.0.0.1:9003"))
+
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "debug")
 
 	return cfg
+}
+
+func parsePeers(raw string) map[string]string {
+	peers := make(map[string]string)
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return peers
+	}
+	parts := strings.Split(raw, ",")
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		id := strings.TrimSpace(kv[0])
+		addr := strings.TrimSpace(kv[1])
+		if id != "" && addr != "" {
+			peers[id] = addr
+		}
+	}
+	return peers
 }
 
 func getEnv(key, defaultValue string) string {

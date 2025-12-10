@@ -80,6 +80,11 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 		rn.persist()
 	}
 
+	// Si el término del líder es igual o mayor que el nuestro, actualizamos el líder conocido.
+	if args.Term >= rn.currentTerm {
+		rn.leaderID = args.LeaderID
+	}
+
 	// En cualquier caso, si recibimos un AppendEntries de un líder legítimo
 	// (con un término igual o mayor), reiniciamos nuestro temporizador.
 	// Esto también nos convierte en seguidor si éramos candidatos.

@@ -3,9 +3,11 @@ package server
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"net/http"
 	"time"
 
+	"github.com/agenda-distribuida/db-service/internal/consensus"
 	"github.com/agenda-distribuida/db-service/internal/repository"
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/mux"
@@ -22,18 +24,23 @@ type Server struct {
 	eventAPI      *EventHandler
 	groupAPI      *GroupHandler
 	groupEventAPI *GroupEventHandler
+	configAPI     *ConfigHandler
+	raftNode      *consensus.RaftNode // Add RaftNode to the server structure
 }
 
-func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
+func New(addr string, db *sql.DB, log *zerolog.Logger, raftNode *consensus.RaftNode) *Server {
 	// Initialize repositories
-	userRepo := repository.NewUserRepository(db, *log)
+	sqlUserRepo := repository.NewUserRepository(db, *log)
+	// Wrap the user repository with the Raft-aware repository
+	raftUserRepo := NewRaftAwareUserRepository(sqlUserRepo, raftNode, log)
+
 	eventRepo := repository.NewEventRepository(db, *log)
 	groupRepo := repository.NewGroupRepository(db, *log)
 	groupEventRepo := repository.NewGroupEventRepository(db, *log)
 	configRepo := repository.NewConfigRepository(db)
 
 	// Initialize handlers
-	userAPI := NewUserHandler(userRepo, log)
+	userAPI := NewUserHandler(raftUserRepo, log)
 	eventAPI := NewEventHandler(eventRepo, log)
 	groupAPI := NewGroupHandler(groupRepo, log)
 	groupEventAPI := NewGroupEventHandler(groupEventRepo, log)
@@ -52,16 +59,18 @@ func New(addr string, db *sql.DB, log *zerolog.Logger) *Server {
 		eventAPI:      eventAPI,
 		groupAPI:      groupAPI,
 		groupEventAPI: groupEventAPI,
+		configAPI:     configHandler,
+		raftNode:      raftNode,
 	}
 
 	r := mux.NewRouter()
-	s.setupRoutes(r, configHandler)
+	s.setupRoutes(r)
 	s.Server.Handler = r
 
 	return s
 }
 
-func (s *Server) setupRoutes(r *mux.Router, configHandler *ConfigHandler) {
+func (s *Server) setupRoutes(r *mux.Router) {
 	// Use the logging middleware for all routes
 	r.Use(s.loggingMiddleware)
 
@@ -96,7 +105,16 @@ func (s *Server) setupRoutes(r *mux.Router, configHandler *ConfigHandler) {
 	s.groupEventAPI.RegisterRoutes(groupEvents)
 
 	// Config routes
-	configHandler.RegisterRoutes(api)
+	s.configAPI.RegisterRoutes(api)
+
+	// Raft introspection routes
+	if s.raftNode != nil {
+		raftHandler := newRaftInfoHandler(s.raftNode, s.log)
+		r.HandleFunc("/raft/status", raftHandler.Status).Methods("GET")
+		r.HandleFunc("/raft/leader", raftHandler.Leader).Methods("GET")
+	} else {
+		s.log.Warn().Msg("RaftNode is not initialized, skipping Raft introspection routes")
+	}
 }
 
 // Start starts the HTTP server
@@ -169,4 +187,40 @@ func (s *Server) healthCheck(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte(`{"status":"ok"}`))
+}
+
+// --- Raft Info Handler ---
+
+type raftInfoHandler struct {
+	raft *consensus.RaftNode
+	log  *zerolog.Logger
+}
+
+func newRaftInfoHandler(raft *consensus.RaftNode, log *zerolog.Logger) *raftInfoHandler {
+	return &raftInfoHandler{raft: raft, log: log}
+}
+
+func (h *raftInfoHandler) Status(w http.ResponseWriter, r *http.Request) {
+	status := h.raft.GetStatus()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(status); err != nil {
+		h.log.Error().Err(err).Msg("Failed to encode raft status")
+		http.Error(w, "Failed to encode raft status", http.StatusInternalServerError)
+	}
+}
+
+func (h *raftInfoHandler) Leader(w http.ResponseWriter, r *http.Request) {
+	leaderID := h.raft.GetLeaderID()
+	leaderAddress := h.raft.GetLeaderAddress()
+
+	response := map[string]string{
+		"leader_id":      leaderID,
+		"leader_address": leaderAddress,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		h.log.Error().Err(err).Msg("Failed to encode raft leader information")
+		http.Error(w, "Failed to encode raft leader information", http.StatusInternalServerError)
+	}
 }

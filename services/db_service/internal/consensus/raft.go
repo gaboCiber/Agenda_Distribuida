@@ -1,7 +1,9 @@
 package consensus
 
 import (
+	"context"
 	"encoding/gob"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
@@ -11,13 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/agenda-distribuida/db-service/internal/database"
 	"github.com/agenda-distribuida/db-service/internal/logger"
+	"github.com/agenda-distribuida/db-service/internal/models"
+	"github.com/agenda-distribuida/db-service/internal/repository"
+	"github.com/google/uuid"
 )
 
 func init() {
 	// Register DBCommand type for gob encoding/decoding
 	gob.Register(DBCommand{})
+	gob.Register(RaftStatus{})
 }
 
 // RaftState define los posibles estados de un nodo Raft.
@@ -29,6 +34,29 @@ const (
 	Leader
 )
 
+func (s RaftState) String() string {
+	switch s {
+	case Follower:
+		return "Follower"
+	case Candidate:
+		return "Candidate"
+	case Leader:
+		return "Leader"
+	default:
+		return "Unknown"
+	}
+}
+
+// RaftStatus holds a snapshot of a Raft node's internal state for introspection.
+type RaftStatus struct {
+	ID          string `json:"id"`
+	State       string `json:"state"`
+	Term        int    `json:"term"`
+	CommitIndex int    `json:"commit_index"`
+	LastApplied int    `json:"last_applied"`
+	LeaderID    string `json:"leader_id"`
+}
+
 // Constantes de tiempo
 const (
 	electionTimeoutMin time.Duration = 3 * time.Second
@@ -36,16 +64,17 @@ const (
 	heartbeatInterval  time.Duration = time.Second // Heartbeat interval should be less than election timeout
 )
 
-// DBCommand representa un comando de base de datos a ser replicado por Raft.
+// DBCommand representa un comando de repositorio a ser replicado por Raft.
 type DBCommand struct {
-	Query string        // La consulta SQL a ejecutar.
-	Args  []interface{} // Los argumentos para la consulta.
+	Repository string // El nombre del repositorio a usar (ej. "UserRepository").
+	Method     string // El método a llamar (ej. "Create").
+	Payload    []byte // Los argumentos del método, serializados (ej. en JSON).
 }
 
 // LogEntry representa una entrada en el log de Raft.
 // Contendrá el comando a ejecutar por la máquina de estados.
 type LogEntry struct {
-	Term    int         // El término en el que se recibió la entrada.
+	Term    int       // El término en el que se recibió la entrada.
 	Command DBCommand // El comando para la máquina de estados (ej. una consulta SQL).
 }
 
@@ -75,7 +104,7 @@ type RaftNode struct {
 	applyChan   chan struct{}     // Canal para señalar que hay logs para aplicar.
 
 	// --- Base de datos de la aplicación ---
-	db *database.Database // La base de datos de la aplicación a la que se aplican los comandos.
+	repositories map[string]interface{} // Mapa de repositorios base para aplicar comandos.
 
 	// Canales para la comunicación interna y el manejo de temporizadores.
 	electionTimer     *time.Timer
@@ -84,10 +113,16 @@ type RaftNode struct {
 	winElectionChan   chan bool     // Canal para señalar que la elección se ha ganado.
 	heartbeatCount    int           // Contador para controlar la frecuencia de logs de heartbeat
 	voteCount         int32         // Contador atómico de votos recibidos en la elección actual
+
+	// --- Para la linealizabilidad ---
+	pendingCommands map[int]chan error // Mapa de índice de log a canal para notificar la aplicación del comando.
+
+	// --- Estado del líder (para consultas externas) ---
+	leaderID string // ID del líder actual (vacío si no se conoce o no es líder).
 }
 
 // NewRaftNode crea e inicializa un nuevo nodo Raft.
-func NewRaftNode(id string, peerAddress map[string]string, baseDir string, appDB *database.Database) *RaftNode {
+func NewRaftNode(id string, peerAddress map[string]string, baseDir string, repos map[string]interface{}) *RaftNode {
 	// Inicializar el logger
 	if err := logger.InitLogger("logs", id); err != nil {
 		log.Fatalf("No se pudo inicializar el logger: %v", err)
@@ -108,7 +143,8 @@ func NewRaftNode(id string, peerAddress map[string]string, baseDir string, appDB
 
 	// Si el log está vacío (primer arranque), añadir la entrada ficticia.
 	if len(logEntries) == 0 {
-		logEntries = []LogEntry{{Term: 0, Command: DBCommand{}}}}
+		logEntries = []LogEntry{{Term: 0, Command: DBCommand{}}}
+	}
 
 	rn := &RaftNode{
 		id:                id,
@@ -129,7 +165,9 @@ func NewRaftNode(id string, peerAddress map[string]string, baseDir string, appDB
 		electionTimeout:   randomElectionTimeout(),
 		electionTimer:     time.NewTimer(randomElectionTimeout()),
 		heartbeatCount:    0,
-		db:                appDB,
+		repositories:      repos,
+		pendingCommands:   make(map[int]chan error),
+		leaderID:          "", // Inicialmente no conocemos al líder.
 	}
 	return rn
 }
@@ -169,31 +207,38 @@ func (rn *RaftNode) Start() {
 
 // Propose es usado por el cliente para proponer un nuevo comando.
 // Solo el líder puede procesar esta solicitud.
-func (rn *RaftNode) Propose(command interface{}) (bool, int) {
+// Devuelve un canal que se cerrará cuando el comando sea aplicado a la máquina de estados.
+func (rn *RaftNode) Propose(command DBCommand) (<-chan error, error) {
 	rn.mu.Lock()
 	defer rn.mu.Unlock()
 
 	if rn.state != Leader {
-		return false, -1
+		return nil, fmt.Errorf("no es el líder")
 	}
 
 	entry := LogEntry{
 		Term:    rn.currentTerm,
-		Command: command.(DBCommand),
+		Command: command,
 	}
 	rn.log = append(rn.log, entry)
-	logger.InfoLogger.Printf("[Líder %s]: Comando propuesto. Nuevo tamaño del log: %d", rn.id, len(rn.log))
+	newLogIndex := len(rn.log) - 1
+	rn.persist()
+
+	// Crear un canal para notificar la aplicación del comando.
+	applyCh := make(chan error, 1)
+	rn.pendingCommands[newLogIndex] = applyCh
+
+	logger.InfoLogger.Printf("[Líder %s]: Comando propuesto en índice %d. Nuevo tamaño del log: %d", rn.id, newLogIndex, len(rn.log))
 
 	// No esperamos a que se replique, simplemente lo añadimos y el siguiente
 	// heartbeat se encargará de enviarlo.
-	return true, len(rn.log) - 1
+	return applyCh, nil
 }
 
 // applyLogs es una gorutina que aplica logs comprometidos a la máquina de estados.
 func (rn *RaftNode) applyLogs() {
 	for range rn.applyChan {
 		rn.mu.Lock()
-		// Copiamos los índices para no mantener el lock durante la aplicación.
 		lastApplied := rn.lastApplied
 		commitIndex := rn.commitIndex
 		entriesToApply := make([]LogEntry, 0)
@@ -204,23 +249,75 @@ func (rn *RaftNode) applyLogs() {
 		rn.mu.Unlock()
 
 		for i, entry := range entriesToApply {
-			// Solo aplicamos comandos si no son la entrada ficticia inicial (Command.Query vacío).
-			if entry.Command.Query != "" {
-				logger.InfoLogger.Printf("[Nodo %s] Aplicando log %d: Comando='%s' Args='%v'", rn.id, lastApplied+1+i, entry.Command.Query, entry.Command.Args)
-				_, err := rn.db.Exec(entry.Command.Query, entry.Command.Args...)
-				if err != nil {
-					logger.ErrorLogger.Printf("[Nodo %s] ERROR al aplicar log %d: %v", rn.id, lastApplied+1+i, err)
-					// TODO: Manejar errores de aplicación de comandos. En Raft, un error aquí es crítico.
-					// Podría significar que la máquina de estados está en un estado inconsistente.
-					// Por ahora, solo lo logueamos y continuamos, pero esto debe ser robusto.
+			idx := lastApplied + 1 + i
+			var applyErr error
+
+			// Dispatch the command to the correct repository and method.
+			if entry.Command.Repository != "" {
+				applyErr = rn.dispatchCommand(entry.Command)
+				if applyErr != nil {
+					logger.ErrorLogger.Printf("[Nodo %s] ERROR al aplicar log %d: %v", rn.id, idx, applyErr)
 				}
 			}
+
+			rn.mu.Lock()
+			if ch, ok := rn.pendingCommands[idx]; ok {
+				ch <- applyErr
+				close(ch)
+				delete(rn.pendingCommands, idx)
+			}
+			rn.mu.Unlock()
 		}
 
 		rn.mu.Lock()
-		// Actualizamos lastApplied solo después de aplicar los logs.
 		rn.lastApplied = commitIndex
 		rn.mu.Unlock()
+	}
+}
+
+// dispatchCommand routes a command to the appropriate repository.
+func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
+	repo, ok := rn.repositories[cmd.Repository]
+	if !ok {
+		return fmt.Errorf("repositorio desconocido: %s", cmd.Repository)
+	}
+
+	switch cmd.Repository {
+	case "UserRepository":
+		userRepo := repo.(repository.UserRepository)
+		switch cmd.Method {
+		case "Create":
+			var user models.User
+			if err := json.Unmarshal(cmd.Payload, &user); err != nil {
+				return fmt.Errorf("error al deserializar payload para UserRepository.Create: %w", err)
+			}
+			return userRepo.Create(context.Background(), &user)
+
+		case "Update":
+			type updatePayload struct {
+				ID        uuid.UUID                 `json:"id"`
+				UpdateReq *models.UpdateUserRequest `json:"update_req"`
+			}
+			var payload updatePayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para UserRepository.Update: %w", err)
+			}
+			_, err := userRepo.Update(context.Background(), payload.ID, payload.UpdateReq)
+			return err
+
+		case "Delete":
+			var userID uuid.UUID
+			if err := json.Unmarshal(cmd.Payload, &userID); err != nil {
+				return fmt.Errorf("error al deserializar payload para UserRepository.Delete: %w", err)
+			}
+			return userRepo.Delete(context.Background(), userID)
+
+		default:
+			return fmt.Errorf("método desconocido para UserRepository: %s", cmd.Method)
+		}
+	// TODO: Add cases for other repositories (EventRepository, etc.)
+	default:
+		return fmt.Errorf("lógica de despacho no implementada para el repositorio: %s", cmd.Repository)
 	}
 }
 
@@ -232,6 +329,23 @@ func (rn *RaftNode) run() {
 	for {
 		rn.mu.Lock()
 		state := rn.state
+		// Actualizar el leaderID si somos el líder
+		if state == Leader {
+			rn.leaderID = rn.id
+		} else {
+			// Si no somos el líder, intentamos descubrir quién es.
+			// Esto es una simplificación; en un Raft real, el líder se comunica a los seguidores.
+			// La lógica de AppendEntries ya actualiza el leaderID en el seguidor.
+			// Si no somos el líder y no hemos recibido un heartbeat, el leaderID podría estar desactualizado.
+			// Para una implementación más robusta, el líder debería enviar su ID en los heartbeats.
+			// Por ahora, si no somos el líder, y no hemos recibido un voto reciente, asumimos que no conocemos al líder.
+			if rn.state == Follower && rn.votedFor != "" {
+				// Si somos follower y hemos votado por alguien, asumimos que es el líder (simplificación)
+				rn.leaderID = rn.votedFor
+			} else {
+				rn.leaderID = ""
+			}
+		}
 		rn.mu.Unlock()
 
 		switch state {
@@ -525,11 +639,14 @@ func (rn *RaftNode) updateCommitIndex() {
 }
 
 // becomeFollower actualiza el estado del nodo a seguidor.
+
 // DEBE llamarse cuando el mutex ya está adquirido.
+
 func (rn *RaftNode) becomeFollower(term int) {
 	rn.state = Follower
 	rn.currentTerm = term
 	rn.votedFor = ""
+	rn.leaderID = "" // Resetear el líder conocido al convertirse en seguidor.
 	logger.InfoLogger.Printf("[Nodo %s]: Convertido a SEGUIDOR para el término %d", rn.id, term)
 	rn.resetElectionTimerUnlocked()
 }
@@ -538,16 +655,72 @@ func (rn *RaftNode) becomeFollower(term int) {
 func (rn *RaftNode) initializeLeaderState() {
 	// Inicializar nextIndex y matchIndex para cada peer
 	lastLogIndex := len(rn.log) - 1
+
 	for peerID := range rn.peerAddress {
 		if peerID == rn.id {
 			continue // No nos enviamos RPCs a nosotros mismos
 		}
+
 		rn.nextIndex[peerID] = lastLogIndex + 1
 		rn.matchIndex[peerID] = 0
+
 	}
+
 }
 
 // --- Estructuras para las llamadas RPC ---
+
+// IsLeader devuelve verdadero si el nodo actual es el líder.
+func (rn *RaftNode) IsLeader() bool {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.state == Leader
+}
+
+// GetLeaderID devuelve el ID del líder actual. Si el nodo actual es el líder, devuelve su propio ID.
+func (rn *RaftNode) GetLeaderID() string {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	return rn.leaderID
+}
+
+// GetLeaderAddress devuelve la dirección de red del líder actual.
+func (rn *RaftNode) GetLeaderAddress() string {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+	if rn.leaderID == "" {
+		return "" // No hay líder conocido.
+	}
+	return rn.peerAddress[rn.leaderID]
+
+}
+
+// GetStatus returns a snapshot of the node's current status.
+func (rn *RaftNode) GetStatus() RaftStatus {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	return RaftStatus{
+		ID:          rn.id,
+		State:       rn.state.String(),
+		Term:        rn.currentTerm,
+		CommitIndex: rn.commitIndex,
+		LastApplied: rn.lastApplied,
+		LeaderID:    rn.leaderID,
+	}
+}
+
+// Close cleans up resources used by the RaftNode
+func (rn *RaftNode) Close() error {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	// Close the stateDB if it's not nil
+	if rn.stateDB != nil {
+		return rn.stateDB.Close()
+	}
+	return nil
+}
 
 // RequestVoteArgs son los argumentos para la RPC RequestVote.
 type RequestVoteArgs struct {
@@ -574,6 +747,7 @@ type AppendEntriesArgs struct {
 }
 
 // AppendEntriesReply es la respuesta de la RPC AppendEntries.
+
 type AppendEntriesReply struct {
 	Term    int  // Término actual del seguidor, para que el líder se actualice si es necesario.
 	Success bool // Verdadero si el seguidor contiene una entrada que coincide con PrevLogIndex y PrevLogTerm.
