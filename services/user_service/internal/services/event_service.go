@@ -35,6 +35,11 @@ func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *Eve
 	}
 }
 
+// FindAndUpdateLeader busca y actualiza el líder del cluster Raft
+func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
+	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
+}
+
 func (s *EventService) HandleCreateUser(ctx context.Context, event models.Event) (models.EventResponse, error) {
 	s.logger.Info("Procesando evento de creación de usuario",
 		zap.String("event_id", event.ID),

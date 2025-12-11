@@ -19,6 +19,13 @@ type DBServiceClient struct {
 	logger  *zap.Logger
 }
 
+// RaftNodeInfo represents information about a Raft node
+type RaftNodeInfo struct {
+	ID     string `json:"id"`
+	State  string `json:"state"`
+	Leader string `json:"leader"`
+}
+
 // AgendaEvent represents a calendar/agenda event
 type AgendaEvent struct {
 	ID          string    `json:"id"`
@@ -40,6 +47,54 @@ func NewDBServiceClient(baseURL string, logger *zap.Logger) *DBServiceClient {
 		client:  &http.Client{},
 		logger:  logger,
 	}
+}
+
+// FindAndUpdateLeader busca el líder actualizando el baseURL
+func (c *DBServiceClient) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
+	for _, nodeURL := range raftNodes {
+		// Limpiar URL
+		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+		
+		// Hacer ping al nodo para ver si es líder
+		if c.isNodeLeader(ctx, nodeURL) {
+			c.baseURL = nodeURL
+			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
+			return nil
+		}
+	}
+	return fmt.Errorf("no se encontró ningún líder")
+}
+
+// isNodeLeader verifica si un nodo específico es el líder
+func (c *DBServiceClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
+	url := fmt.Sprintf("%s/api/v1/raft/status", nodeURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+
+	var nodeInfo RaftNodeInfo
+	if err := json.Unmarshal(body, &nodeInfo); err != nil {
+		return false
+	}
+
+	return nodeInfo.State == "Leader"
 }
 
 // User representa un usuario en el sistema
