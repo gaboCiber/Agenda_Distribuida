@@ -23,4 +23,5 @@ type EventRequest struct {
 	StartTime   time.Time `json:"start_time" validate:"required"`
 	EndTime     time.Time `json:"end_time" validate:"required"`
 	UserID      uuid.UUID `json:"user_id" validate:"required"`
+	UpdatedAt   time.Time `json:"updated_at,omitempty"`
 }

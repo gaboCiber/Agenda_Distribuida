@@ -30,7 +30,7 @@ type GroupEventRepository interface {
 	AddEventStatus(ctx context.Context, status *models.GroupEventStatus) error
 	AddEventStatusWithTx(ctx context.Context, tx *sql.Tx, status *models.GroupEventStatus) error
 	BatchCreateEventStatus(ctx context.Context, tx *sql.Tx, statuses []*models.GroupEventStatus) error
-	UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus) error
+	UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus, updatedAt time.Time) error
 	UpdateEventStatuses(ctx context.Context, tx *sql.Tx, statuses []*models.GroupEventStatus) error
 	GetEventStatus(ctx context.Context, eventID, userID uuid.UUID) (*models.GroupEventStatus, error)
 	GetEventStatuses(ctx context.Context, eventID uuid.UUID) ([]*models.GroupEventStatus, error)
@@ -71,12 +71,13 @@ func NewGroupEventRepository(db *sql.DB, log zerolog.Logger) GroupEventRepositor
 
 // AddGroupEvent adds an event to a group
 func (r *groupEventRepository) AddGroupEvent(ctx context.Context, groupEvent *models.GroupEvent) error {
-	if groupEvent.ID == uuid.Nil {
-		groupEvent.ID = uuid.New()
-	}
-	if groupEvent.AddedAt.IsZero() {
-		groupEvent.AddedAt = time.Now().UTC()
-	}
+	// ID and AddedAt should be set by the handler to ensure consistency across nodes
+	// if groupEvent.ID == uuid.Nil {
+	// 	groupEvent.ID = uuid.New()
+	// }
+	// if groupEvent.AddedAt.IsZero() {
+	// 	groupEvent.AddedAt = time.Now().UTC()
+	// }
 
 	// Check if the event is already in the group
 	var count int
@@ -131,12 +132,13 @@ func (r *groupEventRepository) AddGroupEvent(ctx context.Context, groupEvent *mo
 
 // AddGroupEventWithTx adds an event to a group within a transaction
 func (r *groupEventRepository) AddGroupEventWithTx(ctx context.Context, tx *sql.Tx, groupEvent *models.GroupEvent) error {
-	if groupEvent.ID == uuid.Nil {
-		groupEvent.ID = uuid.New()
-	}
-	if groupEvent.AddedAt.IsZero() {
-		groupEvent.AddedAt = time.Now().UTC()
-	}
+	// ID and AddedAt should be set by the handler to ensure consistency across nodes
+	// if groupEvent.ID == uuid.Nil {
+	// 	groupEvent.ID = uuid.New()
+	// }
+	// if groupEvent.AddedAt.IsZero() {
+	// 	groupEvent.AddedAt = time.Now().UTC()
+	// }
 
 	// Convert boolean to int for SQLite (0 or 1)
 	isHierarchicalInt := 0
@@ -343,15 +345,16 @@ func (r *groupEventRepository) RemoveEventFromAllGroups(ctx context.Context, eve
 
 // AddEventStatus adds a new event status record
 func (r *groupEventRepository) AddEventStatus(ctx context.Context, status *models.GroupEventStatus) error {
-	if status.ID == uuid.Nil {
-		status.ID = uuid.New()
-	}
+	// ID and timestamps should be set by the handler to ensure consistency across nodes
+	// if status.ID == uuid.Nil {
+	// 	status.ID = uuid.New()
+	// }
 
-	now := time.Now().UTC()
-	if status.CreatedAt.IsZero() {
-		status.CreatedAt = now
-	}
-	status.UpdatedAt = now
+	// now := time.Now().UTC()
+	// if status.CreatedAt.IsZero() {
+	// 	status.CreatedAt = now
+	// }
+	// status.UpdatedAt = now
 
 	_, err := r.db.ExecContext(
 		ctx,
@@ -379,15 +382,16 @@ func (r *groupEventRepository) AddEventStatus(ctx context.Context, status *model
 
 // AddEventStatusWithTx adds a new event status record within a transaction
 func (r *groupEventRepository) AddEventStatusWithTx(ctx context.Context, tx *sql.Tx, status *models.GroupEventStatus) error {
-	if status.ID == uuid.Nil {
-		status.ID = uuid.New()
-	}
+	// ID and timestamps should be set by the handler to ensure consistency across nodes
+	// if status.ID == uuid.Nil {
+	// 	status.ID = uuid.New()
+	// }
 
-	now := time.Now().UTC()
-	if status.CreatedAt.IsZero() {
-		status.CreatedAt = now
-	}
-	status.UpdatedAt = now
+	// now := time.Now().UTC()
+	// if status.CreatedAt.IsZero() {
+	// 	status.CreatedAt = now
+	// }
+	// status.UpdatedAt = now
 
 	_, err := tx.ExecContext(
 		ctx,
@@ -414,12 +418,12 @@ func (r *groupEventRepository) AddEventStatusWithTx(ctx context.Context, tx *sql
 }
 
 // UpdateEventStatus updates the status of an event for a user
-func (r *groupEventRepository) UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus) error {
+func (r *groupEventRepository) UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus, updatedAt time.Time) error {
 	if !status.IsValid() {
 		return ErrInvalidEventStatus
 	}
 
-	now := time.Now().UTC()
+	// Timestamp is provided by handler to ensure consistency across nodes
 
 	result, err := r.db.ExecContext(
 		ctx,
@@ -427,8 +431,8 @@ func (r *groupEventRepository) UpdateEventStatus(ctx context.Context, eventID, u
 		SET status = $1, updated_at = $2, responded_at = $3
 		WHERE event_id = $4 AND user_id = $5`,
 		status,
-		now,
-		now,
+		updatedAt, // Use timestamp from handler
+		updatedAt, // Use updatedAt as responded_at if status changed
 		eventID,
 		userID,
 	)
@@ -522,14 +526,17 @@ func (r *groupEventRepository) BatchCreateEventStatus(ctx context.Context, tx *s
 	}
 	defer stmt.Close()
 
-	now := time.Now().UTC()
+	// Data should be set by the handler to ensure consistency across nodes
+	// now := time.Now().UTC()
 
 	for _, status := range statuses {
+		// All data should be set by the handler to ensure consistency across nodes
 		if status.ID == uuid.Nil {
-			status.ID = uuid.New()
+			return fmt.Errorf("status ID cannot be nil - must be set by handler")
 		}
-		status.CreatedAt = now
-		status.UpdatedAt = now
+		if status.CreatedAt.IsZero() || status.UpdatedAt.IsZero() {
+			return fmt.Errorf("status timestamps cannot be zero - must be set by handler")
+		}
 
 		_, err := stmt.ExecContext(
 			ctx,
@@ -584,14 +591,19 @@ func (r *groupEventRepository) UpdateEventStatuses(ctx context.Context, tx *sql.
 	}
 	defer stmt.Close()
 
-	now := time.Now().UTC()
+	// Timestamps should be set by the handler to ensure consistency across nodes
+	// now := time.Now().UTC()
 
 	for _, status := range statuses {
-		status.UpdatedAt = now
+		// All timestamps should be set by the handler to ensure consistency across nodes
+		if status.UpdatedAt.IsZero() {
+			return fmt.Errorf("status UpdatedAt cannot be zero - must be set by handler")
+		}
 		var respondedAt *time.Time
 
 		if status.Status != models.EventStatusPending && status.RespondedAt == nil {
-			respondedAt = &now
+			// Set RespondedAt to UpdatedAt when status changes from pending
+			respondedAt = &status.UpdatedAt
 			status.RespondedAt = respondedAt
 		} else {
 			respondedAt = status.RespondedAt
@@ -602,8 +614,8 @@ func (r *groupEventRepository) UpdateEventStatuses(ctx context.Context, tx *sql.
 			status.Status,
 			status.Status,
 			status.RespondedAt,
-			now,
-			now,
+			status.UpdatedAt,
+			status.UpdatedAt,
 			status.EventID,
 			status.UserID,
 		)
@@ -675,13 +687,14 @@ func (r *groupEventRepository) GetEventStatuses(ctx context.Context, eventID uui
 
 // CreateInvitation creates a new group invitation
 func (r *groupEventRepository) CreateInvitation(ctx context.Context, invitation *models.GroupInvitation) error {
-	if invitation.ID == uuid.Nil {
-		invitation.ID = uuid.New()
-	}
+	// ID and timestamp should be set by the handler to ensure consistency across nodes
+	// if invitation.ID == uuid.Nil {
+	// 	invitation.ID = uuid.New()
+	// }
 
-	if invitation.CreatedAt.IsZero() {
-		invitation.CreatedAt = time.Now().UTC()
-	}
+	// if invitation.CreatedAt.IsZero() {
+	// 	invitation.CreatedAt = time.Now().UTC()
+	// }
 
 	if invitation.Status == "" {
 		invitation.Status = string(models.EventStatusPending)
@@ -748,7 +761,9 @@ func (r *groupEventRepository) GetInvitationByID(ctx context.Context, id uuid.UU
 func (r *groupEventRepository) UpdateInvitation(ctx context.Context, id uuid.UUID, status string) error {
 	var respondedAt interface{}
 	if status != string(models.EventStatusPending) {
-		respondedAt = time.Now().UTC()
+		// TODO: This timestamp should be passed from handler
+		// For now, we'll use a placeholder that should be replaced
+		respondedAt = nil // Handler should provide this timestamp
 	}
 
 	result, err := r.db.ExecContext(

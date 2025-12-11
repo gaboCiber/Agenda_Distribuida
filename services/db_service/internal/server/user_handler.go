@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -53,12 +54,15 @@ func (h *UserHandler) CreateUser(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create user
+	now := time.Now()
 	user := &models.User{
 		ID:             uuid.New(),
 		Username:       req.Username,
 		Email:          req.Email,
 		HashedPassword: string(hashedPassword), // Guardamos el hash, no la contraseña en texto plano
 		IsActive:       true,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	}
 
 	if err := h.repo.Create(r.Context(), user); err != nil {
@@ -144,17 +148,64 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := h.repo.Update(r.Context(), id, &req)
+	// Get current user to check if email exists and for field updates
+	currentUser, err := h.repo.GetByID(r.Context(), id)
+	if err != nil {
+		h.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to get current user")
+		if errors.Is(err, repository.ErrUserNotFound) {
+			http.Error(w, `{"status":"error","message":"User not found"}`, http.StatusNotFound)
+		} else {
+			http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
+		}
+		return
+	}
+
+	// Prepare user object with updates
+	updatedUser := *currentUser // Copy current user
+
+	// Update fields if they are provided in the request
+	if req.Username != nil {
+		updatedUser.Username = *req.Username
+	}
+
+	if req.Email != nil && *req.Email != currentUser.Email {
+		// Check if email already exists for another user
+		existingUser, err := h.repo.GetByEmail(r.Context(), *req.Email)
+		if err != nil && !errors.Is(err, repository.ErrUserNotFound) {
+			h.log.Error().Err(err).Str("email", *req.Email).Msg("Failed to check email existence")
+			http.Error(w, `{"status":"error","message":"Failed to check email"}`, http.StatusInternalServerError)
+			return
+		}
+		if existingUser != nil {
+			http.Error(w, `{"status":"error","message":"Email already in use"}`, http.StatusConflict)
+			return
+		}
+		updatedUser.Email = *req.Email
+	}
+
+	if req.Password != nil {
+		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*req.Password), bcrypt.DefaultCost)
+		if err != nil {
+			h.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to hash password")
+			http.Error(w, `{"status":"error","message":"Failed to process password"}`, http.StatusInternalServerError)
+			return
+		}
+		updatedUser.HashedPassword = string(hashedPassword)
+	}
+
+	if req.IsActive != nil {
+		updatedUser.IsActive = *req.IsActive
+	}
+
+	// Set updated timestamp to ensure consistency across nodes
+	now := time.Now()
+	updatedUser.UpdatedAt = now
+
+	// Update the user
+	err = h.repo.Update(r.Context(), id, &updatedUser)
 	if err != nil {
 		h.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to update user")
-		switch {
-		case errors.Is(err, repository.ErrUserNotFound):
-			http.Error(w, `{"status":"error","message":"User not found"}`, http.StatusNotFound)
-		case errors.Is(err, repository.ErrEmailAlreadyExists):
-			http.Error(w, `{"status":"error","message":"Email already in use"}`, http.StatusConflict)
-		default:
-			http.Error(w, `{"status":"error","message":"Failed to update user"}`, http.StatusInternalServerError)
-		}
+		http.Error(w, `{"status":"error","message":"Failed to update user"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -162,12 +213,12 @@ func (h *UserHandler) UpdateUser(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"status": "success",
 		"user": models.UserResponse{
-			ID:        user.ID,
-			Username:  user.Username,
-			Email:     user.Email,
-			IsActive:  user.IsActive,
-			CreatedAt: user.CreatedAt,
-			UpdatedAt: user.UpdatedAt,
+			ID:        updatedUser.ID,
+			Username:  updatedUser.Username,
+			Email:     updatedUser.Email,
+			IsActive:  updatedUser.IsActive,
+			CreatedAt: updatedUser.CreatedAt,
+			UpdatedAt: updatedUser.UpdatedAt,
 		},
 	})
 }

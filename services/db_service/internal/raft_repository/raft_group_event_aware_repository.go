@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/consensus"
 	"github.com/agenda-distribuida/db-service/internal/models"
@@ -61,9 +62,29 @@ func (r *RaftGroupEventRepository) AddGroupEvent(ctx context.Context, groupEvent
 	return <-applyCh
 }
 
-// AddGroupEventWithTx - delegates to base repository (transaction-specific)
+// AddGroupEventWithTx proposes a group event addition command to the Raft cluster.
 func (r *RaftGroupEventRepository) AddGroupEventWithTx(ctx context.Context, tx *sql.Tx, groupEvent *models.GroupEvent) error {
-	return r.baseRepo.AddGroupEventWithTx(ctx, tx, groupEvent)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	payload, err := json.Marshal(groupEvent)
+	if err != nil {
+		return fmt.Errorf("error al serializar evento de grupo: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "AddGroupEventWithTx",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
 // RemoveGroupEvent proposes a group event removal command to the Raft cluster.
@@ -204,32 +225,80 @@ func (r *RaftGroupEventRepository) AddEventStatus(ctx context.Context, status *m
 	return <-applyCh
 }
 
-// AddEventStatusWithTx - delegates to base repository (transaction-specific)
+// AddEventStatusWithTx proposes an event status addition command to the Raft cluster.
 func (r *RaftGroupEventRepository) AddEventStatusWithTx(ctx context.Context, tx *sql.Tx, status *models.GroupEventStatus) error {
-	return r.baseRepo.AddEventStatusWithTx(ctx, tx, status)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	payload, err := json.Marshal(status)
+	if err != nil {
+		return fmt.Errorf("error al serializar estado de evento: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "AddEventStatusWithTx",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
-// BatchCreateEventStatus - delegates to base repository (transaction-specific)
+// BatchCreateEventStatus proposes a batch event status creation command to the Raft cluster.
 func (r *RaftGroupEventRepository) BatchCreateEventStatus(ctx context.Context, tx *sql.Tx, statuses []*models.GroupEventStatus) error {
-	return r.baseRepo.BatchCreateEventStatus(ctx, tx, statuses)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	type batchCreatePayload struct {
+		Statuses []*models.GroupEventStatus `json:"statuses"`
+	}
+
+	payload, err := json.Marshal(batchCreatePayload{
+		Statuses: statuses,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar payload de creación batch de estados de evento: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "BatchCreateEventStatus",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
 // UpdateEventStatus proposes an event status update command to the Raft cluster.
-func (r *RaftGroupEventRepository) UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus) error {
+func (r *RaftGroupEventRepository) UpdateEventStatus(ctx context.Context, eventID, userID uuid.UUID, status models.EventStatus, updatedAt time.Time) error {
 	if !r.raftNode.IsLeader() {
 		return ErrNotLeader
 	}
 
 	type updateEventStatusPayload struct {
-		EventID uuid.UUID          `json:"event_id"`
-		UserID  uuid.UUID          `json:"user_id"`
-		Status  models.EventStatus `json:"status"`
+		EventID  uuid.UUID          `json:"event_id"`
+		UserID   uuid.UUID          `json:"user_id"`
+		Status   models.EventStatus `json:"status"`
+		UpdatedAt time.Time         `json:"updated_at"`
 	}
 
 	payload, err := json.Marshal(updateEventStatusPayload{
-		EventID: eventID,
-		UserID:  userID,
-		Status:  status,
+		EventID:  eventID,
+		UserID:   userID,
+		Status:   status,
+		UpdatedAt: updatedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("error al serializar payload de actualización de estado de evento: %w", err)
@@ -249,9 +318,35 @@ func (r *RaftGroupEventRepository) UpdateEventStatus(ctx context.Context, eventI
 	return <-applyCh
 }
 
-// UpdateEventStatuses - delegates to base repository (transaction-specific)
+// UpdateEventStatuses proposes a batch event status update command to the Raft cluster.
 func (r *RaftGroupEventRepository) UpdateEventStatuses(ctx context.Context, tx *sql.Tx, statuses []*models.GroupEventStatus) error {
-	return r.baseRepo.UpdateEventStatuses(ctx, tx, statuses)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	type updateEventStatusesPayload struct {
+		Statuses []*models.GroupEventStatus `json:"statuses"`
+	}
+
+	payload, err := json.Marshal(updateEventStatusesPayload{
+		Statuses: statuses,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar payload de actualización batch de estados de evento: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "UpdateEventStatuses",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
 // GetEventStatus delegates the read operation to the base repository.
@@ -284,19 +379,101 @@ func (r *RaftGroupEventRepository) HasAllMembersAccepted(ctx context.Context, gr
 	return r.baseRepo.HasAllMembersAccepted(ctx, groupID, eventID)
 }
 
-// DeleteEventStatus - delegates to base repository (transaction-specific)
+// DeleteEventStatus proposes an event status deletion command to the Raft cluster.
 func (r *RaftGroupEventRepository) DeleteEventStatus(ctx context.Context, tx *sql.Tx, eventID, userID uuid.UUID) error {
-	return r.baseRepo.DeleteEventStatus(ctx, tx, eventID, userID)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	type deleteEventStatusPayload struct {
+		EventID uuid.UUID `json:"event_id"`
+		UserID  uuid.UUID `json:"user_id"`
+	}
+
+	payload, err := json.Marshal(deleteEventStatusPayload{
+		EventID: eventID,
+		UserID:  userID,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar payload de eliminación de estado de evento: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "DeleteEventStatus",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
-// DeleteEventStatuses - delegates to base repository (transaction-specific)
+// DeleteEventStatuses proposes an event statuses deletion command to the Raft cluster.
 func (r *RaftGroupEventRepository) DeleteEventStatuses(ctx context.Context, tx *sql.Tx, eventID uuid.UUID) error {
-	return r.baseRepo.DeleteEventStatuses(ctx, tx, eventID)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	type deleteEventStatusesPayload struct {
+		EventID uuid.UUID `json:"event_id"`
+	}
+
+	payload, err := json.Marshal(deleteEventStatusesPayload{
+		EventID: eventID,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar payload de eliminación de estados de evento: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "DeleteEventStatuses",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
-// DeleteEventStatusesByGroup - delegates to base repository (transaction-specific)
+// DeleteEventStatusesByGroup proposes an event statuses deletion by group command to the Raft cluster.
 func (r *RaftGroupEventRepository) DeleteEventStatusesByGroup(ctx context.Context, tx *sql.Tx, groupID, eventID uuid.UUID) error {
-	return r.baseRepo.DeleteEventStatusesByGroup(ctx, tx, groupID, eventID)
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	type deleteEventStatusesByGroupPayload struct {
+		GroupID uuid.UUID `json:"group_id"`
+		EventID uuid.UUID `json:"event_id"`
+	}
+
+	payload, err := json.Marshal(deleteEventStatusesByGroupPayload{
+		GroupID: groupID,
+		EventID: eventID,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar payload de eliminación de estados de evento por grupo: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupEventRepository",
+		Method:     "DeleteEventStatusesByGroup",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
 // Invitation Management

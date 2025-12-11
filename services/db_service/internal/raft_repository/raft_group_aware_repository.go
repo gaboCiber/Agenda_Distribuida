@@ -35,9 +35,6 @@ func (r *RaftGroupRepository) Create(ctx context.Context, group *models.Group) e
 		return ErrNotLeader
 	}
 
-	// Generate ID on the leader to ensure consistency across all nodes
-	groupID := uuid.New()
-
 	// Create payload with leader-generated ID
 	type createPayload struct {
 		ID             uuid.UUID  `json:"id"`
@@ -49,7 +46,7 @@ func (r *RaftGroupRepository) Create(ctx context.Context, group *models.Group) e
 	}
 
 	payload, err := json.Marshal(createPayload{
-		ID:             groupID,
+		ID:             group.ID,
 		Name:           group.Name,
 		Description:    *group.Description,
 		CreatedBy:      group.CreatedBy,
@@ -70,9 +67,6 @@ func (r *RaftGroupRepository) Create(ctx context.Context, group *models.Group) e
 	if err != nil {
 		return err
 	}
-
-	// Update the group object with the leader-generated ID
-	group.ID = groupID
 
 	return <-applyCh
 }
@@ -143,9 +137,6 @@ func (r *RaftGroupRepository) AddMember(ctx context.Context, member *models.Grou
 		return ErrNotLeader
 	}
 
-	// Generate ID on the leader to ensure consistency across all nodes
-	memberID := uuid.New()
-
 	// Create payload with leader-generated ID
 	type addMemberPayload struct {
 		ID          uuid.UUID `json:"id"`
@@ -157,7 +148,7 @@ func (r *RaftGroupRepository) AddMember(ctx context.Context, member *models.Grou
 	}
 
 	payload, err := json.Marshal(addMemberPayload{
-		ID:          memberID,
+		ID:          member.ID,
 		GroupID:     member.GroupID,
 		UserID:      member.UserID,
 		Role:        member.Role,
@@ -179,15 +170,55 @@ func (r *RaftGroupRepository) AddMember(ctx context.Context, member *models.Grou
 		return err
 	}
 
-	// Update the member object with the leader-generated ID
-	member.ID = memberID
-
 	return <-applyCh
 }
 
 // GetMembers delegates the read operation to the base repository.
 func (r *RaftGroupRepository) GetMembers(ctx context.Context, groupID uuid.UUID) ([]*models.GroupMember, error) {
 	return r.baseRepo.GetMembers(ctx, groupID)
+}
+
+// AddMemberBasic adds a member to a group using the basic method (no hierarchical logic)
+func (r *RaftGroupRepository) AddMemberBasic(ctx context.Context, member *models.GroupMember) error {
+	// For Raft, we still need to propose this command to maintain consistency
+	if !r.raftNode.IsLeader() {
+		return ErrNotLeader
+	}
+
+	// Use the same payload structure as AddMember for consistency
+	type addMemberPayload struct {
+		ID          uuid.UUID `json:"id"`
+		GroupID     uuid.UUID `json:"group_id"`
+		UserID      uuid.UUID `json:"user_id"`
+		Role        string    `json:"role"`
+		IsInherited bool      `json:"is_inherited"`
+		JoinedAt    time.Time `json:"joined_at"`
+	}
+
+	payload, err := json.Marshal(addMemberPayload{
+		ID:          member.ID,
+		GroupID:     member.GroupID,
+		UserID:      member.UserID,
+		Role:        member.Role,
+		IsInherited: member.IsInherited,
+		JoinedAt:    member.JoinedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("error al serializar miembro de grupo: %w", err)
+	}
+
+	cmd := consensus.DBCommand{
+		Repository: "GroupRepository",
+		Method:     "AddMemberBasic",
+		Payload:    payload,
+	}
+
+	applyCh, err := r.raftNode.Propose(cmd)
+	if err != nil {
+		return err
+	}
+
+	return <-applyCh
 }
 
 // UpdateGroupMember proposes a member update command to the Raft cluster.
@@ -273,4 +304,9 @@ func (r *RaftGroupRepository) IsAdmin(ctx context.Context, groupID, userID uuid.
 // GetGroupMember delegates the read operation to the base repository.
 func (r *RaftGroupRepository) GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*models.GroupMember, error) {
 	return r.baseRepo.GetGroupMember(ctx, groupID, userID)
+}
+
+// GetChildGroups delegates to read operation to the base repository.
+func (r *RaftGroupRepository) GetChildGroups(ctx context.Context, parentGroupID uuid.UUID) ([]uuid.UUID, error) {
+	return r.baseRepo.GetChildGroups(ctx, parentGroupID)
 }

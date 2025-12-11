@@ -46,11 +46,6 @@ func (r *eventRepository) Create(ctx context.Context, event *models.Event) error
 		INSERT INTO events (id, title, description, start_time, end_time, user_id, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 	`
-
-	now := time.Now()
-	event.CreatedAt = now
-	event.UpdatedAt = now
-
 	_, err := r.db.ExecContext(ctx, query,
 		event.ID,
 		event.Title,
@@ -126,14 +121,13 @@ func (r *eventRepository) Update(ctx context.Context, id uuid.UUID, updateReq *m
 	`
 
 	var event models.Event
-	now := time.Now()
 	err = r.db.QueryRowContext(ctx, query,
 		updateReq.Title,
 		updateReq.Description,
 		updateReq.StartTime,
 		updateReq.EndTime,
 		updateReq.UserID,
-		now,
+		updateReq.UpdatedAt,
 		id,
 	).Scan(
 		&event.ID,
@@ -273,11 +267,11 @@ func (r *eventRepository) CheckTimeConflict(ctx context.Context, userID uuid.UUI
 		r.log.Error().
 			Err(err).
 			Str("user_id", userID.String()).
-			Str("exclude_event_id", func() string { 
-				if excludeEventID != nil { 
-					return excludeEventID.String() 
-				} 
-				return "none" 
+			Str("exclude_event_id", func() string {
+				if excludeEventID != nil {
+					return excludeEventID.String()
+				}
+				return "none"
 			}()).
 			Str("query", query).
 			Msg("Failed to check time conflict")

@@ -4,9 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"time"
-
-	"golang.org/x/crypto/bcrypt"
 
 	"github.com/agenda-distribuida/db-service/internal/models"
 	"github.com/google/uuid"
@@ -25,7 +22,7 @@ type UserRepository interface {
 	Create(ctx context.Context, user *models.User) error
 	GetByID(ctx context.Context, id uuid.UUID) (*models.User, error)
 	GetByEmail(ctx context.Context, email string) (*models.User, error)
-	Update(ctx context.Context, id uuid.UUID, updateReq *models.UpdateUserRequest) (*models.User, error)
+	Update(ctx context.Context, id uuid.UUID, user *models.User) error
 	Delete(ctx context.Context, id uuid.UUID) error
 	List(ctx context.Context, offset, limit int) ([]*models.User, error)
 }
@@ -49,10 +46,6 @@ func (r *userRepository) Create(ctx context.Context, user *models.User) error {
 		INSERT INTO users (id, username, email, hashed_password, is_active, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7)
 	`
-
-	now := time.Now()
-	user.CreatedAt = now
-	user.UpdatedAt = now
 
 	_, err := r.db.ExecContext(
 		ctx,
@@ -134,95 +127,15 @@ func (r *userRepository) GetByEmail(ctx context.Context, email string) (*models.
 	return &user, nil
 }
 
-// Update updates a user's information
-func (r *userRepository) Update(ctx context.Context, id uuid.UUID, updateReq *models.UpdateUserRequest) (*models.User, error) {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to begin transaction")
-		return nil, err
-	}
-
-	// Use a closure to handle transaction rollback in case of errors
-	defer func() {
-		if err != nil {
-			tx.Rollback()
-		}
-	}()
-
-	// Get the current user data
-	user, err := func() (*models.User, error) {
-		var user models.User
-		query := `
-			SELECT id, username, email, hashed_password, is_active, created_at, updated_at
-			FROM users
-			WHERE id = $1
-		`
-
-		err := tx.QueryRowContext(ctx, query, id).Scan(
-			&user.ID,
-			&user.Username,
-			&user.Email,
-			&user.HashedPassword,
-			&user.IsActive,
-			&user.CreatedAt,
-			&user.UpdatedAt,
-		)
-
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				return nil, ErrUserNotFound
-			}
-			r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to get user by ID")
-			return nil, err
-		}
-		return &user, nil
-	}()
-
-	if err != nil {
-		return nil, err
-	}
-
-	// Update fields if they are provided in the request
-	if updateReq.Username != nil {
-		user.Username = *updateReq.Username
-	}
-
-	if updateReq.Email != nil && *updateReq.Email != user.Email {
-		// Check if email already exists
-		exists, err := r.emailExists(ctx, tx, *updateReq.Email)
-		if err != nil {
-			r.log.Error().Err(err).Str("email", *updateReq.Email).Msg("Failed to check email existence")
-			return nil, err
-		}
-		if exists {
-			return nil, ErrEmailAlreadyExists
-		}
-		user.Email = *updateReq.Email
-	}
-
-	if updateReq.Password != nil {
-		hashedPassword, err := bcrypt.GenerateFromPassword([]byte(*updateReq.Password), bcrypt.DefaultCost)
-		if err != nil {
-			r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to hash password")
-			return nil, err
-		}
-		user.HashedPassword = string(hashedPassword)
-	}
-
-	if updateReq.IsActive != nil {
-		user.IsActive = *updateReq.IsActive
-	}
-
-	user.UpdatedAt = time.Now()
-
-	// Update the user in the database
+// Update updates a user in the database (basic update only, validation logic should be in handler)
+func (r *userRepository) Update(ctx context.Context, id uuid.UUID, user *models.User) error {
 	query := `
 		UPDATE users
 		SET username = $1, email = $2, hashed_password = $3, is_active = $4, updated_at = $5
 		WHERE id = $6
 	`
 
-	_, err = tx.ExecContext(
+	_, err := r.db.ExecContext(
 		ctx,
 		query,
 		user.Username,
@@ -235,15 +148,10 @@ func (r *userRepository) Update(ctx context.Context, id uuid.UUID, updateReq *mo
 
 	if err != nil {
 		r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to update user")
-		return nil, err
+		return err
 	}
 
-	if err = tx.Commit(); err != nil {
-		r.log.Error().Err(err).Str("user_id", id.String()).Msg("Failed to commit transaction")
-		return nil, err
-	}
-
-	return user, nil
+	return nil
 }
 
 // Delete removes a user from the database

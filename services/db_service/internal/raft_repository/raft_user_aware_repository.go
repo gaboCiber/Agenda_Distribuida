@@ -75,21 +75,20 @@ func (r *RaftUserRepository) Create(ctx context.Context, user *models.User) erro
 }
 
 // Update proposes a user update command to the Raft cluster.
-// It waits for the command to be applied and then fetches the updated user.
-func (r *RaftUserRepository) Update(ctx context.Context, id uuid.UUID, updateReq *models.UpdateUserRequest) (*models.User, error) {
+func (r *RaftUserRepository) Update(ctx context.Context, id uuid.UUID, user *models.User) error {
 	if !r.raftNode.IsLeader() {
-		return nil, ErrNotLeader
+		return ErrNotLeader
 	}
 
-	// We need to pass both the ID and the update request in the payload.
+	// We need to pass both the ID and the user object in the payload.
 	type updatePayload struct {
-		ID        uuid.UUID                 `json:"id"`
-		UpdateReq *models.UpdateUserRequest `json:"update_req"`
+		ID   uuid.UUID    `json:"id"`
+		User *models.User `json:"user"`
 	}
 
-	payload, err := json.Marshal(updatePayload{ID: id, UpdateReq: updateReq})
+	payload, err := json.Marshal(updatePayload{ID: id, User: user})
 	if err != nil {
-		return nil, fmt.Errorf("error al serializar payload de actualización: %w", err)
+		return fmt.Errorf("error al serializar payload de actualización: %w", err)
 	}
 
 	cmd := consensus.DBCommand{
@@ -100,16 +99,11 @@ func (r *RaftUserRepository) Update(ctx context.Context, id uuid.UUID, updateReq
 
 	applyCh, err := r.raftNode.Propose(cmd)
 	if err != nil {
-		return nil, err
+		return err
 	}
 
 	// Wait for the command to be applied.
-	if applyErr := <-applyCh; applyErr != nil {
-		return nil, applyErr
-	}
-
-	// After successful application, fetch the updated user.
-	return r.baseRepo.GetByID(ctx, id)
+	return <-applyCh
 }
 
 // Delete proposes a user deletion command to the Raft cluster.

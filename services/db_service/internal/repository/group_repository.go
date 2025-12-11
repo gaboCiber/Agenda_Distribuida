@@ -20,12 +20,14 @@ type GroupRepository interface {
 	Delete(ctx context.Context, id uuid.UUID) error
 	ListByUser(ctx context.Context, userID uuid.UUID) ([]*models.GroupExtended, error)
 	AddMember(ctx context.Context, member *models.GroupMember) error
+	AddMemberBasic(ctx context.Context, member *models.GroupMember) error
 	GetMembers(ctx context.Context, groupID uuid.UUID) ([]*models.GroupMember, error)
 	UpdateGroupMember(ctx context.Context, groupID, userID uuid.UUID, role string) error
 	RemoveMember(ctx context.Context, groupID, userID uuid.UUID) error
 	IsMember(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	IsAdmin(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*models.GroupMember, error)
+	GetChildGroups(ctx context.Context, parentGroupID uuid.UUID) ([]uuid.UUID, error)
 }
 
 type groupRepository struct {
@@ -55,9 +57,9 @@ func (r *groupRepository) Create(ctx context.Context, group *models.Group) error
 		}
 	}()
 
-	// Generate new UUID for the group
-	group.CreatedAt = time.Now().UTC()
-	group.UpdatedAt = group.CreatedAt
+	// Timestamps should be set by the handler to ensure consistency across nodes
+	// group.CreatedAt = time.Now().UTC()
+	// group.UpdatedAt = group.CreatedAt
 
 	// Insert the group
 	_, err = tx.ExecContext(ctx, `
@@ -80,29 +82,6 @@ func (r *groupRepository) Create(ctx context.Context, group *models.Group) error
 			Str("group_id", group.ID.String()).
 			Msg("Failed to create group")
 		return fmt.Errorf("failed to create group: %w", err)
-	}
-
-	// Add creator as admin
-	memberID := uuid.New()
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO group_members (id, group_id, user_id, role, is_inherited, joined_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-	`,
-		memberID,
-		group.ID,
-		group.CreatedBy,
-		"admin",
-		false,
-		time.Now().UTC(),
-	)
-
-	if err != nil {
-		r.log.Error().
-			Err(err).
-			Str("group_id", group.ID.String()).
-			Str("user_id", group.CreatedBy.String()).
-			Msg("Failed to add creator as admin")
-		return fmt.Errorf("failed to add creator as admin: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -164,7 +143,7 @@ func (r *groupRepository) Update(ctx context.Context, group *models.Group) error
 		}
 	}()
 
-	group.UpdatedAt = time.Now().UTC()
+	//group.UpdatedAt = time.Now().UTC()
 
 	// Update the group
 	result, err := tx.ExecContext(ctx, `
@@ -444,16 +423,6 @@ func (r *groupRepository) AddMember(ctx context.Context, member *models.GroupMem
 		return fmt.Errorf("failed to check for existing group membership: %w", err)
 	}
 
-	// Generate new UUID for the member if not provided
-	if member.ID == uuid.Nil {
-		member.ID = uuid.New()
-	}
-
-	// Set joined at time if not provided
-	if member.JoinedAt.IsZero() {
-		member.JoinedAt = time.Now().UTC()
-	}
-
 	// Add the member
 	_, err = tx.ExecContext(ctx, `
 		INSERT INTO group_members (id, group_id, user_id, role, is_inherited, joined_at)
@@ -568,6 +537,56 @@ func (r *groupRepository) UpdateGroupMember(ctx context.Context, groupID, userID
 	if err != nil {
 		return fmt.Errorf("error updating group member: %w", err)
 	}
+
+	return nil
+}
+
+// AddMemberBasic adds a member to a group (basic insertion only, no hierarchical logic)
+func (r *groupRepository) AddMemberBasic(ctx context.Context, member *models.GroupMember) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		r.log.Error().Err(err).Msg("Failed to begin transaction")
+		return err
+	}
+
+	defer func() {
+		if err := tx.Rollback(); err != nil && !errors.Is(err, sql.ErrTxDone) {
+			r.log.Error().Err(err).Msg("Failed to rollback transaction")
+		}
+	}()
+
+	// Add the member
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO group_members (id, group_id, user_id, role, is_inherited, joined_at)
+		VALUES ($1, $2, $3, $4, $5, $6)
+	`,
+		member.ID,
+		member.GroupID,
+		member.UserID,
+		member.Role,
+		member.IsInherited,
+		member.JoinedAt,
+	)
+
+	if err != nil {
+		r.log.Error().
+			Err(err).
+			Str("group_id", member.GroupID.String()).
+			Str("user_id", member.UserID.String()).
+			Msg("Failed to add group member")
+		return fmt.Errorf("failed to add group member: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		r.log.Error().Err(err).Msg("Failed to commit transaction")
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	r.log.Info().
+		Str("group_id", member.GroupID.String()).
+		Str("user_id", member.UserID.String()).
+		Str("role", member.Role).
+		Msg("Group member added successfully")
 
 	return nil
 }
@@ -1091,4 +1110,45 @@ func (r *groupRepository) HasPendingInvitation(ctx context.Context, groupID, use
 	}
 
 	return count > 0, nil
+}
+
+// GetChildGroups returns all direct child groups of a parent group
+func (r *groupRepository) GetChildGroups(ctx context.Context, parentGroupID uuid.UUID) ([]uuid.UUID, error) {
+	query := `
+		SELECT id FROM groups 
+		WHERE parent_group_id = $1
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, parentGroupID)
+	if err != nil {
+		r.log.Error().
+			Err(err).
+			Str("parent_group_id", parentGroupID.String()).
+			Msg("Failed to get child groups")
+		return nil, fmt.Errorf("failed to get child groups: %w", err)
+	}
+	defer rows.Close()
+
+	var childGroups []uuid.UUID
+	for rows.Next() {
+		var childGroupID uuid.UUID
+		if err := rows.Scan(&childGroupID); err != nil {
+			r.log.Error().
+				Err(err).
+				Str("parent_group_id", parentGroupID.String()).
+				Msg("Failed to scan child group ID")
+			return nil, fmt.Errorf("failed to scan child group ID: %w", err)
+		}
+		childGroups = append(childGroups, childGroupID)
+	}
+
+	if err := rows.Err(); err != nil {
+		r.log.Error().
+			Err(err).
+			Str("parent_group_id", parentGroupID.String()).
+			Msg("Error iterating child groups")
+		return nil, fmt.Errorf("error iterating child groups: %w", err)
+	}
+
+	return childGroups, nil
 }

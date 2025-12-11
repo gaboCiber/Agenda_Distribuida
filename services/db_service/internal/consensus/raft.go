@@ -2,6 +2,7 @@ package consensus
 
 import (
 	"context"
+	"database/sql"
 	"encoding/gob"
 	"encoding/json"
 	"fmt"
@@ -295,15 +296,14 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 
 		case "Update":
 			type updatePayload struct {
-				ID        uuid.UUID                 `json:"id"`
-				UpdateReq *models.UpdateUserRequest `json:"update_req"`
+				ID   uuid.UUID    `json:"id"`
+				User *models.User `json:"user"`
 			}
 			var payload updatePayload
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para UserRepository.Update: %w", err)
 			}
-			_, err := userRepo.Update(context.Background(), payload.ID, payload.UpdateReq)
-			return err
+			return userRepo.Update(context.Background(), payload.ID, payload.User)
 
 		case "Delete":
 			var userID uuid.UUID
@@ -466,6 +466,32 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			}
 			return groupRepo.RemoveMember(context.Background(), payload.GroupID, payload.UserID)
 
+		case "AddMemberBasic":
+			// Handle the basic member addition (no hierarchical logic)
+			type addMemberPayload struct {
+				ID          uuid.UUID `json:"id"`
+				GroupID     uuid.UUID `json:"group_id"`
+				UserID      uuid.UUID `json:"user_id"`
+				Role        string    `json:"role"`
+				IsInherited bool      `json:"is_inherited"`
+				JoinedAt    time.Time `json:"joined_at"`
+			}
+			var payload addMemberPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupRepository.AddMemberBasic: %w", err)
+			}
+
+			// Create GroupMember object from payload
+			member := &models.GroupMember{
+				ID:          payload.ID,
+				GroupID:     payload.GroupID,
+				UserID:      payload.UserID,
+				Role:        payload.Role,
+				IsInherited: payload.IsInherited,
+				JoinedAt:    payload.JoinedAt,
+			}
+			return groupRepo.AddMemberBasic(context.Background(), member)
+
 		default:
 			return fmt.Errorf("método desconocido para GroupRepository: %s", cmd.Method)
 		}
@@ -524,15 +550,16 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 
 		case "UpdateEventStatus":
 			type updateEventStatusPayload struct {
-				EventID uuid.UUID          `json:"event_id"`
-				UserID  uuid.UUID          `json:"user_id"`
-				Status  models.EventStatus `json:"status"`
+				EventID   uuid.UUID          `json:"event_id"`
+				UserID    uuid.UUID          `json:"user_id"`
+				Status    models.EventStatus `json:"status"`
+				UpdatedAt time.Time          `json:"updated_at"`
 			}
 			var payload updateEventStatusPayload
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateEventStatus: %w", err)
 			}
-			return groupEventRepo.UpdateEventStatus(context.Background(), payload.EventID, payload.UserID, payload.Status)
+			return groupEventRepo.UpdateEventStatus(context.Background(), payload.EventID, payload.UserID, payload.Status, payload.UpdatedAt)
 
 		case "CreateInvitation":
 			var invitation models.GroupInvitation
@@ -565,6 +592,205 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteUserInvitation: %w", err)
 			}
 			return groupEventRepo.DeleteUserInvitation(context.Background(), invitationID)
+
+		case "DeleteEventStatus":
+			type deleteEventStatusPayload struct {
+				EventID uuid.UUID `json:"event_id"`
+				UserID  uuid.UUID `json:"user_id"`
+			}
+			var payload deleteEventStatusPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatus: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para DeleteEventStatus: %w", err)
+			}
+			
+			// Execute the delete operation
+			if err := groupEventRepo.DeleteEventStatus(context.Background(), tx, payload.EventID, payload.UserID); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al eliminar estado de evento: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para DeleteEventStatus: %w", err)
+			}
+			return nil
+
+		case "DeleteEventStatuses":
+			type deleteEventStatusesPayload struct {
+				EventID uuid.UUID `json:"event_id"`
+			}
+			var payload deleteEventStatusesPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatuses: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para DeleteEventStatuses: %w", err)
+			}
+			
+			// Execute the delete operation
+			if err := groupEventRepo.DeleteEventStatuses(context.Background(), tx, payload.EventID); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al eliminar estados de evento: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para DeleteEventStatuses: %w", err)
+			}
+			return nil
+
+		case "DeleteEventStatusesByGroup":
+			type deleteEventStatusesByGroupPayload struct {
+				GroupID uuid.UUID `json:"group_id"`
+				EventID uuid.UUID `json:"event_id"`
+			}
+			var payload deleteEventStatusesByGroupPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatusesByGroup: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para DeleteEventStatusesByGroup: %w", err)
+			}
+			
+			// Execute the delete operation
+			if err := groupEventRepo.DeleteEventStatusesByGroup(context.Background(), tx, payload.GroupID, payload.EventID); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al eliminar estados de evento por grupo: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para DeleteEventStatusesByGroup: %w", err)
+			}
+			return nil
+
+		case "AddEventStatusWithTx":
+			var status models.GroupEventStatus
+			if err := json.Unmarshal(cmd.Payload, &status); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddEventStatusWithTx: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para AddEventStatusWithTx: %w", err)
+			}
+			
+			// Execute the add operation
+			if err := groupEventRepo.AddEventStatusWithTx(context.Background(), tx, &status); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al agregar estado de evento: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para AddEventStatusWithTx: %w", err)
+			}
+			return nil
+
+		case "BatchCreateEventStatus":
+			type batchCreatePayload struct {
+				Statuses []*models.GroupEventStatus `json:"statuses"`
+			}
+			var payload batchCreatePayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.BatchCreateEventStatus: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para BatchCreateEventStatus: %w", err)
+			}
+			
+			// Execute the batch create operation
+			if err := groupEventRepo.BatchCreateEventStatus(context.Background(), tx, payload.Statuses); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al crear batch de estados de evento: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para BatchCreateEventStatus: %w", err)
+			}
+			return nil
+
+		case "UpdateEventStatuses":
+			type updateEventStatusesPayload struct {
+				Statuses []*models.GroupEventStatus `json:"statuses"`
+			}
+			var payload updateEventStatusesPayload
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateEventStatuses: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para UpdateEventStatuses: %w", err)
+			}
+			
+			// Execute the update operation
+			if err := groupEventRepo.UpdateEventStatuses(context.Background(), tx, payload.Statuses); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al actualizar batch de estados de evento: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para UpdateEventStatuses: %w", err)
+			}
+			return nil
+
+		case "AddGroupEventWithTx":
+			var groupEvent models.GroupEvent
+			if err := json.Unmarshal(cmd.Payload, &groupEvent); err != nil {
+				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddGroupEventWithTx: %w", err)
+			}
+			
+			// Begin a transaction for this operation
+			tx, err := groupEventRepo.(interface {
+				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
+			}).BeginTx(context.Background(), nil)
+			if err != nil {
+				return fmt.Errorf("error al iniciar transacción para AddGroupEventWithTx: %w", err)
+			}
+			
+			// Execute the add operation
+			if err := groupEventRepo.AddGroupEventWithTx(context.Background(), tx, &groupEvent); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("error al agregar evento de grupo: %w", err)
+			}
+			
+			// Commit the transaction
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("error al confirmar transacción para AddGroupEventWithTx: %w", err)
+			}
+			return nil
 
 		default:
 			return fmt.Errorf("método desconocido para GroupEventRepository: %s", cmd.Method)

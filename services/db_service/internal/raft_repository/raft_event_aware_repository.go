@@ -35,9 +35,6 @@ func (r *RaftEventRepository) Create(ctx context.Context, event *models.Event) e
 		return ErrNotLeader
 	}
 
-	// Generate ID on the leader to ensure consistency across all nodes
-	eventID := uuid.New()
-
 	// Create payload with leader-generated ID
 	type createPayload struct {
 		ID          uuid.UUID `json:"id"`
@@ -49,7 +46,7 @@ func (r *RaftEventRepository) Create(ctx context.Context, event *models.Event) e
 	}
 
 	payload, err := json.Marshal(createPayload{
-		ID:          eventID,
+		ID:          event.ID,
 		Title:       event.Title,
 		Description: event.Description,
 		StartTime:   event.StartTime,
@@ -70,9 +67,6 @@ func (r *RaftEventRepository) Create(ctx context.Context, event *models.Event) e
 	if err != nil {
 		return err
 	}
-
-	// Update the event object with the leader-generated ID
-	event.ID = eventID
 
 	return <-applyCh
 }
