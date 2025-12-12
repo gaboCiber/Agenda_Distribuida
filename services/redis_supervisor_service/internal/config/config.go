@@ -18,7 +18,7 @@ type Config struct {
 
 // LoadConfig loads configuration from environment variables.
 func LoadConfig() (*Config, error) {
-	redisAddrsStr := getEnv("REDIS_ADDRS", "localhost:6379,localhost:6380")
+	redisAddrsStr := getEnv("REDIS_ADDRS", "localhost:6379,localhost:6380,localhost:6381")
 	redisAddrs := strings.Split(redisAddrsStr, ",")
 
 	dbServiceURL := getEnv("DB_SERVICE_URL", "http://localhost:8000")
