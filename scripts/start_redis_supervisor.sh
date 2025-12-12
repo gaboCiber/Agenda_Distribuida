@@ -8,7 +8,7 @@ REDIS_A_NAME="agenda-redis-a-service"
 REDIS_B_NAME="agenda-redis-b-service"
 REDIS_C_NAME="agenda-redis-c-service"
 REDIS_SUPERVISOR_NAME="agenda-redis-supervisor-service"
-DB_SERVICE_NAME="agenda-db-service" # Assuming DB service is running or will be started separately
+DB_SERVICE_NAME="agenda-db-raft-node-1" # Assuming DB service is running or will be started separately
 
 echo "--- Stopping and removing existing containers ---"
 docker stop $REDIS_SUPERVISOR_NAME > /dev/null 2>&1 || true
@@ -53,6 +53,7 @@ docker run -d --name $REDIS_SUPERVISOR_NAME --network $NETWORK_NAME \
   -v /var/run/docker.sock:/var/run/docker.sock \
   -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379" \
   -e DB_SERVICE_URL="http://${DB_SERVICE_NAME}:8001" \
+  -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
   -e PING_INTERVAL=1 \
   -e FAILURE_THRESHOLD=3 \
   agenda-redis-supervisor

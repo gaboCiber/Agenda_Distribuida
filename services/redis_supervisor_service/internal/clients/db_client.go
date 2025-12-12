@@ -2,19 +2,87 @@ package clients
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
+	"strings"
+	"time"
 )
+
+// RaftNodeInfo represents information about a Raft node
+type RaftNodeInfo struct {
+	ID     string `json:"id"`
+	State  string `json:"state"`
+	Leader string `json:"leader"`
+}
 
 // DBClient handles communication with the DB service
 type DBClient struct {
-	baseURL string
+	baseURL       string
+	client        *http.Client
+	raftNodesURLs []string
 }
 
 // NewDBClient creates a new DB client
-func NewDBClient(baseURL string) *DBClient {
-	return &DBClient{baseURL: baseURL}
+func NewDBClient(baseURL string, raftNodesURLs []string) *DBClient {
+	return &DBClient{
+		baseURL:       strings.TrimSuffix(baseURL, "/"),
+		client:        &http.Client{Timeout: 5 * time.Second},
+		raftNodesURLs: raftNodesURLs,
+	}
+}
+
+// FindAndUpdateLeader busca el líder actualizando el baseURL
+func (c *DBClient) FindAndUpdateLeader(ctx context.Context) error {
+	// Intentar con las URLs de nodos Raft proporcionadas
+	for _, nodeURL := range c.raftNodesURLs {
+		// Limpiar URL
+		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+		
+		// Hacer ping al nodo para ver si es líder
+		if c.isNodeLeader(ctx, nodeURL) {
+			c.baseURL = nodeURL
+			log.Printf("Líder Raft actualizado: %s", nodeURL)
+			return nil
+		}
+	}
+	
+	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", c.raftNodesURLs)
+}
+
+// isNodeLeader verifica si un nodo específico es el líder
+func (c *DBClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
+	url := fmt.Sprintf("%s/raft/status", nodeURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+
+	var nodeInfo RaftNodeInfo
+	if err := json.Unmarshal(body, &nodeInfo); err != nil {
+		return false
+	}
+
+	return nodeInfo.State == "Leader"
 }
 
 // configPayload defines the structure for our JSON requests.
@@ -25,8 +93,21 @@ type configPayload struct {
 
 // GetConfig retrieves a specific configuration value by name.
 func (c *DBClient) GetConfig(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Primero encontrar al líder actual
+	if err := c.FindAndUpdateLeader(ctx); err != nil {
+		return "", fmt.Errorf("failed to find Raft leader: %w", err)
+	}
+
 	url := fmt.Sprintf("%s/api/v1/configs/%s", c.baseURL, name)
-	resp, err := http.Get(url)
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create GET request: %w", err)
+	}
+
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("failed to send GET request to db service: %w", err)
 	}
@@ -51,6 +132,14 @@ func (c *DBClient) GetConfig(name string) (string, error) {
 // It performs an "upsert" logic: it tries to get the value first, then updates it (PUT)
 // if it exists, or creates it (POST) if it doesn't.
 func (c *DBClient) SetRedisPrimary(primaryAddr string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Primero encontrar al líder actual
+	if err := c.FindAndUpdateLeader(ctx); err != nil {
+		return fmt.Errorf("failed to find Raft leader: %w", err)
+	}
+
 	configName := "redis_primary"
 
 	// Check if the config already exists
@@ -76,13 +165,13 @@ func (c *DBClient) SetRedisPrimary(primaryAddr string) error {
 		url = fmt.Sprintf("%s/api/v1/configs", c.baseURL)
 	}
 
-	req, err := http.NewRequest(method, url, bytes.NewBuffer(jsonPayload))
+	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(jsonPayload))
 	if err != nil {
 		return fmt.Errorf("failed to create %s request: %w", method, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := c.client.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed to send %s request to db service: %w", method, err)
 	}

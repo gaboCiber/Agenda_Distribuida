@@ -10,9 +10,10 @@ import (
 
 // Config holds the application's configuration.
 type Config struct {
-	RedisAddrs       []string
-	DBServiceURL     string
-	PingInterval     time.Duration
+	RedisAddrs      []string
+	DBServiceURL    string
+	RaftNodesURLs   []string
+	PingInterval    time.Duration
 	FailureThreshold int
 }
 
@@ -22,6 +23,16 @@ func LoadConfig() (*Config, error) {
 	redisAddrs := strings.Split(redisAddrsStr, ",")
 
 	dbServiceURL := getEnv("DB_SERVICE_URL", "http://localhost:8000")
+
+	// Obtener URLs de nodos Raft
+	raftNodesStr := getEnv("RAFT_NODES_URLS", "http://localhost:8001,http://localhost:8002,http://localhost:8003")
+	var raftNodesURLs []string
+	if raftNodesStr != "" {
+		raftNodesURLs = strings.Split(raftNodesStr, ",")
+		for i, url := range raftNodesURLs {
+			raftNodesURLs[i] = strings.TrimSpace(url)
+		}
+	}
 
 	pingIntervalSeconds, err := strconv.Atoi(getEnv("PING_INTERVAL", "1"))
 	if err != nil {
@@ -36,6 +47,7 @@ func LoadConfig() (*Config, error) {
 	return &Config{
 		RedisAddrs:       redisAddrs,
 		DBServiceURL:     dbServiceURL,
+		RaftNodesURLs:    raftNodesURLs,
 		PingInterval:     time.Duration(pingIntervalSeconds) * time.Second,
 		FailureThreshold: failureThreshold,
 	}, nil

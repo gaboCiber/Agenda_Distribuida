@@ -262,15 +262,14 @@ func (s *Supervisor) resurrectNodeAsReplica(nodeToResurrectAddr, currentPrimaryA
 
 // clusterHealthCheckLoop periodically checks if the cluster has a primary and promotes one if needed
 func (s *Supervisor) clusterHealthCheckLoop() {
-	ticker := time.NewTicker(10 * time.Second) // Check every 10 seconds
+	ticker := time.NewTicker(15 * time.Second) // Check every 15 seconds (less frequent)
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Check if current primary is still healthy
+		// Check if current primary is still healthy and is actually primary
 		if s.currentPrimary != "" {
 			err := s.redisClient.Ping(s.currentPrimary)
 			if err == nil {
-				// Primary is healthy, check if it's actually still the primary
 				role, err := s.redisClient.GetRole(s.currentPrimary)
 				if err == nil && role == "master" {
 					continue // Everything is fine
@@ -278,7 +277,7 @@ func (s *Supervisor) clusterHealthCheckLoop() {
 			}
 		}
 
-		// Current primary is not healthy or not primary, find a new one
+		// Only attempt recovery if we haven't recently done a failover
 		log.Println("Cluster health check: No healthy primary found, attempting recovery...")
 		s.attemptClusterRecovery()
 	}

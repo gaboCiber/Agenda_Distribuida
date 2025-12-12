@@ -21,10 +21,11 @@ func main() {
 	log.Println("Starting Redis Supervisor Service...")
 	log.Printf("Monitoring Redis nodes: %v", cfg.RedisAddrs)
 	log.Printf("DB Service URL: %s", cfg.DBServiceURL)
+	log.Printf("Raft Nodes URLs: %v", cfg.RaftNodesURLs)
 
 	// Initialize clients
 	redisClient := clients.NewRedisClient()
-	dbClient := clients.NewDBClient(cfg.DBServiceURL)
+	dbClient := clients.NewDBClient(cfg.DBServiceURL, cfg.RaftNodesURLs)
 	dockerClient, err := clients.NewDockerClient()
 	if err != nil {
 		log.Fatalf("Failed to create Docker client: %v", err)
