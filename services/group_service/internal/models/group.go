@@ -44,6 +44,8 @@ type GroupMember struct {
 	ID          uuid.UUID `json:"id"`
 	GroupID     uuid.UUID `json:"group_id"`
 	UserID      uuid.UUID `json:"user_id"`
+	UserName    string    `json:"user_name"`
+	UserEmail   string    `json:"user_email"`
 	Role        string    `json:"role"` // "admin" or "member"
 	IsInherited bool      `json:"is_inherited"`
 	JoinedAt    time.Time `json:"joined_at"`
@@ -61,6 +63,7 @@ type GroupInvitation struct {
 	ID          uuid.UUID `json:"id"`
 	GroupID     uuid.UUID `json:"group_id"`
 	UserID      uuid.UUID `json:"user_id"`
+	UserEmail   string    `json:"email"`
 	InvitedBy   uuid.UUID `json:"invited_by"`
 	Status      string    `json:"status"` // "pending", "accepted", "rejected", "cancelled"
 	CreatedAt   time.Time `json:"created_at"`
@@ -81,7 +84,7 @@ const (
 // InvitationRequest represents the data needed to create a new group invitation
 type InvitationRequest struct {
 	GroupID   uuid.UUID `json:"group_id"`
-	UserID    uuid.UUID `json:"user_id"`
+	UserEmail string    `json:"email"`
 	InvitedBy uuid.UUID `json:"invited_by"`
 	Message   string    `json:"message,omitempty"`
 }

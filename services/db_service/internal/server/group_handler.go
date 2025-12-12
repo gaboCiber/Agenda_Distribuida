@@ -39,9 +39,9 @@ func (h *GroupHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/users/{userId}", h.ListUserGroups).Methods("GET")
 	router.HandleFunc("/{groupId}/members", h.AddGroupMemberWithHierarchy).Methods("POST")
 	router.HandleFunc("/{groupId}/members", h.ListGroupMembers).Methods("GET")
-	router.HandleFunc("/{groupId}/members/{userId}", h.GetGroupMember).Methods("GET")
-	router.HandleFunc("/{groupId}/members/{userId}", h.UpdateGroupMember).Methods("PUT")
-	router.HandleFunc("/{groupId}/members/{userId}", h.RemoveGroupMember).Methods("DELETE")
+	router.HandleFunc("/{groupId}/members", h.GetGroupMember).Methods("GET")
+	router.HandleFunc("/{groupId}/members", h.UpdateGroupMember).Methods("PUT")
+	router.HandleFunc("/{groupId}/members", h.RemoveGroupMember).Methods("DELETE")
 }
 
 // CreateGroup handles the creation of a new group
@@ -299,8 +299,8 @@ func (h *GroupHandler) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		UserID string `json:"userId"`
-		Role   string `json:"role"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -309,9 +309,10 @@ func (h *GroupHandler) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := uuid.Parse(req.UserID)
+	// Get user by email
+	user, err := h.repo.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid user ID format"}`, http.StatusBadRequest)
+		http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -324,7 +325,7 @@ func (h *GroupHandler) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 	member := &models.GroupMember{
 		ID:          uuid.New(),
 		GroupID:     groupID,
-		UserID:      userID,
+		UserID:      user.ID,
 		Role:        req.Role,
 		IsInherited: false,
 		JoinedAt:    time.Now(),
@@ -333,7 +334,7 @@ func (h *GroupHandler) AddGroupMember(w http.ResponseWriter, r *http.Request) {
 	if err := h.repo.AddMember(r.Context(), member); err != nil {
 		h.log.Error().Err(err).
 			Str("group_id", groupID.String()).
-			Str("user_id", userID.String()).
+			Str("user_id", user.ID.String()).
 			Msg("Failed to add group member")
 
 		if errors.Is(err, repository.ErrGroupNotFound) {
@@ -513,15 +514,9 @@ func (h *GroupHandler) UpdateGroupMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userID, err := uuid.Parse(vars["userId"])
-	if err != nil {
-		h.log.Error().Err(err).Msg("Invalid user ID")
-		http.Error(w, `{"status":"error","message":"Invalid user ID"}`, http.StatusBadRequest)
-		return
-	}
-
 	var req struct {
-		Role string `json:"role" validate:"required,oneof=admin member"`
+		Email string `json:"email" validate:"required,email"`
+		Role  string `json:"role" validate:"required,oneof=admin member"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -537,12 +532,20 @@ func (h *GroupHandler) UpdateGroupMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get user by email
+	user, err := h.repo.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		h.log.Error().Err(err).Str("email", req.Email).Msg("Failed to get user by email")
+		http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
+		return
+	}
+
 	// Update the group member
-	err = h.repo.UpdateGroupMember(r.Context(), groupID, userID, req.Role)
+	err = h.repo.UpdateGroupMember(r.Context(), groupID, user.ID, req.Role)
 	if err != nil {
 		h.log.Error().Err(err).
 			Str("group_id", groupID.String()).
-			Str("user_id", userID.String()).
+			Str("user_id", user.ID.String()).
 			Msg("Failed to update group member")
 		http.Error(w, `{"status":"error","message":"Failed to update group member"}`, http.StatusInternalServerError)
 		return
@@ -566,19 +569,37 @@ func (h *GroupHandler) GetGroupMember(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	userID, err := uuid.Parse(vars["userId"])
-	if err != nil {
-		h.log.Error().Err(err).Msg("Invalid user ID")
-		http.Error(w, `{"status":"error","message":"Invalid user ID"}`, http.StatusBadRequest)
+	var req struct {
+		Email string `json:"email" validate:"required,email"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.log.Error().Err(err).Msg("Failed to decode request body")
+		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
 		return
 	}
 
-	member, err := h.repo.GetGroupMember(r.Context(), groupID, userID)
+	// Validate request
+	if err := validate.Struct(req); err != nil {
+		h.log.Error().Err(err).Msg("Validation failed")
+		http.Error(w, `{"status":"error","message":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Get user by email
+	user, err := h.repo.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		h.log.Error().Err(err).Str("email", req.Email).Msg("Failed to get user by email")
+		http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
+		return
+	}
+
+	member, err := h.repo.GetGroupMember(r.Context(), groupID, user.ID)
 	if err != nil {
 		if err.Error() == "member not found in group" {
 			h.log.Debug().
 				Str("group_id", groupID.String()).
-				Str("user_id", userID.String()).
+				Str("user_id", user.ID.String()).
 				Msg("Member not found in group")
 			http.Error(w, `{"status":"error","message":"Member not found in group"}`, http.StatusNotFound)
 			return
@@ -587,7 +608,7 @@ func (h *GroupHandler) GetGroupMember(w http.ResponseWriter, r *http.Request) {
 		h.log.Error().
 			Err(err).
 			Str("group_id", groupID.String()).
-			Str("user_id", userID.String()).
+			Str("user_id", user.ID.String()).
 			Msg("Failed to get group member")
 		http.Error(w, `{"status":"error","message":"Failed to get group member"}`, http.StatusInternalServerError)
 		return
@@ -610,19 +631,38 @@ func (h *GroupHandler) RemoveGroupMember(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	userID, err := uuid.Parse(vars["userId"])
+	var req struct {
+		Email string `json:"email" validate:"required,email"`
+	}
+
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		h.log.Error().Err(err).Msg("Failed to decode request body")
+		http.Error(w, `{"status":"error","message":"Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Validate request
+	if err := validate.Struct(req); err != nil {
+		h.log.Error().Err(err).Msg("Validation failed")
+		http.Error(w, `{"status":"error","message":"`+err.Error()+`"}`, http.StatusBadRequest)
+		return
+	}
+
+	// Get user by email
+	user, err := h.repo.GetUserByEmail(r.Context(), req.Email)
 	if err != nil {
-		http.Error(w, `{"status":"error","message":"Invalid user ID format"}`, http.StatusBadRequest)
+		h.log.Error().Err(err).Str("email", req.Email).Msg("Failed to get user by email")
+		http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
 		return
 	}
 
 	// Check if the user is trying to remove themselves
 	// You might want to add additional authorization checks here
 
-	if err := h.repo.RemoveMember(r.Context(), groupID, userID); err != nil {
+	if err := h.repo.RemoveMember(r.Context(), groupID, user.ID); err != nil {
 		h.log.Error().Err(err).
 			Str("group_id", groupID.String()).
-			Str("user_id", userID.String()).
+			Str("user_id", user.ID.String()).
 			Msg("Failed to remove group member")
 
 		if errors.Is(err, repository.ErrGroupNotFound) {

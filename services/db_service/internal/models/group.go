@@ -44,6 +44,8 @@ type GroupMember struct {
 	ID          uuid.UUID `json:"id" db:"id"`
 	GroupID     uuid.UUID `json:"group_id" db:"group_id"`
 	UserID      uuid.UUID `json:"user_id" db:"user_id"`
+	UserName    string    `json:"user_name" db:"user_name"`
+	UserEmail   string    `json:"user_email" db:"user_email"`
 	Role        string    `json:"role" db:"role"` // "admin" or "member"
 	IsInherited bool      `json:"is_inherited" db:"is_inherited"`
 	JoinedAt    time.Time `json:"joined_at" db:"joined_at"`
@@ -72,6 +74,7 @@ type GroupInvitation struct {
 	ID          uuid.UUID  `json:"id" db:"id"`
 	GroupID     uuid.UUID  `json:"group_id" db:"group_id"`
 	UserID      uuid.UUID  `json:"user_id" db:"user_id"`
+	UserEmail   string     `json:"email" db:"email"`
 	InvitedBy   uuid.UUID  `json:"invited_by" db:"invited_by"`
 	Status      string     `json:"status" db:"status"` // "pending", "accepted", "rejected"
 	CreatedAt   time.Time  `json:"created_at" db:"created_at"`

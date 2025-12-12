@@ -62,39 +62,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
 #                       Group Members                               #
 #####################################################################
 
-# 5. **Add Member to Group**
-# Adds USER2_UUID as a member to the group (added by USER1_UUID)
-docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
-    "id": "660e8400-e29b-41d4-a716-446655440100",
-    "type": "group.member.add",
-    "data": {
-        "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'",
-        "role": "member",
-        "added_by": "'$USER1_UUID'"
-    },
-    "metadata": {
-        "reply_to": "group_events_response"
-    }
-}'
-
-# 6. **Add Admin to Group**
-# Adds USER2_UUID as an admin to the group (added by USER1_UUID)
-docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
-    "id": "660e8400-e29b-41d4-a716-446655440101",
-    "type": "group.member.add",
-    "data": {
-        "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'",
-        "role": "admin",
-        "added_by": "'$USER1_UUID'"
-    },
-    "metadata": {
-        "reply_to": "group_events_response"
-    }
-}'
-
-# 7. **List Group Members**
+# 5. **List Group Members**
 # Lists all members of the group
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "660e8400-e29b-41d4-a716-446655440102",
@@ -107,27 +75,14 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
-# 7. **Get Group Member**
-docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
-    "id": "660e8400-e29b-41d4-a716-446655440102",
-    "type": "group.member.get",
-    "data": {
-        "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'"
-    },
-    "metadata": {
-        "reply_to": "group_events_response"
-    }
-}'
-
-# 8. **Remove Member from Group**
+# 6. **Remove Member from Group**
 # Removes USER2_UUID from the group (removed by USER1_UUID)
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "660e8400-e29b-41d4-a716-446655440103",
     "type": "group.member.remove",
     "data": {
         "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'",
+        "email": "'$USER2_UUID'",
         "removed_by": "'$USER1_UUID'"
     },
     "metadata": {
@@ -135,11 +90,13 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     }
 }'
 
-# 9. **Update Member Role**
+# 7. **Update Member Role**
 docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "id": "660e8400-e29b-41d4-a716-446655440103",
     "type": "group.member.update",
     "data": {
+        "group_id": "'$GROUP_UUID'",
+        "email": "'$USER2_UUID'",
         "role": "admin",
     },
     "metadata": {
@@ -170,7 +127,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "type": "group.invite.create",
     "data": {
         "group_id": "'$GROUP_UUID'",
-        "user_id": "'$USER2_UUID'",
+        "email": "'$USER2_UUID'",
         "invited_by": "'$USER1_UUID'"
     },
     "metadata": {

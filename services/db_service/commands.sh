@@ -137,11 +137,38 @@ curl -X POST http://localhost:8000/api/v1/groups \
 curl -X POST http://localhost:8000/api/v1/groups/{groupID}/members \
   -H "Content-Type: application/json" \
   -d '{
-    "userId": "550e8400-e29b-41d4-a716-446655440001",
+    "email": "test2@example.com",
     "role": "admin"
   }'
 
-# 3. List Group Members
+# 3. Update a Member
+
+# Update a member's role using email
+# Replace {groupId} with actual group ID
+curl -X PUT http://localhost:8000/api/v1/groups/{groupId}/members \
+  -H "Content-Type: application/json" \
+  -d '{
+    "email": "user@example.com",
+    "role": "admin"
+  }'
+
+# 4. Remove a Member
+curl -X DELETE http://localhost:8000/api/v1/groups/{groupId}/members \
+  -H "Content-Type: application/json" \
+  -d '{ 
+    "email": "test2@example.com" 
+  }'
+
+# 5. Get a Member
+
+curl -X GET http://localhost:8000/api/v1/groups/{groupId}/members/
+  -H "Content-Type: application/json"
+  -d '{
+    "email": "user@example.com"
+  }'
+
+
+# 5. List Group Members
 
 # List all members of the group
 # Replace {groupId} with the actual group ID
@@ -171,10 +198,10 @@ curl http://localhost:8000/api/v1/groups/{subgroupId}/members
 
 # Remove a member from the group
 # Replace {groupId} and {userId} with actual values
-curl -X DELETE http://localhost:8000/api/v1/groups/{groupId}/members/{userId}
+curl -X DELETE http://localhost:8000/api/v1/groups/{groupId}/members/{email}
 
 # 6. Get a Member
-curl -X GET http://localhost:8000/api/v1/groups/{groupId}/members/{userId}
+curl -X GET http://localhost:8000/api/v1/groups/{groupId}/members/{email}
 
 # 7. List User's Groups
 
@@ -262,7 +289,7 @@ curl -X POST http://localhost:8000/api/v1/invitations \
   -H "Content-Type: application/json" \
   -d '{
     "group_id": "<groupId>",
-    "user_id": "<userId>",
+    "email": "<email>",
     "invited_by": "<inviterId>"
   }'
 
@@ -277,7 +304,11 @@ curl -X PUT http://localhost:8000/api/v1/invitations/<invitationId> \
   }'
 
 # Get all invitations for a user
-curl -X GET "http://localhost:8000/api/v1/users/<userId>/invitations"
+curl -X GET "http://localhost:8000/api/v1/users/<user_id>/invitations"
+  -H "Content-Type: application/json" \
+  -d '{
+    "status": "pending"
+  }'
 
 
 #####################################################################

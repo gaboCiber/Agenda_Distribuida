@@ -49,6 +49,9 @@ type GroupEventRepository interface {
 	GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitation, error)
 	DeleteUserInvitations(ctx context.Context, userID uuid.UUID) error
 	DeleteUserInvitation(ctx context.Context, invitationID uuid.UUID) error
+
+	// User Management
+	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
 }
 
 type groupEventRepository struct {
@@ -729,14 +732,16 @@ func (r *groupEventRepository) GetInvitationByID(ctx context.Context, id uuid.UU
 
 	err := r.db.QueryRowContext(
 		ctx,
-		`SELECT id, group_id, user_id, invited_by, status, created_at, responded_at
-		FROM group_invitations 
-		WHERE id = $1`,
+		`SELECT gi.id, gi.group_id, gi.user_id, u.email, gi.invited_by, gi.status, gi.created_at, gi.responded_at
+		FROM group_invitations gi
+		JOIN users u ON u.id = gi.user_id
+		WHERE gi.id = $1`,
 		id,
 	).Scan(
 		&invitation.ID,
 		&invitation.GroupID,
 		&invitation.UserID,
+		&invitation.UserEmail,
 		&invitation.InvitedBy,
 		&invitation.Status,
 		&invitation.CreatedAt,
@@ -1166,4 +1171,34 @@ func (r *groupEventRepository) DeleteUserInvitation(ctx context.Context, invitat
 	}
 
 	return nil
+}
+
+// GetUserByEmail retrieves a user by their email
+func (r *groupEventRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	query := `
+		SELECT id, username, email, hashed_password, is_active, created_at, updated_at
+		FROM users
+		WHERE email = $1
+	`
+
+	var user models.User
+	err := r.db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.HashedPassword,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		r.log.Error().Err(err).Str("email", email).Msg("Failed to get user by email")
+		return nil, err
+	}
+
+	return &user, nil
 }
