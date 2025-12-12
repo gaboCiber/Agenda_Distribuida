@@ -26,6 +26,7 @@ type GroupRepository interface {
 	IsMember(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	IsAdmin(ctx context.Context, groupID, userID uuid.UUID) (bool, error)
 	GetGroupMember(ctx context.Context, groupID, userID uuid.UUID) (*models.GroupMember, error)
+	GetUserByEmail(ctx context.Context, email string) (*models.User, error)
 }
 
 type groupRepository struct {
@@ -688,10 +689,19 @@ func (r *groupRepository) GetMembers(ctx context.Context, groupID uuid.UUID) ([]
 // getDirectMembers returns only direct members of a group (no inherited members)
 func (r *groupRepository) getDirectMembers(ctx context.Context, groupID uuid.UUID) ([]*models.GroupMember, error) {
 	query := `
-		SELECT id, group_id, user_id, role, is_inherited, joined_at
-		FROM group_members 
-		WHERE group_id = $1
-		ORDER BY joined_at
+		SELECT 
+			gm.id as id, 
+			gm.group_id as group_id, 
+			gm.user_id as user_id, 
+			u.username as user_name, 
+			u.email as user_email, 
+			gm.role as role, 
+			gm.is_inherited as is_inherited, 
+			gm.joined_at as joined_at
+		FROM group_members gm
+		JOIN users u ON u.id = gm.user_id
+		WHERE gm.group_id = $1
+		ORDER BY gm.joined_at
 	`
 
 	rows, err := r.db.QueryContext(ctx, query, groupID)
@@ -711,6 +721,8 @@ func (r *groupRepository) getDirectMembers(ctx context.Context, groupID uuid.UUI
 			&member.ID,
 			&member.GroupID,
 			&member.UserID,
+			&member.UserName,
+			&member.UserEmail,
 			&member.Role,
 			&member.IsInherited,
 			&member.JoinedAt,
@@ -1092,4 +1104,34 @@ func (r *groupRepository) HasPendingInvitation(ctx context.Context, groupID, use
 	}
 
 	return count > 0, nil
+}
+
+// GetUserByEmail retrieves a user by their email
+func (r *groupRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	query := `
+		SELECT id, username, email, hashed_password, is_active, created_at, updated_at
+		FROM users
+		WHERE email = $1
+	`
+
+	var user models.User
+	err := r.db.QueryRowContext(ctx, query, email).Scan(
+		&user.ID,
+		&user.Username,
+		&user.Email,
+		&user.HashedPassword,
+		&user.IsActive,
+		&user.CreatedAt,
+		&user.UpdatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrUserNotFound
+		}
+		r.log.Error().Err(err).Str("email", email).Msg("Failed to get user by email")
+		return nil, err
+	}
+
+	return &user, nil
 }

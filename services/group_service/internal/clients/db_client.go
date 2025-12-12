@@ -224,13 +224,13 @@ func NewDBServiceClient(baseURL string, logger *zap.Logger) *DBServiceClient {
 // Group Members related methods
 
 // AddGroupMember adds a user to a group
-func (c *DBServiceClient) AddGroupMember(ctx context.Context, groupID, userID, role, addedBy string) (*models.GroupMember, error) {
+func (c *DBServiceClient) AddGroupMember(ctx context.Context, groupID, userEmail, role string) (*models.GroupMember, error) {
 	url := fmt.Sprintf("%s/api/v1/groups/%s/members", c.baseURL, groupID)
 
 	// The database service expects userId (camelCase) not user_id (snake_case)
 	request := map[string]interface{}{
-		"userId": userID, // Changed from user_id to userId
-		"role":   role,
+		"email": userEmail, // Changed from user_id to userId
+		"role":  role,
 	}
 
 	reqBody, err := json.Marshal(request)
@@ -243,7 +243,7 @@ func (c *DBServiceClient) AddGroupMember(ctx context.Context, groupID, userID, r
 		c.logger.Error("Error adding group member",
 			zap.Error(err),
 			zap.String("group_id", groupID),
-			zap.String("user_id", userID))
+			zap.String("user_email", userEmail))
 		return nil, fmt.Errorf("error adding group member: %w", err)
 	}
 
@@ -371,11 +371,12 @@ func (c *DBServiceClient) GetGroupMember(ctx context.Context, groupID, userID st
 }
 
 // UpdateGroupMember updates a group member's role
-func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userID, role string) error {
-	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
+func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userEmail, role string) error {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/members", c.baseURL, groupID)
 
 	request := map[string]interface{}{
-		"role": role,
+		"email": userEmail,
+		"role":  role,
 	}
 
 	reqBody, err := json.Marshal(request)
@@ -388,7 +389,7 @@ func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userID
 		c.logger.Error("Error removing group member",
 			zap.Error(err),
 			zap.String("group_id", groupID),
-			zap.String("user_id", userID))
+			zap.String("user_id", userEmail))
 		return fmt.Errorf("error removing group member: %w", err)
 	}
 
@@ -396,18 +397,24 @@ func (c *DBServiceClient) UpdateGroupMember(ctx context.Context, groupID, userID
 }
 
 // RemoveGroupMember removes a user from a group
-func (c *DBServiceClient) RemoveGroupMember(ctx context.Context, groupID, userID, removedBy string) error {
-	url := fmt.Sprintf("%s/api/v1/groups/%s/members/%s", c.baseURL, groupID, userID)
+func (c *DBServiceClient) RemoveGroupMember(ctx context.Context, groupID, userEmail string) error {
+	url := fmt.Sprintf("%s/api/v1/groups/%s/members", c.baseURL, groupID)
 
-	// Add removed_by as a query parameter
-	url = fmt.Sprintf("%s?removed_by=%s", url, removedBy)
+	request := map[string]interface{}{
+		"email": userEmail,
+	}
 
-	_, err := c.doRequest(ctx, http.MethodDelete, url, nil)
+	reqBody, err := json.Marshal(request)
+	if err != nil {
+		return fmt.Errorf("error marshaling remove member request: %w", err)
+	}
+
+	_, err = c.doRequest(ctx, http.MethodDelete, url, reqBody)
 	if err != nil {
 		c.logger.Error("Error removing group member",
 			zap.Error(err),
 			zap.String("group_id", groupID),
-			zap.String("user_id", userID))
+			zap.String("user_email", userEmail))
 		return fmt.Errorf("error removing group member: %w", err)
 	}
 
@@ -447,12 +454,12 @@ func (c *DBServiceClient) IsGroupMember(ctx context.Context, groupID, userID str
 }
 
 // CreateInvitation creates a new group invitation
-func (c *DBServiceClient) CreateInvitation(ctx context.Context, groupID, userID, invitedBy string) (*models.GroupInvitation, error) {
+func (c *DBServiceClient) CreateInvitation(ctx context.Context, groupID, userEmail, invitedBy string) (*models.GroupInvitation, error) {
 	url := fmt.Sprintf("%s/api/v1/invitations", c.baseURL)
 
 	request := map[string]string{
 		"group_id":   groupID,
-		"user_id":    userID,
+		"email":      userEmail,
 		"invited_by": invitedBy,
 	}
 
@@ -466,7 +473,7 @@ func (c *DBServiceClient) CreateInvitation(ctx context.Context, groupID, userID,
 		c.logger.Error("Error creating invitation",
 			zap.Error(err),
 			zap.String("group_id", groupID),
-			zap.String("user_id", userID))
+			zap.String("user_email", userEmail))
 		return nil, fmt.Errorf("error creating invitation: %w", err)
 	}
 

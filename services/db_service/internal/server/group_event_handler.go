@@ -673,7 +673,7 @@ func (h *GroupEventHandler) DeleteEventStatusesByGroup(w http.ResponseWriter, r 
 func (h *GroupEventHandler) CreateInvitation(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		GroupID   uuid.UUID `json:"group_id"`
-		UserID    uuid.UUID `json:"user_id"`
+		UserEmail string    `json:"email"`
 		InvitedBy uuid.UUID `json:"invited_by"`
 	}
 
@@ -683,16 +683,24 @@ func (h *GroupEventHandler) CreateInvitation(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Get user by email
+	user, err := h.repo.GetUserByEmail(r.Context(), req.UserEmail)
+	if err != nil {
+		h.log.Error().Err(err).Str("email", req.UserEmail).Msg("Failed to get user by email")
+		http.Error(w, `{"status":"error","message":"Failed to get user"}`, http.StatusInternalServerError)
+		return
+	}
+
 	invitation := &models.GroupInvitation{
 		GroupID:   req.GroupID,
-		UserID:    req.UserID,
+		UserID:    user.ID,
 		InvitedBy: req.InvitedBy,
 	}
 
 	if err := h.repo.CreateInvitation(r.Context(), invitation); err != nil {
 		h.log.Error().Err(err).
 			Str("group_id", req.GroupID.String()).
-			Str("user_id", req.UserID.String()).
+			Str("user_id", user.ID.String()).
 			Msg("Failed to create invitation")
 
 		http.Error(w, `{"status":"error","message":"Failed to create invitation"}`, http.StatusInternalServerError)

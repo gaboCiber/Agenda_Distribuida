@@ -69,12 +69,12 @@ func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event
 		return s.handleUpdateGroup(ctx, event)
 	case EventTypeGroupDelete:
 		return s.handleDeleteGroup(ctx, event)
-	case EventTypeGroupMemberAdd:
-		return s.handleAddGroupMember(ctx, event)
+	// case EventTypeGroupMemberAdd:
+	// 	return s.handleAddGroupMember(ctx, event)
 	case EventTypeGroupMemberList:
 		return s.handleListGroupMembers(ctx, event)
-	case EventTypeGroupMemberGet:
-		return s.handleGetGroupMember(ctx, event)
+	// case EventTypeGroupMemberGet:
+	// 	return s.handleGetGroupMember(ctx, event)
 	case EventTypeGroupMemberUpdate:
 		return s.handleUpdateGroupMember(ctx, event)
 	case EventTypeGroupMemberRemove:
@@ -332,7 +332,7 @@ func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Ev
 	}
 
 	// Add the member to the group
-	member, err := s.dbClient.AddGroupMember(ctx, req.GroupID, req.UserID.String(), req.Role, req.AddedBy.String())
+	member, err := s.dbClient.AddGroupMember(ctx, req.GroupID, req.UserID.String(), req.Role)
 	if err != nil {
 		errMsg := fmt.Errorf("error adding group member: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
@@ -413,9 +413,9 @@ func (s *EventService) handleGetGroupMember(ctx context.Context, event models.Ev
 func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	// Parse the request data
 	var req struct {
-		GroupID string `json:"group_id"`
-		UserID  string `json:"user_id"`
-		Role    string `json:"role"`
+		GroupID   string `json:"group_id"`
+		UserEmail string `json:"email"`
+		Role      string `json:"role"`
 	}
 
 	if err := mapToStruct(event.Data, &req); err != nil {
@@ -430,13 +430,8 @@ func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models
 		return nil, fmt.Errorf("invalid group ID: %w", err)
 	}
 
-	_, err2 := uuid.Parse(req.UserID)
-	if err2 != nil {
-		return nil, fmt.Errorf("invalid user ID: %w", err)
-	}
-
 	// Update the group
-	err3 := s.dbClient.UpdateGroupMember(ctx, req.GroupID, req.UserID, req.Role)
+	err3 := s.dbClient.UpdateGroupMember(ctx, req.GroupID, req.UserEmail, req.Role)
 	if err3 != nil {
 		return nil, fmt.Errorf("error updating group: %w", err)
 	}
@@ -454,7 +449,7 @@ func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models
 	// Parse the request data
 	var req struct {
 		GroupID   string    `json:"group_id"`
-		UserID    uuid.UUID `json:"user_id"`
+		UserEmail string    `json:"email"`
 		RemovedBy uuid.UUID `json:"removed_by"`
 	}
 
@@ -478,32 +473,32 @@ func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models
 		return &resp, nil
 	}
 
-	// Check if trying to remove the last admin
-	if req.UserID == req.RemovedBy {
-		members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
-		if err != nil {
-			errMsg := fmt.Errorf("error listing group members: %w", err)
-			resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
-			return &resp, nil
-		}
+	// // Check if trying to remove the last admin
+	// if req.UserID == req.RemovedBy {
+	// 	members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
+	// 	if err != nil {
+	// 		errMsg := fmt.Errorf("error listing group members: %w", err)
+	// 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+	// 		return &resp, nil
+	// 	}
 
-		// Count admins
-		adminCount := 0
-		for _, m := range members {
-			if m.Role == "admin" {
-				adminCount++
-			}
-		}
+	// 	// Count admins
+	// 	adminCount := 0
+	// 	for _, m := range members {
+	// 		if m.Role == "admin" {
+	// 			adminCount++
+	// 		}
+	// 	}
 
-		if adminCount <= 1 {
-			errMsg := fmt.Errorf("cannot remove the last admin of the group")
-			resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
-			return &resp, nil
-		}
-	}
+	// 	if adminCount <= 1 {
+	// 		errMsg := fmt.Errorf("cannot remove the last admin of the group")
+	// 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
+	// 		return &resp, nil
+	// 	}
+	// }
 
 	// Remove the member from the group
-	err = s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserID.String(), req.RemovedBy.String())
+	err = s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserEmail)
 	if err != nil {
 		errMsg := fmt.Errorf("error removing group member: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
@@ -592,7 +587,7 @@ func (s *EventService) handleCreateInvitation(ctx context.Context, event models.
 	invitation, err := s.dbClient.CreateInvitation(
 		ctx,
 		req.GroupID.String(),
-		req.UserID.String(),
+		req.UserEmail,
 		req.InvitedBy.String(),
 	)
 	if err != nil {
@@ -645,7 +640,7 @@ func (s *EventService) handleAcceptInvitation(ctx context.Context, event models.
 	}
 
 	// Add user to the group as a member
-	_, err = s.dbClient.AddGroupMember(ctx, invitation.GroupID.String(), userID, "member", userID)
+	_, err = s.dbClient.AddGroupMember(ctx, invitation.GroupID.String(), invitation.UserEmail, "member")
 	if err != nil {
 		return nil, fmt.Errorf("error adding user to group: %w", err)
 	}
@@ -762,8 +757,6 @@ func (s *EventService) handleGetInvitation(ctx context.Context, event models.Eve
 	}, nil
 }
 
-// handleCancelInvitation handles canceling a group invitation
-// Only the user who created the invitation or a group admin can cancel it
 // handleCancelInvitation handles canceling a group invitation
 // Only the user who created the invitation or a group admin can cancel it
 func (s *EventService) handleCancelInvitation(ctx context.Context, event models.Event) (*models.EventResponse, error) {
