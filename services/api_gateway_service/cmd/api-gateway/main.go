@@ -173,6 +173,10 @@ func main() {
 			groups.POST("", groupHandler.CreateGroup)
 			groups.GET("", groupHandler.GetGroups)
 			groups.GET("/members", groupHandler.GetGroupMembers)
+			groups.POST("/invite", groupHandler.InviteUserByEmail)
+			groups.PUT("/:group_id", groupHandler.UpdateGroup)
+			groups.DELETE("/:group_id", groupHandler.DeleteGroup)
+			groups.PUT("/:group_id/members/:email/role", groupHandler.UpdateMemberRole)
 		}
 	}
 

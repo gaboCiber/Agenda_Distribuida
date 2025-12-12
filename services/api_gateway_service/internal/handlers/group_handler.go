@@ -194,12 +194,22 @@ func (h *GroupHandler) GetGroups(c *gin.Context) {
 			zap.Any("response_data", response.Data))
 	}
 
+	// ✅ ENRIQUECER GRUPOS CON NOMBRES DE USUARIO
+	enrichedGroups, err := h.enrichGroupsWithUsernames(c.Request.Context(), groups)
+	if err != nil {
+		h.logger.Error("❌ Failed to enrich groups with usernames",
+			zap.Error(err),
+			zap.String("user_id", userID))
+		// Continuar sin enriquecimiento si falla
+		enrichedGroups = groups
+	}
+
 	h.logger.Info("✅ Groups processing completed",
 		zap.String("user_id", userID),
-		zap.Int("groups_count", len(groups)))
+		zap.Int("groups_count", len(enrichedGroups)))
 
 	// Siempre retornar un array, aunque esté vacío
-	c.JSON(http.StatusOK, gin.H{"groups": groups})
+	c.JSON(http.StatusOK, gin.H{"groups": enrichedGroups})
 }
 
 func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
@@ -279,8 +289,174 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		zap.String("group_id", groupID),
 		zap.Int("members_count", len(members)))
 
+	// ✅ ENRIQUECER MIEMBROS CON NOMBRES DE USUARIO
+	enrichedMembers, err := h.enrichMembersWithUsernames(c.Request.Context(), members)
+	if err != nil {
+		h.logger.Error("❌ Failed to enrich members with usernames",
+			zap.Error(err),
+			zap.String("group_id", groupID))
+		// Continuar sin enriquecimiento si falla
+		enrichedMembers = members
+	}
+
 	// Always return an array, even if empty
-	c.JSON(http.StatusOK, gin.H{"members": members})
+	c.JSON(http.StatusOK, gin.H{"members": enrichedMembers})
+}
+
+// enrichMembersWithUsernames enriquece la lista de miembros con nombres de usuario
+func (h *GroupHandler) enrichMembersWithUsernames(ctx context.Context, members []interface{}) ([]interface{}, error) {
+	enrichedMembers := make([]interface{}, len(members))
+
+	for i, memberInterface := range members {
+		member, ok := memberInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Copiar el miembro original
+		enrichedMember := make(map[string]interface{})
+		for k, v := range member {
+			enrichedMember[k] = v
+		}
+
+		// Obtener el nombre del usuario si existe user_id
+		if userID, exists := member["user_id"]; exists {
+			if userIDStr, ok := userID.(string); ok {
+				username, err := h.getUsernameByID(ctx, userIDStr)
+				if err != nil {
+					h.logger.Warn("Failed to get username for member",
+						zap.String("user_id", userIDStr),
+						zap.Error(err))
+					username = "Usuario desconocido"
+				}
+				enrichedMember["username"] = username
+			}
+		}
+
+		enrichedMembers[i] = enrichedMember
+	}
+
+	return enrichedMembers, nil
+}
+
+// enrichGroupsWithUsernames enriquece la lista de grupos con nombres de usuario
+func (h *GroupHandler) enrichGroupsWithUsernames(ctx context.Context, groups []interface{}) ([]interface{}, error) {
+	enrichedGroups := make([]interface{}, len(groups))
+
+	for i, groupInterface := range groups {
+		group, ok := groupInterface.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Copiar el grupo original
+		enrichedGroup := make(map[string]interface{})
+		for k, v := range group {
+			enrichedGroup[k] = v
+		}
+
+		// Obtener el nombre del creador si existe creator_id
+		if creatorID, exists := group["creator_id"]; exists {
+			if creatorIDStr, ok := creatorID.(string); ok {
+				username, err := h.getUsernameByID(ctx, creatorIDStr)
+				if err != nil {
+					h.logger.Warn("Failed to get username for creator",
+						zap.String("creator_id", creatorIDStr),
+						zap.Error(err))
+					username = "Usuario desconocido"
+				}
+				enrichedGroup["creator_name"] = username
+			}
+		}
+
+		enrichedGroups[i] = enrichedGroup
+	}
+
+	return enrichedGroups, nil
+}
+
+// getUsernameByID obtiene el nombre de usuario por ID consultando el servicio de usuarios
+func (h *GroupHandler) getUsernameByID(ctx context.Context, userID string) (string, error) {
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.get",
+		"data": map[string]interface{}{
+			"user_id": userID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(ctx, eventData, "users_events_response")
+	if err != nil {
+		return "", fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	if !response.Success {
+		return "", fmt.Errorf("DB service error: %s", response.Error)
+	}
+
+	// Extract username from response
+	if userData, ok := response.Data.(map[string]interface{}); ok {
+		if user, exists := userData["user"]; exists {
+			if userMap, ok := user.(map[string]interface{}); ok {
+				if username, exists := userMap["username"]; exists {
+					if usernameStr, ok := username.(string); ok {
+						return usernameStr, nil
+					}
+				}
+			}
+		}
+		// Try direct extraction if nested structure doesn't work
+		if username, exists := userData["username"]; exists {
+			if usernameStr, ok := username.(string); ok {
+				return usernameStr, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("username not found in response")
+}
+
+// getUserIDByEmail obtiene el ID de usuario por email consultando el servicio de usuarios
+func (h *GroupHandler) getUserIDByEmail(ctx context.Context, email string) (string, error) {
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.get.by.email",
+		"data": map[string]interface{}{
+			"email": email,
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(ctx, eventData, "users_events_response")
+	if err != nil {
+		return "", fmt.Errorf("failed to get user info: %w", err)
+	}
+
+	if !response.Success {
+		return "", fmt.Errorf("DB service error: %s", response.Error)
+	}
+
+	// Extract user ID from response
+	if userData, ok := response.Data.(map[string]interface{}); ok {
+		if userID, exists := userData["id"]; exists {
+			if userIDStr, ok := userID.(string); ok {
+				return userIDStr, nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("user ID not found in response")
 }
 
 // sendEventAndWaitForResponse publishes an event and waits for a response using the response handler
@@ -344,4 +520,315 @@ func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 			zap.String("channel", replyChannel))
 		return nil, fmt.Errorf("timeout waiting for response after 30 seconds")
 	}
+}
+
+type InviteUserByEmailRequest struct {
+	GroupID string `json:"group_id" binding:"required"`
+	Email   string `json:"email" binding:"required,email"`
+}
+
+func (h *GroupHandler) InviteUserByEmail(c *gin.Context) {
+	var req InviteUserByEmailRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing invite user by email request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Get the current user ID from the context (who is sending the invitation)
+	currentUserID := c.Query("user_id")
+	if currentUserID == "" {
+		h.logger.Warn("⚠️ user_id parameter is missing for invitation")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("📋 Inviting user by email to group",
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("invited_by", currentUserID))
+
+	// Create event to invite user to group using email directly (new format)
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.invite.create",
+		"data": map[string]interface{}{
+			"group_id":   req.GroupID,
+			"email":      req.Email,
+			"invited_by": currentUserID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group invitation event with email",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("invited_by", currentUserID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to create group invitation",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create invitation: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Group invitation failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create invitation: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group invitation created successfully",
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("invited_by", currentUserID))
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":    "Invitation created successfully",
+		"group_id":   req.GroupID,
+		"email":      req.Email,
+		"invited_by": currentUserID,
+	})
+}
+
+type UpdateGroupRequest struct {
+	GroupID     string `json:"group_id" binding:"required"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	UserID      string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) UpdateGroup(c *gin.Context) {
+	var req UpdateGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing update group request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("📋 Updating group",
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", req.UserID))
+
+	// Create event to update group
+	eventID := uuid.New().String()
+
+	// Build update data - only include fields that are provided
+	updateData := make(map[string]interface{})
+	if req.Name != "" {
+		updateData["name"] = req.Name
+	}
+	if req.Description != "" {
+		updateData["description"] = req.Description
+	}
+
+	// If no update data provided, return error
+	if len(updateData) == 0 {
+		h.logger.Warn("⚠️ No update data provided for group update")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No update data provided"})
+		return
+	}
+
+	// Build the update data with creator_id for group service compatibility
+	updateDataWithCreator := make(map[string]interface{})
+	for k, v := range updateData {
+		updateDataWithCreator[k] = v
+	}
+	// Add creator_id if not present (required by group service)
+	if _, exists := updateDataWithCreator["creator_id"]; !exists {
+		updateDataWithCreator["creator_id"] = req.UserID
+	}
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.update",
+		"data": map[string]interface{}{
+			"id":   req.GroupID,
+			"data": updateDataWithCreator,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group update event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.Any("update_data", updateData))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to update group",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update group: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Group update failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update group: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group updated successfully",
+		zap.String("group_id", req.GroupID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Group updated successfully",
+		"group_id": req.GroupID,
+	})
+}
+
+type DeleteGroupRequest struct {
+	GroupID string `json:"group_id" binding:"required"`
+	UserID  string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) DeleteGroup(c *gin.Context) {
+	var req DeleteGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing delete group request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("🗑️ Deleting group",
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", req.UserID))
+
+	// Create event to delete group
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.delete",
+		"data": map[string]interface{}{
+			"id": req.GroupID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group delete event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to delete group",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete group: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Group deletion failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to delete group: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group deleted successfully",
+		zap.String("group_id", req.GroupID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Group deleted successfully",
+		"group_id": req.GroupID,
+	})
+}
+
+type UpdateMemberRoleRequest struct {
+	GroupID string `json:"group_id" binding:"required"`
+	Email   string `json:"email" binding:"required,email"`
+	Role    string `json:"role" binding:"required,oneof=admin member"`
+	UserID  string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) UpdateMemberRole(c *gin.Context) {
+	var req UpdateMemberRoleRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing update member role request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("👤 Updating member role in group",
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("role", req.Role),
+		zap.String("updated_by", req.UserID))
+
+	// Create event to update member role
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.member.update",
+		"data": map[string]interface{}{
+			"group_id": req.GroupID,
+			"email":    req.Email,
+			"role":     req.Role,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending member role update event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("role", req.Role))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to update member role",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update member role: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Member role update failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", req.Email))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to update member role: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Member role updated successfully",
+		zap.String("group_id", req.GroupID),
+		zap.String("email", req.Email),
+		zap.String("role", req.Role))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Member role updated successfully",
+		"group_id": req.GroupID,
+		"email":    req.Email,
+		"role":     req.Role,
+	})
 }
