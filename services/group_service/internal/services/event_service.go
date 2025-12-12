@@ -57,6 +57,11 @@ func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *Eve
 	}
 }
 
+// FindAndUpdateLeader busca y actualiza el líder del cluster Raft
+func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
+	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
+}
+
 // ProcessGroupEvent processes group-related events
 func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	switch event.Type {

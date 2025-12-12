@@ -16,18 +16,21 @@ type EventHandler struct {
 	eventService *services.EventService
 	logger       *zap.Logger
 	channel      string
+	raftNodes    []string
 }
 
 func NewEventHandler(
 	redisClient *redis.Client,
 	eventService *services.EventService,
 	channel string,
+	raftNodes []string,
 	logger *zap.Logger,
 ) *EventHandler {
 	return &EventHandler{
 		redisClient:  redisClient,
 		eventService: eventService,
 		channel:      channel,
+		raftNodes:    raftNodes,
 		logger:       logger.Named("event_handler"),
 	}
 }
@@ -54,6 +57,11 @@ func (h *EventHandler) Start(ctx context.Context) error {
 }
 
 func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
+	// Antes de procesar el mensaje, encontrar y actualizar el líder
+	if err := h.eventService.FindAndUpdateLeader(ctx, h.raftNodes); err != nil {
+		h.logger.Warn("No se pudo encontrar líder, usando baseURL actual", zap.Error(err))
+	}
+
 	// Registrar la recepción del mensaje
 	h.logger.Debug("Mensaje recibido de Redis",
 		zap.String("channel", msg.Channel),

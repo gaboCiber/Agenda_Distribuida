@@ -8,11 +8,12 @@ CURRENT_DIR="$(pwd)"
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|raft-db|user]"
+    echo "Usage: $0 [all|redis|raft-db|user|group]"
     echo "  all     - Start all services in order"
     echo "  redis   - Start Redis only"
     echo "  raft-db - Start Raft DB cluster (3 nodes)"
     echo "  user    - Start User Service only"
+    echo "  group   - Start Group Service only"
     exit 1
 fi
 
@@ -93,10 +94,23 @@ start_user() {
     echo "User Service started at localhost:8004"
 }
 
+start_group() {
+    echo "Starting Group Service..."
+    docker run -d --name agenda-group-service --network $NETWORK_NAME \
+      -p 8005:8005 \
+      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e REDIS_CHANNEL=groups_events \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e LOG_LEVEL=debug \
+      agenda-group_event
+    echo "Group Service started at localhost:8005"
+}
+
 stop_services() {
     echo "Stopping all services..."
-    docker stop agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
-    docker rm agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
+    docker stop agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
+    docker rm agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
     echo "All services stopped"
 }
 
@@ -119,6 +133,9 @@ show_status() {
     echo "User Service:"
     docker ps --filter "name=agenda-user-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     echo ""
+    echo "Group Service:"
+    docker ps --filter "name=agenda-group-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo ""
     echo "=== Raft Status ==="
     echo "Node 1 (8001):"
     curl -s http://localhost:8001/raft/status | jq . 2>/dev/null || echo "Not responding"
@@ -132,13 +149,15 @@ show_status() {
 
 case $SERVICE in
     all)
-        echo "Starting all services in order: redis → raft-db → user"
+        echo "Starting all services in order: redis → raft-db → user → group"
         clean_data
         start_redis
         sleep 2
         start_raft_db
         sleep 5
         start_user
+        sleep 2
+        start_group
         sleep 2
         echo ""
         echo "=== All Services Started ==="
@@ -154,6 +173,9 @@ case $SERVICE in
     user)
         start_user
         ;;
+    group)
+        start_group
+        ;;
     stop)
         stop_services
         ;;
@@ -166,7 +188,7 @@ case $SERVICE in
         ;;
     *)
         echo "Unknown service: $SERVICE"
-        echo "Available services: all, redis, raft-db, user, stop, clean, status"
+        echo "Available services: all, redis, raft-db, user, group, stop, clean, status"
         exit 1
         ;;
 esac
@@ -175,5 +197,7 @@ echo ""
 echo "=== Useful Commands ==="
 echo "Check Raft status: curl http://localhost:8001/raft/status"
 echo "Check User Service logs: docker logs agenda-user-service"
+echo "Check Group Service logs: docker logs agenda-group-service"
 echo "Test User Service: curl http://localhost:8004/health"
+echo "Test Group Service: curl http://localhost:8005/health"
 echo "Check Raft logs: docker logs agenda-db-raft-node-1"

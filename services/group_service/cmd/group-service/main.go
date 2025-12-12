@@ -50,6 +50,7 @@ func main() {
 		redisClient,
 		eventService,
 		cfg.RedisChannel,
+		cfg.RaftNodesURLs,
 		logger,
 	)
 
