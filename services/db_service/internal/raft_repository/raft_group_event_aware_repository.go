@@ -595,3 +595,8 @@ func (r *RaftGroupEventRepository) DeleteUserInvitation(ctx context.Context, inv
 
 	return <-applyCh
 }
+
+// GetUserByEmail delegates the read operation to the base repository.
+func (r *RaftGroupEventRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	return r.baseRepo.GetUserByEmail(ctx, email)
+}

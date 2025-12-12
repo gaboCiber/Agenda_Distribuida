@@ -38,7 +38,6 @@ start_raft_db() {
     echo "Starting Raft DB Node 1 (potential leader)..."
     docker run -d --name agenda-db-raft-node-1 --network $NETWORK_NAME \
       -p 8001:8001 \
-      -v "$CURRENT_DIR/services/db_service/data/node1:/data" \
       -e RAFT_ID=node1 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node1/raft \
@@ -53,7 +52,6 @@ start_raft_db() {
     echo "Starting Raft DB Node 2..."
     docker run -d --name agenda-db-raft-node-2 --network $NETWORK_NAME \
       -p 8002:8002 \
-      -v "$CURRENT_DIR/services/db_service/data/node2:/data" \
       -e RAFT_ID=node2 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node2/raft \
@@ -68,7 +66,6 @@ start_raft_db() {
     echo "Starting Raft DB Node 3..."
     docker run -d --name agenda-db-raft-node-3 --network $NETWORK_NAME \
       -p 8003:8003 \
-      -v "$CURRENT_DIR/services/db_service/data/node3:/data" \
       -e RAFT_ID=node3 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node3/raft \
@@ -90,7 +87,7 @@ start_user() {
       -e REDIS_URL=redis://agenda-redis-service:6379 \
       -e REDIS_CHANNEL=users_events \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS=http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
       -e LOG_LEVEL=debug \
       agenda-user_event
     echo "User Service started at localhost:8004"

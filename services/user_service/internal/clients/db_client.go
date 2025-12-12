@@ -51,6 +51,7 @@ func NewDBServiceClient(baseURL string, logger *zap.Logger) *DBServiceClient {
 
 // FindAndUpdateLeader busca el líder actualizando el baseURL
 func (c *DBServiceClient) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
+	// Intentar con las URLs de nodos Raft proporcionadas
 	for _, nodeURL := range raftNodes {
 		// Limpiar URL
 		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
@@ -62,12 +63,13 @@ func (c *DBServiceClient) FindAndUpdateLeader(ctx context.Context, raftNodes []s
 			return nil
 		}
 	}
-	return fmt.Errorf("no se encontró ningún líder")
+	
+	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", raftNodes)
 }
 
 // isNodeLeader verifica si un nodo específico es el líder
 func (c *DBServiceClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
-	url := fmt.Sprintf("%s/api/v1/raft/status", nodeURL)
+	url := fmt.Sprintf("%s/raft/status", nodeURL)
 	
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {

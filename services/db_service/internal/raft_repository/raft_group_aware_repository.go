@@ -310,3 +310,8 @@ func (r *RaftGroupRepository) GetGroupMember(ctx context.Context, groupID, userI
 func (r *RaftGroupRepository) GetChildGroups(ctx context.Context, parentGroupID uuid.UUID) ([]uuid.UUID, error) {
 	return r.baseRepo.GetChildGroups(ctx, parentGroupID)
 }
+
+// GetUserByEmail delegates the read operation to the base repository.
+func (r *RaftGroupRepository) GetUserByEmail(ctx context.Context, email string) (*models.User, error) {
+	return r.baseRepo.GetUserByEmail(ctx, email)
+}

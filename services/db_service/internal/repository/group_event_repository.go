@@ -602,15 +602,6 @@ func (r *groupEventRepository) UpdateEventStatuses(ctx context.Context, tx *sql.
 		if status.UpdatedAt.IsZero() {
 			return fmt.Errorf("status UpdatedAt cannot be zero - must be set by handler")
 		}
-		var respondedAt *time.Time
-
-		if status.Status != models.EventStatusPending && status.RespondedAt == nil {
-			// Set RespondedAt to UpdatedAt when status changes from pending
-			respondedAt = &status.UpdatedAt
-			status.RespondedAt = respondedAt
-		} else {
-			respondedAt = status.RespondedAt
-		}
 
 		_, err := stmt.ExecContext(
 			ctx,
