@@ -448,9 +448,8 @@ func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models
 func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	// Parse the request data
 	var req struct {
-		GroupID   string    `json:"group_id"`
-		UserEmail string    `json:"email"`
-		RemovedBy uuid.UUID `json:"removed_by"`
+		GroupID   string `json:"group_id"`
+		UserEmail string `json:"email"`
 	}
 
 	if err := mapToStruct(event.Data, &req); err != nil {
@@ -459,46 +458,8 @@ func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models
 		return &resp, nil
 	}
 
-	// Verify the user removing the member is an admin
-	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID, req.RemovedBy)
-	if err != nil {
-		errMsg := fmt.Errorf("error checking admin status: %w", err)
-		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
-		return &resp, nil
-	}
-
-	if !isAdmin {
-		errMsg := fmt.Errorf("only group admins can remove members")
-		resp := models.NewErrorResponse(event.ID, "group.member.remove.unauthorized", errMsg)
-		return &resp, nil
-	}
-
-	// // Check if trying to remove the last admin
-	// if req.UserID == req.RemovedBy {
-	// 	members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
-	// 	if err != nil {
-	// 		errMsg := fmt.Errorf("error listing group members: %w", err)
-	// 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
-	// 		return &resp, nil
-	// 	}
-
-	// 	// Count admins
-	// 	adminCount := 0
-	// 	for _, m := range members {
-	// 		if m.Role == "admin" {
-	// 			adminCount++
-	// 		}
-	// 	}
-
-	// 	if adminCount <= 1 {
-	// 		errMsg := fmt.Errorf("cannot remove the last admin of the group")
-	// 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
-	// 		return &resp, nil
-	// 	}
-	// }
-
 	// Remove the member from the group
-	err = s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserEmail)
+	err := s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserEmail)
 	if err != nil {
 		errMsg := fmt.Errorf("error removing group member: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)

@@ -554,6 +554,81 @@ func (r *groupRepository) AddMember(ctx context.Context, member *models.GroupMem
 		}
 	}
 
+	// Add event statuses for events created after member joined
+	if !member.IsInherited {
+		// Get group events that were created after member joined
+		rows, err := tx.QueryContext(ctx, `
+			SELECT ge.event_id, g.is_hierarchical
+			FROM group_events ge
+			JOIN groups g ON ge.group_id = g.id
+			JOIN events e ON ge.event_id = e.id
+			WHERE ge.group_id = $1 AND e.start_time >= $2
+		`, member.GroupID, member.JoinedAt)
+		if err != nil {
+			r.log.Error().
+				Err(err).
+				Str("group_id", member.GroupID.String()).
+				Msg("Failed to query group events for status creation")
+			return fmt.Errorf("failed to query group events for status creation: %w", err)
+		}
+		defer rows.Close()
+
+		// For each event, create a status entry
+		for rows.Next() {
+			var eventID uuid.UUID
+			var isHierarchical bool
+			
+			if err := rows.Scan(&eventID, &isHierarchical); err != nil {
+				r.log.Error().
+					Err(err).
+					Str("group_id", member.GroupID.String()).
+					Msg("Failed to scan event data")
+				return fmt.Errorf("failed to scan event data: %w", err)
+			}
+
+			// Determine status based on group type
+			status := "pending"
+			if isHierarchical {
+				status = "accepted"
+			}
+
+			// Create status entry
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO group_event_status (id, event_id, group_id, user_id, status, created_at, updated_at, responded_at)
+				VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+			`,
+				uuid.New(),
+				eventID,
+				member.GroupID,
+				member.UserID,
+				status,
+				time.Now().UTC(),
+				time.Now().UTC(),
+				time.Now().UTC(),
+			)
+
+			if err != nil {
+				r.log.Error().
+					Err(err).
+					Str("group_id", member.GroupID.String()).
+					Str("user_id", member.UserID.String()).
+					Str("event_id", eventID.String()).
+					Str("status", status).
+					Msg("Failed to create event status for new member")
+				return fmt.Errorf("failed to create event status for new member: %w", err)
+			}
+		}
+
+		// Check for errors that might have occurred during iteration
+		if err = rows.Err(); err != nil {
+			r.log.Error().
+				Err(err).
+				Str("group_id", member.GroupID.String()).
+				Msg("Error iterating group events for status creation")
+			return fmt.Errorf("error iterating group events for status creation: %w", err)
+		}
+	}
+
 	return tx.Commit()
 }
 
@@ -854,7 +929,7 @@ func (r *groupRepository) RemoveMember(ctx context.Context, groupID, userID uuid
 	// Remove the member
 	result, err := tx.ExecContext(ctx, `
 		DELETE FROM group_members 
-		WHERE group_id = $1 AND user_id = $2 AND is_inherited = false
+		WHERE group_id = $1 AND user_id = $2
 	`, groupID, userID)
 
 	if err != nil {
@@ -878,6 +953,21 @@ func (r *groupRepository) RemoveMember(ctx context.Context, groupID, userID uuid
 
 	if rowsAffected == 0 {
 		return sql.ErrNoRows
+	}
+
+	// Delete user's event statuses for this group
+	_, err = tx.ExecContext(ctx, `
+		DELETE FROM group_event_status 
+		WHERE group_id = $1 AND user_id = $2
+	`, groupID, userID)
+
+	if err != nil {
+		r.log.Error().
+			Err(err).
+			Str("group_id", groupID.String()).
+			Str("user_id", userID.String()).
+			Msg("Failed to delete user event statuses")
+		return fmt.Errorf("failed to delete user event statuses: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {

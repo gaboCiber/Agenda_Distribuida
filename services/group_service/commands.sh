@@ -10,7 +10,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "data": {
         "name": "Developers",
         "description": "Development team",
-        "is_hierarchical": false,
+        "is_hierarchical": true,
         "creator_id": "<USER_ID>"
     },
     "metadata": {
@@ -82,8 +82,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "type": "group.member.remove",
     "data": {
         "group_id": "'$GROUP_UUID'",
-        "email": "'$USER2_UUID'",
-        "removed_by": "'$USER1_UUID'"
+        "email": "'$USER2_UUID'"
     },
     "metadata": {
         "reply_to": "group_events_response"
@@ -223,7 +222,7 @@ docker exec -it agenda-redis-service redis-cli PUBLISH groups_events '{
     "data": {
         "group_id": "<GROUP_ID>",
         "event_id": "<EVENT_ID_1>",
-        "added_by": "<USER1_ID>",
+        "user_id": "<USER1_ID>",
         "is_hierarchical": true
     },
     "metadata": {
