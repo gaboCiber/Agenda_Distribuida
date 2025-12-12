@@ -46,7 +46,7 @@ type GroupEventRepository interface {
 	CreateInvitation(ctx context.Context, invitation *models.GroupInvitation) error
 	GetInvitationByID(ctx context.Context, id uuid.UUID) (*models.GroupInvitation, error)
 	UpdateInvitation(ctx context.Context, id uuid.UUID, status string) error
-	GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitation, error)
+	GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitationResponse, error)
 	DeleteUserInvitations(ctx context.Context, userID uuid.UUID) error
 	DeleteUserInvitation(ctx context.Context, invitationID uuid.UUID) error
 
@@ -790,24 +790,32 @@ func (r *groupEventRepository) UpdateInvitation(ctx context.Context, id uuid.UUI
 }
 
 // GetUserInvitations returns all invitations for a user, optionally filtered by status
-func (r *groupEventRepository) GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitation, error) {
+func (r *groupEventRepository) GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitationResponse, error) {
 	var rows *sql.Rows
 	var err error
 
 	if status == "" {
 		rows, err = r.db.QueryContext(
 			ctx,
-			`SELECT id, group_id, user_id, invited_by, status, created_at, responded_at
-			FROM group_invitations 
-			WHERE user_id = $1`,
+			`SELECT gi.id, gi.group_id, g.name as group_name, gi.user_id, u.email as user_email, 
+			 gi.invited_by, inv.username as inviter_name, inv.email as inviter_email, gi.status, gi.created_at, gi.responded_at
+			FROM group_invitations gi
+			JOIN groups g ON gi.group_id = g.id
+			JOIN users u ON gi.user_id = u.id
+			JOIN users inv ON gi.invited_by = inv.id
+			WHERE gi.user_id = $1`,
 			userID,
 		)
 	} else {
 		rows, err = r.db.QueryContext(
 			ctx,
-			`SELECT id, group_id, user_id, invited_by, status, created_at, responded_at
-			FROM group_invitations 
-			WHERE user_id = $1 AND status = $2`,
+			`SELECT gi.id, gi.group_id, g.name as group_name, gi.user_id, u.email as user_email, 
+			 gi.invited_by, inv.username as inviter_name, inv.email as inviter_email, gi.status, gi.created_at, gi.responded_at
+			FROM group_invitations gi
+			JOIN groups g ON gi.group_id = g.id
+			JOIN users u ON gi.user_id = u.id
+			JOIN users inv ON gi.invited_by = inv.id
+			WHERE gi.user_id = $1 AND gi.status = $2`,
 			userID,
 			status,
 		)
@@ -822,15 +830,19 @@ func (r *groupEventRepository) GetUserInvitations(ctx context.Context, userID uu
 	}
 	defer rows.Close()
 
-	var invitations []*models.GroupInvitation
+	var invitations []*models.GroupInvitationResponse
 	for rows.Next() {
-		var invitation models.GroupInvitation
+		var invitation models.GroupInvitationResponse
 
 		err := rows.Scan(
 			&invitation.ID,
 			&invitation.GroupID,
+			&invitation.GroupName,
 			&invitation.UserID,
+			&invitation.UserEmail,
 			&invitation.InvitedBy,
+			&invitation.InviterName,
+			&invitation.InviterEmail,
 			&invitation.Status,
 			&invitation.CreatedAt,
 			&invitation.RespondedAt,

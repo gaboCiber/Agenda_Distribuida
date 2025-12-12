@@ -81,6 +81,21 @@ type GroupInvitation struct {
 	RespondedAt *time.Time `json:"responded_at,omitempty" db:"responded_at"`
 }
 
+// GroupInvitationResponse represents an invitation to join a group with additional details
+type GroupInvitationResponse struct {
+	ID          uuid.UUID  `json:"id" db:"id"`
+	GroupID     uuid.UUID  `json:"group_id" db:"group_id"`
+	GroupName   string     `json:"group_name" db:"group_name"`
+	UserID      uuid.UUID  `json:"user_id" db:"user_id"`
+	UserEmail   string     `json:"email" db:"email"`
+	InvitedBy   uuid.UUID  `json:"invited_by" db:"invited_by"`
+	InviterName string     `json:"inviter_name" db:"inviter_name"`
+	InviterEmail string    `json:"inviter_email" db:"inviter_email"`
+	Status      string     `json:"status" db:"status"` // "pending", "accepted", "rejected"
+	CreatedAt   time.Time  `json:"created_at" db:"created_at"`
+	RespondedAt *time.Time `json:"responded_at,omitempty" db:"responded_at"`
+}
+
 // EventStatus represents the status of an event for a specific user
 type EventStatus string
 

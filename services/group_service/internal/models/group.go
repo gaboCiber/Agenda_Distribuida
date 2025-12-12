@@ -71,6 +71,22 @@ type GroupInvitation struct {
 	Message     string    `json:"message,omitempty"`
 }
 
+// GroupInvitationResponse represents an invitation to join a group with additional details
+type GroupInvitationResponse struct {
+	ID           uuid.UUID  `json:"id"`
+	GroupID      uuid.UUID  `json:"group_id"`
+	GroupName    string     `json:"group_name"`
+	UserID       uuid.UUID  `json:"user_id"`
+	UserEmail    string     `json:"email"`
+	InvitedBy    uuid.UUID  `json:"invited_by"`
+	InviterName  string     `json:"inviter_name"`
+	InviterEmail string     `json:"inviter_email"`
+	Status       string     `json:"status"` // "pending", "accepted", "rejected", "cancelled"
+	CreatedAt    time.Time  `json:"created_at"`
+	RespondedAt  *time.Time `json:"responded_at,omitempty"`
+	Message      string     `json:"message,omitempty"`
+}
+
 // InvitationStatus represents the possible statuses of a group invitation
 type InvitationStatus string
 
