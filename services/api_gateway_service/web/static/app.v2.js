@@ -1,16 +1,16 @@
-// app.js - Completo con todos los arreglos
-
 let token = null;
 let userId = null;
 let currentDate = new Date();
 
 // Load session from localStorage on page load
 function loadSession() {
+    console.log('🚀 [DEBUG] loadSession called');
+
     const savedToken = localStorage.getItem('agenda_token');
     const savedUserId = localStorage.getItem('agenda_userId');
     const savedEmail = localStorage.getItem('agenda_email');
 
-    console.log('🔍 Loading session from localStorage:', { 
+    console.log('🔍 [DEBUG] Loading session from localStorage:', {
         token: savedToken ? 'SET' : 'MISSING',
         userId: savedUserId || 'MISSING',
         email: savedEmail || 'MISSING'
@@ -42,8 +42,10 @@ function loadSession() {
             console.error('❌ Invalid userId in session:', userId);
         }
     } else {
-        console.log('ℹ️ No valid session found in localStorage');
+        console.log('ℹ️ [DEBUG] No valid session found in localStorage');
     }
+
+    console.log('🏁 [DEBUG] loadSession COMPLETED');
 }
 
 // Save session to localStorage
@@ -182,12 +184,16 @@ async function login(event) {
         console.log('🔄 Verifying userId before loading data:', userId);
         
         if (userId && userId !== 'undefined') {
-            console.log('✅ userId is valid, loading data...');
+            console.log('✅ [DEBUG] userId is valid, loading data...', { userId });
+            console.log('📅 [DEBUG] About to call loadEvents');
             await loadEvents();
+            console.log('👥 [DEBUG] About to call loadGroups');
             await loadGroups();
+            console.log('📊 [DEBUG] About to call renderCalendar');
             renderCalendar();
+            console.log('✅ [DEBUG] All data loading completed');
         } else {
-            console.error('❌ userId is invalid:', userId);
+            console.error('❌ [DEBUG] userId is invalid:', userId);
             showNotification('Error: No se pudo obtener el ID de usuario', 'error');
         }
 
@@ -427,39 +433,99 @@ function createEventFromForm() {
     }
 }
 
-// ✅ VERSIÓN DE EMERGENCIA - FORZAR user_id MANUALMENTE
+// ✅ VERSIÓN COMPLETA CON DETERMINACIÓN DE ROLES Y COLORES
 async function loadGroups() {
     try {
-        console.log('🎯 loadGroups called', { userId });
+        console.log('🎯 [DEBUG] loadGroups called - FULL VERSION with role determination', { userId, token: !!token });
 
         if (!userId) {
-            console.error('❌ No user ID available for loadGroups');
+            console.error('❌ [DEBUG] No user ID available for loadGroups');
             showNotification('No se pudo cargar grupos: usuario no identificado', 'error');
             return;
         }
 
-        console.log('🔍 Loading groups for user:', userId);
+        console.log('🔍 [DEBUG] Loading groups for user:', userId);
 
         // ✅ FORZAR user_id MANUALMENTE EN LA URL
+        console.log('🌐 [DEBUG] About to call apiRequest for groups');
         const result = await apiRequest(`/groups?user_id=${userId}`);
+        console.log('📦 [DEBUG] Groups response received:', result);
+
         const container = document.getElementById('groups-list');
         const groupSelect = document.getElementById('event-group');
 
+        console.log('🧹 [DEBUG] Clearing containers');
         container.innerHTML = '';
         groupSelect.innerHTML = '<option value="">Sin grupo</option>';
 
-        console.log('📦 Groups response:', result);
+        console.log('📦 [DEBUG] Groups response:', result);
 
         if (result.groups && result.groups.length > 0) {
-            console.log(`✅ Found ${result.groups.length} groups`);
-            result.groups.forEach(group => {
-                // Add to list
+            console.log(`✅ [DEBUG] Found ${result.groups.length} groups`);
+
+            // ✅ DEBUG: Mostrar estructura completa de grupos con roles
+            result.groups.forEach((group, index) => {
+                console.log(`Group ${index}:`, {
+                    id: group.id,
+                    name: group.name,
+                    user_role: group.user_role,  // ✅ NUEVO CAMPO DE ROL
+                    creator_id: group.creator_id,
+                    is_hierarchical: group.is_hierarchical,
+                    all_fields: Object.keys(group) // Mostrar todos los campos disponibles
+                });
+            });
+
+            // ✅ NUEVA LÓGICA: Usar rol real que viene de la API
+            const processedGroups = result.groups.map((group) => {
+                console.log(`🔍 [DEBUG] Processing group ${group.id} (${group.name})`);
+                console.log(`🔍 [DEBUG] Group data from API:`, {
+                    id: group.id,
+                    name: group.name,
+                    user_role: group.user_role,  // ✅ ROL REAL DEL USUARIO
+                    is_hierarchical: group.is_hierarchical,
+                    creator_id: group.creator_id
+                });
+
+                // ✅ USAR EL ROL QUE VIENE DIRECTAMENTE DE LA API
+                const userRole = group.user_role || 'member'; // Por defecto 'member' si no viene
+
+                console.log(`👤 [DEBUG] User role from API for group ${group.name}: ${userRole}`);
+
+                const colorClass = getGroupColorClass(userRole, group.is_hierarchical);
+
+                console.log(`🎨 [DEBUG] Group ${group.name}: API_role=${userRole}, hierarchical=${group.is_hierarchical}, colorClass=${colorClass}`);
+
+                return {
+                    group,
+                    userRole,
+                    colorClass
+                };
+            });
+
+            console.log('✅ [DEBUG] All groups processed with simplified logic');
+
+            // Ahora renderizar todas las tarjetas
+            processedGroups.forEach(({ group, userRole, colorClass }) => {
+                console.log(`🎨 [DEBUG] Rendering group ${group.name} with class: ${colorClass}`);
+
+                // Add to list con color según rol
                 const groupCard = document.createElement('div');
-                groupCard.className = 'item-card';
+                groupCard.className = `item-card ${colorClass}`;
                 groupCard.innerHTML = `
                     <h4>${group.name || 'Sin nombre'}</h4>
                     <p>${group.description || 'Sin descripción'}</p>
                     <p>Tipo: ${group.is_hierarchical ? 'Jerárquico' : 'No jerárquico'}</p>
+                    <p>Rol: ${getRoleDisplayName(userRole)}</p>
+                    <div class="group-actions">
+                        <button onclick="showGroupMembers('${group.id}', '${group.name}')" class="btn-secondary">
+                            Ver Miembros
+                        </button>
+                        ${userRole === 'admin' ?
+                            `<button onclick="manageGroup('${group.id}')" class="btn-secondary">
+                                Gestionar Grupo
+                            </button>` : ''
+                        }
+                    </div>
                 `;
                 container.appendChild(groupCard);
 
@@ -469,15 +535,203 @@ async function loadGroups() {
                 option.textContent = group.name;
                 groupSelect.appendChild(option);
             });
+
+            // Agregar función de debug después de renderizar
+            setTimeout(() => {
+                debugGroupColors();
+                console.log('🎨 [DEBUG] Color debugging completed');
+            }, 1000);
+
+            console.log('✅ [DEBUG] Groups rendered successfully with colors');
+
         } else {
-            console.log('ℹ️ No groups found');
+            console.log('ℹ️ [DEBUG] No groups found');
             container.innerHTML = '<p>No hay grupos para mostrar</p>';
         }
+
+        console.log('🏁 [DEBUG] loadGroups COMPLETED');
     } catch (error) {
-        console.error('❌ Failed to load groups:', error);
+        console.error('❌ [DEBUG] Failed to load groups:', error);
         showNotification('Error al cargar grupos: ' + error.message, 'error');
     }
 }
+
+// Función para obtener el rol del usuario en un grupo específico
+async function getUserRoleInGroup(groupId, userId) {
+    try {
+        console.log(`🔍 Checking role for user ${userId} in group ${groupId}`);
+
+        // ✅ USAR EL ENDPOINT CORRECTO CON QUERY PARAMETER
+        const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+
+        console.log(`📦 Members response for group ${groupId}:`, result);
+
+        if (result.members && result.members.length > 0) {
+            console.log(`✅ Found ${result.members.length} members in group ${groupId}`);
+
+            // Buscar el usuario en los miembros
+            const userMember = result.members.find(member => {
+                // El campo puede ser user_id, userId, id, etc.
+                return member.user_id === userId ||
+                       member.userId === userId ||
+                       member.id === userId;
+            });
+
+            if (userMember) {
+                const role = userMember.role || userMember.Role || 'member';
+                console.log(`✅ User role in group ${groupId}: ${role}`);
+                return role;
+            } else {
+                console.log(`ℹ️ User ${userId} not found in group ${groupId} members`);
+            }
+        } else {
+            console.log(`ℹ️ No members found in group ${groupId}`);
+        }
+
+        console.log(`ℹ️ User not found in group ${groupId} members, returning 'non_member'`);
+        return 'non_member';
+    } catch (error) {
+        console.error(`❌ Failed to get user role in group ${groupId}:`, error);
+        return 'unknown';
+    }
+}
+
+// Función de debug para colores de grupos
+function debugGroupColors() {
+    const groupCards = document.querySelectorAll('#groups-list .item-card');
+    console.log(`🐛 Found ${groupCards.length} group cards`);
+
+    groupCards.forEach((card, index) => {
+        const computedStyle = window.getComputedStyle(card);
+        console.log(`Card ${index}:`, {
+            className: card.className,
+            borderLeftColor: computedStyle.borderLeftColor,
+            backgroundColor: computedStyle.backgroundColor,
+            innerHTML: card.innerHTML.substring(0, 100) + '...'
+        });
+    });
+}
+
+// Función para determinar la clase de color según el rol (SOLO 3 CASOS)
+function getGroupColorClass(userRole, isHierarchical) {
+    console.log(`🎨 Getting color for role: ${userRole}, hierarchical: ${isHierarchical}`);
+
+    // SOLO 3 CASOS SEGÚN LAS INSTRUCCIONES:
+    if (userRole === 'admin' && isHierarchical) {
+        console.log('🔴 Admin de grupo jerárquico - ROJO');
+        return 'group-admin-hierarchical';
+    } else if (userRole === 'member' && isHierarchical) {
+        console.log('🟢 Miembro de grupo jerárquico - VERDE');
+        return 'group-member-hierarchical';
+    } else if (!isHierarchical) {
+        console.log('🔵 Pertenece a grupo no jerárquico - AZUL');
+        return 'group-non-hierarchical';
+    } else {
+        console.log('⚪ Caso no definido - GRIS');
+        return 'group-other';
+    }
+}
+
+// Función para mostrar nombre del rol
+function getRoleDisplayName(role) {
+    const roleNames = {
+        'admin': 'Administrador',
+        'member': 'Miembro',
+        'viewer': 'Visualizador',
+        'non_member': 'No miembro',
+        'unknown': 'Desconocido'
+    };
+    return roleNames[role] || role;
+}
+
+// Función para mostrar miembros del grupo
+async function showGroupMembers(groupId, groupName) {
+    try {
+        console.log(`👥 Loading members for group ${groupId}`);
+
+        const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+
+        // Crear modal para mostrar miembros
+        const modalId = 'group-members-modal';
+        if (!document.getElementById(modalId)) {
+            createMembersModal(modalId);
+        }
+
+        const modal = document.getElementById(modalId);
+        const membersList = document.getElementById('group-members-list');
+        const modalTitle = document.getElementById('group-members-title');
+
+        modalTitle.textContent = `Miembros de: ${groupName}`;
+        membersList.innerHTML = '';
+
+        if (result.members && result.members.length > 0) {
+            console.log(`✅ Found ${result.members.length} members`);
+
+            result.members.forEach((member, index) => {
+                console.log(`👤 [DEBUG] Member ${index}:`, member); // DEBUG: Ver qué campos tiene el member
+
+                const memberItem = document.createElement('div');
+                memberItem.className = 'member-item';
+                memberItem.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong>Usuario:</strong> ${member.username || member.Username || member.user_id || member.userId || 'Usuario desconocido'}<br>
+                            <strong>Rol:</strong> ${getRoleDisplayName(member.role || member.Role)}<br>
+                            <strong>Agregado:</strong> ${new Date(member.joined_at || member.JoinedAt).toLocaleDateString()}
+                        </div>
+                        <div class="role-badge ${member.role || member.Role}">
+                            ${getRoleDisplayName(member.role || member.Role)}
+                        </div>
+                    </div>
+                `;
+                membersList.appendChild(memberItem);
+            });
+        } else {
+            membersList.innerHTML = '<p>No hay miembros en este grupo</p>';
+        }
+
+        // Actualizar título del modal con el nombre del grupo
+        const titleElement = document.getElementById('group-members-title');
+        if (titleElement) {
+            titleElement.textContent = `Miembros de ${groupName}`;
+        }
+
+        showModal(modalId);
+    } catch (error) {
+        console.error('❌ Failed to load group members:', error);
+        showNotification('Error al cargar miembros del grupo: ' + error.message, 'error');
+    }
+}
+
+// Función para crear modal de miembros
+function createMembersModal(modalId) {
+    const modalHTML = `
+        <div id="${modalId}" class="modal" style="display:none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="group-members-title">Miembros del Grupo</h3>
+                    <span class="close" onclick="closeModal('${modalId}')">&times;</span>
+                </div>
+                <div style="padding: 20px;">
+                    <div id="group-members-list"></div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+// Función para gestionar grupo (solo para admins)
+function manageGroup(groupId) {
+    showNotification('Funcionalidad de gestión de grupos en desarrollo', 'info');
+    // Aquí puedes implementar la lógica para gestionar el grupo
+    console.log(`⚙️ Managing group ${groupId}`);
+}
+
+// Agregar estas funciones al objeto global window
+window.showGroupMembers = showGroupMembers;
+window.manageGroup = manageGroup;
 
 async function createGroup(event) {
     event.preventDefault();
@@ -673,12 +927,16 @@ function debugState() {
 
 // Initialize
 window.onload = () => {
-    console.log('🚀 App initializing...');
+    console.log('🚀 [DEBUG] App initializing...');
+    console.log('📱 [DEBUG] About to call loadSession');
     loadSession();
+    console.log('📅 [DEBUG] About to call renderCalendar');
     renderCalendar();
-    
+
     // Debug cada 10 segundos
     setInterval(debugState, 10000);
+
+    console.log('✅ [DEBUG] App initialization completed');
 };
 
 // Delete event function

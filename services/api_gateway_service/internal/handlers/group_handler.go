@@ -202,6 +202,87 @@ func (h *GroupHandler) GetGroups(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"groups": groups})
 }
 
+func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
+	groupID := c.Query("group_id")
+	if groupID == "" {
+		// Intentar con "id" como fallback por si acaso
+		groupID = c.Query("id")
+	}
+
+	if groupID == "" {
+		h.logger.Warn("⚠️ group_id parameter is missing",
+			zap.String("query_params", c.Request.URL.RawQuery),
+			zap.Any("all_params", c.Request.URL.Query()))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "group_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("📋 Getting members for group",
+		zap.String("group_id", groupID),
+		zap.String("query_params", c.Request.URL.RawQuery))
+
+	// Create event to request group members from group service
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.member.list",
+		"data": map[string]interface{}{
+			"group_id": groupID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Requesting group members from group service",
+		zap.String("event_id", eventID),
+		zap.String("group_id", groupID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to get group members",
+			zap.Error(err),
+			zap.String("group_id", groupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group members: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Get group members failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", groupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group members: " + response.Error})
+		return
+	}
+
+	// Extract members from response
+	h.logger.Info("📦 Processing group members response",
+		zap.String("event_id", eventID),
+		zap.Any("response_data", response.Data))
+
+	// The response data should contain the members
+	members, ok := response.Data.([]interface{})
+	if !ok {
+		// Try alternative format
+		if data, ok := response.Data.(map[string]interface{}); ok {
+			if membersField, exists := data["members"]; exists {
+				if membersArray, ok := membersField.([]interface{}); ok {
+					members = membersArray
+				}
+			}
+		}
+	}
+
+	h.logger.Info("✅ Group members processing completed",
+		zap.String("group_id", groupID),
+		zap.Int("members_count", len(members)))
+
+	// Always return an array, even if empty
+	c.JSON(http.StatusOK, gin.H{"members": members})
+}
+
 // sendEventAndWaitForResponse publishes an event and waits for a response using the response handler
 func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}, replyChannel string) (*UserEventResponse, error) {
 	// Extract event ID from eventData
