@@ -547,7 +547,7 @@ func (c *DBServiceClient) RespondToInvitation(ctx context.Context, invitationID,
 }
 
 // ListUserInvitations returns all invitations for a user
-func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, status string) ([]*models.GroupInvitation, error) {
+func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, status string) ([]*models.GroupInvitationResponse, error) {
 	url := fmt.Sprintf("%s/api/v1/users/%s/invitations", c.baseURL, userID)
 	if status != "" {
 		url = fmt.Sprintf("%s?status=%s", url, status)
@@ -562,8 +562,8 @@ func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, statu
 	}
 
 	var resp struct {
-		Status string                    `json:"status"`
-		Data   []*models.GroupInvitation `json:"data"`
+		Status string                           `json:"status"`
+		Data   []*models.GroupInvitationResponse `json:"data"`
 	}
 
 	if err := json.Unmarshal(body, &resp); err != nil {
