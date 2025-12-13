@@ -181,11 +181,26 @@
         </div>
     </div>
 
+    <!-- Group Members Modal -->
+    <div id="group-members-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="group-members-title">Miembros del Grupo</h3>
+                <span class="close" onclick="closeModal('group-members-modal')">&times;</span>
+            </div>
+            <div style="padding: 20px;">
+                <div id="group-members-list" class="item-list">
+                    <!-- Members will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Notifications -->
     <div id="notification" class="notification" style="display:none;">
         <span id="notification-message"></span>
     </div>
 
-    <script src="/static/app.v2.js"></script>
+    <script src="/static/app.v2.js?v=1.0.3"></script>
 </body>
 </html>

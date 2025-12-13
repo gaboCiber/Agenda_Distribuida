@@ -1,16 +1,16 @@
-// app.js - Completo con todos los arreglos
-
 let token = null;
 let userId = null;
 let currentDate = new Date();
 
 // Load session from localStorage on page load
 function loadSession() {
+    console.log('🚀 [DEBUG] loadSession called');
+
     const savedToken = localStorage.getItem('agenda_token');
     const savedUserId = localStorage.getItem('agenda_userId');
     const savedEmail = localStorage.getItem('agenda_email');
 
-    console.log('🔍 Loading session from localStorage:', { 
+    console.log('🔍 [DEBUG] Loading session from localStorage:', {
         token: savedToken ? 'SET' : 'MISSING',
         userId: savedUserId || 'MISSING',
         email: savedEmail || 'MISSING'
@@ -42,8 +42,10 @@ function loadSession() {
             console.error('❌ Invalid userId in session:', userId);
         }
     } else {
-        console.log('ℹ️ No valid session found in localStorage');
+        console.log('ℹ️ [DEBUG] No valid session found in localStorage');
     }
+
+    console.log('🏁 [DEBUG] loadSession COMPLETED');
 }
 
 // Save session to localStorage
@@ -182,12 +184,16 @@ async function login(event) {
         console.log('🔄 Verifying userId before loading data:', userId);
         
         if (userId && userId !== 'undefined') {
-            console.log('✅ userId is valid, loading data...');
+            console.log('✅ [DEBUG] userId is valid, loading data...', { userId });
+            console.log('📅 [DEBUG] About to call loadEvents');
             await loadEvents();
+            console.log('👥 [DEBUG] About to call loadGroups');
             await loadGroups();
+            console.log('📊 [DEBUG] About to call renderCalendar');
             renderCalendar();
+            console.log('✅ [DEBUG] All data loading completed');
         } else {
-            console.error('❌ userId is invalid:', userId);
+            console.error('❌ [DEBUG] userId is invalid:', userId);
             showNotification('Error: No se pudo obtener el ID de usuario', 'error');
         }
 
@@ -427,39 +433,100 @@ function createEventFromForm() {
     }
 }
 
-// ✅ VERSIÓN DE EMERGENCIA - FORZAR user_id MANUALMENTE
+// ✅ VERSIÓN COMPLETA CON DETERMINACIÓN DE ROLES Y COLORES
 async function loadGroups() {
     try {
-        console.log('🎯 loadGroups called', { userId });
+        console.log('🎯 [DEBUG] loadGroups called - FULL VERSION with role determination', { userId, token: !!token });
 
         if (!userId) {
-            console.error('❌ No user ID available for loadGroups');
+            console.error('❌ [DEBUG] No user ID available for loadGroups');
             showNotification('No se pudo cargar grupos: usuario no identificado', 'error');
             return;
         }
 
-        console.log('🔍 Loading groups for user:', userId);
+        console.log('🔍 [DEBUG] Loading groups for user:', userId);
 
         // ✅ FORZAR user_id MANUALMENTE EN LA URL
+        console.log('🌐 [DEBUG] About to call apiRequest for groups');
         const result = await apiRequest(`/groups?user_id=${userId}`);
+        console.log('📦 [DEBUG] Groups response received:', result);
+
         const container = document.getElementById('groups-list');
         const groupSelect = document.getElementById('event-group');
 
+        console.log('🧹 [DEBUG] Clearing containers');
         container.innerHTML = '';
         groupSelect.innerHTML = '<option value="">Sin grupo</option>';
 
-        console.log('📦 Groups response:', result);
+        console.log('📦 [DEBUG] Groups response:', result);
 
         if (result.groups && result.groups.length > 0) {
-            console.log(`✅ Found ${result.groups.length} groups`);
-            result.groups.forEach(group => {
-                // Add to list
+            console.log(`✅ [DEBUG] Found ${result.groups.length} groups`);
+
+            // ✅ DEBUG: Mostrar estructura completa de grupos con roles
+            result.groups.forEach((group, index) => {
+                console.log(`Group ${index}:`, {
+                    id: group.id,
+                    name: group.name,
+                    role: group.role,           // ✅ CAMPO role
+                    user_role: group.user_role, // ✅ CAMPO user_role
+                    is_hierarchical: group.is_hierarchical,
+                    creator_id: group.creator_id,
+                    all_keys: Object.keys(group) // ✅ TODOS LOS CAMPOS DISPONIBLES
+                });
+            });
+
+            // ✅ NUEVA LÓGICA: Usar rol real que viene de la API
+            const processedGroups = result.groups.map((group) => {
+                console.log(`🔍 [DEBUG] Processing group ${group.id} (${group.name})`);
+                console.log(`🔍 [DEBUG] Group data from API:`, {
+                    id: group.id,
+                    name: group.name,
+                    user_role: group.user_role,  // ✅ ROL REAL DEL USUARIO
+                    is_hierarchical: group.is_hierarchical,
+                    creator_id: group.creator_id
+                });
+
+                // ✅ USAR EL ROL QUE VIENE DIRECTAMENTE DE LA API
+                const userRole = group.role || 'member'; // ✅ CAMBIAR: usar 'role' en lugar de 'user_role'
+
+                console.log(`👤 [DEBUG] User role from API for group ${group.name}: ${userRole}`);
+
+                const colorClass = getGroupColorClass(userRole, group.is_hierarchical);
+
+                console.log(`🎨 [DEBUG] Group ${group.name}: API_role=${userRole}, hierarchical=${group.is_hierarchical}, colorClass=${colorClass}`);
+
+                return {
+                    group,
+                    userRole,
+                    colorClass
+                };
+            });
+
+            console.log('✅ [DEBUG] All groups processed with simplified logic');
+
+            // Ahora renderizar todas las tarjetas
+            processedGroups.forEach(({ group, userRole, colorClass }) => {
+                console.log(`🎨 [DEBUG] Rendering group ${group.name} with class: ${colorClass}`);
+
+                // Add to list con color según rol
                 const groupCard = document.createElement('div');
-                groupCard.className = 'item-card';
+                groupCard.className = `item-card ${colorClass}`;
                 groupCard.innerHTML = `
                     <h4>${group.name || 'Sin nombre'}</h4>
                     <p>${group.description || 'Sin descripción'}</p>
                     <p>Tipo: ${group.is_hierarchical ? 'Jerárquico' : 'No jerárquico'}</p>
+                    <p>Rol: ${getRoleDisplayName(userRole)}</p>
+                    <div class="group-actions">
+                        <button onclick="showGroupMembers('${group.id}', '${group.name}', ${group.is_hierarchical})" class="btn-secondary">
+                            Ver Miembros
+                        </button>
+                        ${userRole === 'admin' ?
+                            `<button onclick="manageGroup('${group.id}', '${group.name}', ${group.is_hierarchical}, '${userRole}')" class="btn-primary">
+                                Gestionar Grupo
+                            </button>` : ''
+                        }
+                    </div>
                 `;
                 container.appendChild(groupCard);
 
@@ -469,15 +536,706 @@ async function loadGroups() {
                 option.textContent = group.name;
                 groupSelect.appendChild(option);
             });
+
+            // Agregar función de debug después de renderizar
+            setTimeout(() => {
+                debugGroupColors();
+                console.log('🎨 [DEBUG] Color debugging completed');
+            }, 1000);
+
+            console.log('✅ [DEBUG] Groups rendered successfully with colors');
+
         } else {
-            console.log('ℹ️ No groups found');
+            console.log('ℹ️ [DEBUG] No groups found');
             container.innerHTML = '<p>No hay grupos para mostrar</p>';
         }
+
+        console.log('🏁 [DEBUG] loadGroups COMPLETED');
     } catch (error) {
-        console.error('❌ Failed to load groups:', error);
+        console.error('❌ [DEBUG] Failed to load groups:', error);
         showNotification('Error al cargar grupos: ' + error.message, 'error');
     }
 }
+
+// Función para obtener el rol del usuario en un grupo específico
+async function getUserRoleInGroup(groupId, userId) {
+    try {
+        console.log(`🔍 Checking role for user ${userId} in group ${groupId}`);
+
+        // ✅ USAR EL ENDPOINT CORRECTO CON QUERY PARAMETER
+        const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+
+        console.log(`📦 Members response for group ${groupId}:`, result);
+
+        if (result.members && result.members.length > 0) {
+            console.log(`✅ Found ${result.members.length} members in group ${groupId}`);
+
+            // Buscar el usuario en los miembros
+            const userMember = result.members.find(member => {
+                // El campo puede ser user_id, userId, id, etc.
+                return member.user_id === userId ||
+                       member.userId === userId ||
+                       member.id === userId;
+            });
+
+            if (userMember) {
+                const role = userMember.role || userMember.Role || 'member';
+                console.log(`✅ User role in group ${groupId}: ${role}`);
+                return role;
+            } else {
+                console.log(`ℹ️ User ${userId} not found in group ${groupId} members`);
+            }
+        } else {
+            console.log(`ℹ️ No members found in group ${groupId}`);
+        }
+
+        console.log(`ℹ️ User not found in group ${groupId} members, returning 'non_member'`);
+        return 'non_member';
+    } catch (error) {
+        console.error(`❌ Failed to get user role in group ${groupId}:`, error);
+        return 'unknown';
+    }
+}
+
+// Función de debug para colores de grupos
+function debugGroupColors() {
+    const groupCards = document.querySelectorAll('#groups-list .item-card');
+    console.log(`🐛 Found ${groupCards.length} group cards`);
+
+    groupCards.forEach((card, index) => {
+        const computedStyle = window.getComputedStyle(card);
+        console.log(`Card ${index}:`, {
+            className: card.className,
+            borderLeftColor: computedStyle.borderLeftColor,
+            backgroundColor: computedStyle.backgroundColor,
+            innerHTML: card.innerHTML.substring(0, 100) + '...'
+        });
+    });
+}
+
+// Función para determinar la clase de color según el rol (SOLO 3 CASOS)
+function getGroupColorClass(userRole, isHierarchical) {
+    console.log(`🎨 Getting color for role: ${userRole}, hierarchical: ${isHierarchical}`);
+
+    // SOLO 3 CASOS SEGÚN LAS INSTRUCCIONES:
+    if (userRole === 'admin' && isHierarchical) {
+        console.log('🔴 Admin de grupo jerárquico - ROJO');
+        return 'group-admin-hierarchical';
+    } else if (userRole === 'member' && isHierarchical) {
+        console.log('🟢 Miembro de grupo jerárquico - VERDE');
+        return 'group-member-hierarchical';
+    } else if (!isHierarchical) {
+        console.log('🔵 Pertenece a grupo no jerárquico - AZUL');
+        return 'group-non-hierarchical';
+    } else {
+        console.log('⚪ Caso no definido - GRIS');
+        return 'group-other';
+    }
+}
+
+// Función para mostrar nombre del rol
+function getRoleDisplayName(role) {
+    const roleNames = {
+        'admin': 'Administrador',
+        'member': 'Miembro',
+        'viewer': 'Visualizador',
+        'non_member': 'No miembro',
+        'unknown': 'Desconocido'
+    };
+    return roleNames[role] || role;
+}
+
+// Función para mostrar miembros del grupo
+async function showGroupMembers(groupId, groupName, isHierarchical = true) {
+    try {
+        console.log(`👥 Loading members for group ${groupId}`);
+
+        const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+
+        // Crear modal para mostrar miembros
+        const modalId = 'group-members-modal';
+        if (!document.getElementById(modalId)) {
+            createMembersModal(modalId);
+        }
+
+        const modal = document.getElementById(modalId);
+        const membersList = document.getElementById('group-members-list');
+        const modalTitle = document.getElementById('group-members-title');
+
+        modalTitle.textContent = `Miembros de: ${groupName}`;
+        membersList.innerHTML = '';
+
+        if (result.members && result.members.length > 0) {
+            console.log(`✅ Found ${result.members.length} members`);
+
+            result.members.forEach((member, index) => {
+                console.log(`👤 [DEBUG] Member ${index}:`, member); // DEBUG: Ver qué campos tiene el member
+
+                const memberItem = document.createElement('div');
+                memberItem.className = 'member-item';
+
+                // ✅ USAR LOS NUEVOS CAMPOS: user_name y user_email
+                const userName = member.user_name || member.userName || member.username || member.Username || 'Usuario desconocido';
+                const userEmail = member.user_email || member.userEmail || 'Email desconocido';
+                const userRole = member.role || member.Role || 'member';
+                const joinedDate = new Date(member.joined_at || member.JoinedAt).toLocaleDateString();
+
+                // ✅ OCULTAR ROLES PARA GRUPOS NO JERÁRQUICOS
+                if (isHierarchical) {
+                    memberItem.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong>Nombre:</strong> ${userName}<br>
+                                <strong>Email:</strong> ${userEmail}<br>
+                                <strong>Rol:</strong> ${getRoleDisplayName(userRole)}<br>
+                                <strong>Agregado:</strong> ${joinedDate}
+                            </div>
+                            <div class="role-badge ${userRole}">
+                                ${getRoleDisplayName(userRole)}
+                            </div>
+                        </div>
+                    `;
+                } else {
+                    // Para grupos no jerárquicos, no mostrar el rol
+                    memberItem.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <strong>Nombre:</strong> ${userName}<br>
+                                <strong>Email:</strong> ${userEmail}<br>
+                                <strong>Agregado:</strong> ${joinedDate}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                membersList.appendChild(memberItem);
+            });
+        } else {
+            membersList.innerHTML = '<p>No hay miembros en este grupo</p>';
+        }
+
+        // Actualizar título del modal con el nombre del grupo
+        const titleElement = document.getElementById('group-members-title');
+        if (titleElement) {
+            titleElement.textContent = `Miembros de ${groupName}`;
+        }
+
+        showModal(modalId);
+    } catch (error) {
+        console.error('❌ Failed to load group members:', error);
+        showNotification('Error al cargar miembros del grupo: ' + error.message, 'error');
+    }
+}
+
+// Función para crear modal de miembros
+function createMembersModal(modalId) {
+    const modalHTML = `
+        <div id="${modalId}" class="modal" style="display:none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="group-members-title">Miembros del Grupo</h3>
+                    <span class="close" onclick="closeModal('${modalId}')">&times;</span>
+                </div>
+                <div style="padding: 20px;">
+                    <div id="group-members-list"></div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+// Función para gestionar grupo (solo para admins)
+function manageGroup(groupId, groupName, isHierarchical, userRole = 'member') {
+    const modalId = 'group-management-modal';
+    if (!document.getElementById(modalId)) {
+        createGroupManagementModal(modalId);
+    }
+
+    const modal = document.getElementById(modalId);
+    const modalTitle = document.getElementById('group-management-title');
+    const inviteForm = document.getElementById('group-invite-form');
+
+    modalTitle.textContent = `Gestionar Grupo: ${groupName}`;
+
+    // Set up the invitation form
+    inviteForm.onsubmit = function(event) {
+        event.preventDefault();
+        inviteUserByEmail(groupId);
+    };
+
+    // Store group info in the modal for other management functions
+    modal.dataset.groupId = groupId;
+    modal.dataset.groupName = groupName;
+    modal.dataset.isHierarchical = isHierarchical;
+    modal.dataset.userRole = userRole;
+
+    showModal(modalId);
+}
+
+// Función para crear el modal de gestión de grupos
+function createGroupManagementModal(modalId) {
+    const modalHTML = `
+        <div id="${modalId}" class="modal" style="display:none;">
+            <div class="modal-content" style="max-width: 600px;">
+                <div class="modal-header">
+                    <h3 id="group-management-title">Gestión de Grupo</h3>
+                    <span class="close" onclick="closeModal('${modalId}')">&times;</span>
+                </div>
+                <div style="padding: 20px;">
+                    <div class="tabs-container">
+                        <div class="tab-buttons">
+                            <button class="tab-button active" onclick="showGroupManagementTab('invite')">Invitar Usuario</button>
+                            <button class="tab-button" onclick="showGroupManagementTab('members')">Miembros</button>
+                            <button class="tab-button" onclick="showGroupManagementTab('settings')">Configuración</button>
+                        </div>
+
+                        <div id="group-management-content">
+                            <!-- Pestaña de Invitación -->
+                            <div id="group-tab-invite" class="tab-content active">
+                                <h4>Invitar Nuevo Usuario</h4>
+                                <form id="group-invite-form">
+                                    <div class="form-group">
+                                        <label for="invite-email">Email del Usuario:</label>
+                                        <input type="email" id="invite-email" class="form-control" required>
+                                    </div>
+                                    <p style="font-size: 14px; color: #666; margin-top: 10px;">
+                                        El usuario invitado recibirá un correo con la invitación y podrá unirse al grupo.
+                                    </p>
+                                    <button type="submit" class="btn-primary">Enviar Invitación</button>
+                                </form>
+                            </div>
+
+                            <!-- Pestaña de Miembros -->
+                            <div id="group-tab-members" class="tab-content" style="display: none;">
+                                <h4>Miembros del Grupo</h4>
+                                <div id="management-members-list">
+                                    <p>Cargando miembros...</p>
+                                </div>
+                            </div>
+
+                            <!-- Pestaña de Configuración -->
+                            <div id="group-tab-settings" class="tab-content" style="display: none;">
+                                <h4>Configuración del Grupo</h4>
+                                <div class="form-group">
+                                    <label for="group-settings-name">Nombre del Grupo:</label>
+                                    <input type="text" id="group-settings-name" class="form-control">
+                                </div>
+                                <div class="form-group">
+                                    <label for="group-settings-description">Descripción:</label>
+                                    <textarea id="group-settings-description" class="form-control" rows="3"></textarea>
+                                </div>
+                                <div class="form-group">
+                                    <label>
+                                        <input type="checkbox" id="group-settings-hierarchical" disabled>
+                                        Grupo Jerárquico
+                                    </label>
+                                </div>
+                                <div class="button-group" style="margin-top: 20px; display: flex; gap: 10px;">
+                                    <button class="btn-primary" onclick="updateGroupSettings()">Actualizar Grupo</button>
+                                    <button class="btn-danger" onclick="deleteGroup()" id="delete-group-btn">Eliminar Grupo</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+// Función para mostrar pestañas en la gestión de grupos
+function showGroupManagementTab(tabName) {
+    // Ocultar todas las pestañas
+    document.querySelectorAll('.tab-content').forEach(tab => {
+        tab.style.display = 'none';
+    });
+
+    // Remover clase activa de todos los botones
+    document.querySelectorAll('.tab-button').forEach(button => {
+        button.classList.remove('active');
+    });
+
+    // Mostrar la pestaña seleccionada
+    const tabContent = document.getElementById(`group-tab-${tabName}`);
+    if (tabContent) {
+        tabContent.style.display = 'block';
+
+        // Agregar clase activa al botón correspondiente
+        const activeButton = Array.from(document.querySelectorAll('.tab-button'))
+            .find(button => button.textContent.includes(getTabTitle(tabName)));
+        if (activeButton) {
+            activeButton.classList.add('active');
+        }
+
+        // Cargar datos específicos de la pestaña
+        if (tabName === 'members') {
+            loadManagementMembers();
+        } else if (tabName === 'settings') {
+            loadGroupSettings();
+        }
+    }
+}
+
+// Función auxiliar para obtener el título de la pestaña
+function getTabTitle(tabName) {
+    const titles = {
+        'invite': 'Invitar',
+        'members': 'Miembros',
+        'settings': 'Configuración'
+    };
+    return titles[tabName] || tabName;
+}
+
+// Función para cargar miembros en la pestaña de gestión
+async function loadManagementMembers() {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const groupName = modal.dataset.groupName;
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+
+    try {
+        const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+        const membersList = document.getElementById('management-members-list');
+
+        if (result.members && result.members.length > 0) {
+            membersList.innerHTML = '';
+
+            result.members.forEach((member, index) => {
+                const memberItem = document.createElement('div');
+                memberItem.className = 'member-item';
+                memberItem.style.marginBottom = '10px';
+
+                const userName = member.user_name || member.userName || member.username || 'Usuario desconocido';
+                const userEmail = member.user_email || member.userEmail || 'Email desconocido';
+                const userRole = member.role || 'member';
+                const joinedDate = new Date(member.joined_at || member.JoinedAt).toLocaleDateString();
+
+                let roleDisplay = '';
+                if (isHierarchical) {
+                    roleDisplay = `
+                        <div>
+                            <strong>Rol:</strong> ${getRoleDisplayName(userRole)}<br>
+                        </div>
+                        <div class="role-badge ${userRole}">
+                            ${getRoleDisplayName(userRole)}
+                        </div>
+                    `;
+                }
+
+                memberItem.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div style="flex: 1;">
+                            <strong>Nombre:</strong> ${userName}<br>
+                            <strong>Email:</strong> ${userEmail}<br>
+                            <strong>Agregado:</strong> ${joinedDate}
+                            ${roleDisplay}
+                        </div>
+                        ${isHierarchical ?
+                            `<button class="btn-secondary" style="margin-left: 10px; padding: 5px 10px;" onclick="changeMemberRole('${member.id}', '${userRole}')">
+                                Cambiar Rol
+                            </button>` : ''
+                        }
+                    </div>
+                `;
+                membersList.appendChild(memberItem);
+            });
+        } else {
+            membersList.innerHTML = '<p>No hay miembros en este grupo</p>';
+        }
+    } catch (error) {
+        console.error('❌ Failed to load members in management:', error);
+        document.getElementById('management-members-list').innerHTML =
+            `<p style="color: #dc3545;">Error al cargar miembros: ${error.message}</p>`;
+    }
+}
+
+// Función para cargar la configuración del grupo
+function loadGroupSettings() {
+    const modal = document.getElementById('group-management-modal');
+    const groupName = modal.dataset.groupName;
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+
+    // Cargar los datos actuales del grupo
+    document.getElementById('group-settings-name').value = groupName;
+    document.getElementById('group-settings-hierarchical').checked = isHierarchical;
+
+    // TODO: Cargar descripción si está disponible
+    document.getElementById('group-settings-description').value = 'Descripción del grupo...';
+}
+
+// Función para cambiar el rol de un miembro
+async function changeMemberRole(memberId, currentRole) {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const userRole = modal.dataset.userRole || 'member';
+
+    // Verificar permisos - solo admins pueden cambiar roles
+    if (userRole !== 'admin') {
+        showNotification('Solo los administradores pueden cambiar roles', 'error');
+        return;
+    }
+
+    const newRole = currentRole === 'admin' ? 'member' : 'admin';
+
+    try {
+        console.log(`🔄 Changing member ${memberId} role from ${currentRole} to ${newRole} in group ${groupId}`);
+
+        // Obtener el email del miembro (necesitamos buscarlo en la lista)
+        const membersResult = await apiRequest(`/groups/members?group_id=${groupId}`);
+        const member = membersResult.members.find(m => m.id === memberId);
+        const memberEmail = member.user_email || member.userEmail || member.email;
+
+        if (!memberEmail) {
+            showNotification('No se pudo obtener el email del miembro', 'error');
+            return;
+        }
+
+        const result = await apiRequest(`/groups/${groupId}/members/${encodeURIComponent(memberEmail)}/role`, 'PUT', {
+            group_id: groupId,
+            email: memberEmail,
+            role: newRole,
+            user_id: userId
+        });
+
+        showNotification(`Rol cambiado a ${getRoleDisplayName(newRole)} exitosamente!`, 'success');
+        console.log('✅ Member role updated successfully:', result);
+
+        // Recargar la lista de miembros para reflejar los cambios
+        await loadManagementMembers();
+
+    } catch (error) {
+        console.error('❌ Failed to change member role:', error);
+        let errorMessage = 'Error al cambiar el rol del miembro';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+// Función para cargar la configuración del grupo
+function loadGroupSettings() {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const groupName = modal.dataset.groupName;
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+
+    // Cargar los datos actuales del grupo
+    document.getElementById('group-settings-name').value = groupName;
+    document.getElementById('group-settings-hierarchical').checked = isHierarchical;
+
+    // TODO: Cargar descripción si está disponible
+    document.getElementById('group-settings-description').value = 'Descripción del grupo...';
+
+    // Controlar visibilidad del botón de eliminar según permisos
+    const deleteButton = document.getElementById('delete-group-btn');
+    const userRole = modal.dataset.userRole || 'member';
+    const isHierarchicalGroup = isHierarchical;
+
+    // Solo admins pueden eliminar grupos jerárquicos
+    // Cualquier miembro puede eliminar grupos no jerárquicos
+    if (isHierarchicalGroup && userRole !== 'admin') {
+        deleteButton.style.display = 'none';
+    } else {
+        deleteButton.style.display = 'inline-block';
+    }
+}
+
+// Función para actualizar la configuración del grupo
+async function updateGroupSettings() {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const userRole = modal.dataset.userRole || 'member';
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+
+    // Verificar permisos
+    const canUpdate = isHierarchical ? userRole === 'admin' : true;
+    if (!canUpdate) {
+        showNotification('Solo los administradores pueden actualizar grupos jerárquicos', 'error');
+        return;
+    }
+
+    const name = document.getElementById('group-settings-name').value;
+    const description = document.getElementById('group-settings-description').value;
+
+    try {
+        console.log(`⚙️ Updating group ${groupId}`);
+
+        const result = await apiRequest(`/groups/${groupId}?user_id=${encodeURIComponent(userId)}`, 'PUT', {
+            group_id: groupId,
+            name: name,
+            description: description,
+            user_id: userId
+        });
+
+        showNotification('Grupo actualizado exitosamente!', 'success');
+        console.log('✅ Group updated successfully:', result);
+
+        // Recargar grupos para reflejar los cambios
+        await loadGroups();
+
+    } catch (error) {
+        console.error('❌ Failed to update group:', error);
+        let errorMessage = 'Error al actualizar el grupo';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+// Función para eliminar un grupo
+async function deleteGroup() {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const groupName = modal.dataset.groupName;
+    const userRole = modal.dataset.userRole || 'member';
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+
+    // Verificar permisos
+    const canDelete = isHierarchical ? userRole === 'admin' : true;
+    if (!canDelete) {
+        showNotification('Solo los administradores pueden eliminar grupos jerárquicos', 'error');
+        return;
+    }
+
+    if (!confirm(`¿Estás seguro de que quieres eliminar el grupo "${groupName}"? Esta acción no se puede deshacer.`)) {
+        return;
+    }
+
+    try {
+        console.log(`🗑️ Deleting group ${groupId}`);
+
+        const result = await apiRequest(`/groups/${groupId}?user_id=${encodeURIComponent(userId)}`, 'DELETE', {
+            group_id: groupId,
+            user_id: userId
+        });
+
+        showNotification('Grupo eliminado exitosamente!', 'success');
+        console.log('✅ Group deleted successfully:', result);
+
+        // Cerrar modal y recargar grupos
+        closeModal('group-management-modal');
+        await loadGroups();
+
+    } catch (error) {
+        console.error('❌ Failed to delete group:', error);
+        let errorMessage = 'Error al eliminar el grupo';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+// Agregar estas funciones al objeto global window
+window.showGroupMembers = showGroupMembers;
+window.manageGroup = manageGroup;
+window.showGroupManagementTab = showGroupManagementTab;
+window.loadManagementMembers = loadManagementMembers;
+window.changeMemberRole = changeMemberRole;
+window.updateGroupSettings = updateGroupSettings;
+
+// Función para mostrar el formulario de invitación por email
+function showInviteForm(groupId, groupName) {
+    const modalId = 'invite-modal';
+    if (!document.getElementById(modalId)) {
+        createInviteModal(modalId);
+    }
+
+    const modal = document.getElementById(modalId);
+    const modalTitle = document.getElementById('invite-modal-title');
+    const inviteForm = document.getElementById('invite-form');
+
+    modalTitle.textContent = `Invitar a ${groupName}`;
+    inviteForm.onsubmit = function(event) {
+        event.preventDefault();
+        inviteUserByEmail(groupId);
+    };
+
+    showModal(modalId);
+}
+
+// Función para crear el modal de invitación
+function createInviteModal(modalId) {
+    const modalHTML = `
+        <div id="${modalId}" class="modal" style="display:none;">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="invite-modal-title">Invitar Usuario por Email</h3>
+                    <span class="close" onclick="closeModal('${modalId}')">&times;</span>
+                </div>
+                <div style="padding: 20px;">
+                    <form id="invite-form">
+                        <div class="form-group">
+                            <label for="invite-email">Email del Usuario:</label>
+                            <input type="email" id="invite-email" class="form-control" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="invite-role">Rol:</label>
+                            <select id="invite-role" class="form-control" required>
+                                <option value="member">Miembro</option>
+                                <option value="admin">Administrador</option>
+                            </select>
+                        </div>
+                        <button type="submit" class="btn-primary">Invitar</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    `;
+
+    document.body.insertAdjacentHTML('beforeend', modalHTML);
+}
+
+// Función para invitar usuario por email
+async function inviteUserByEmail(groupId) {
+    const email = document.getElementById('invite-email').value;
+
+    try {
+        console.log(`📧 Inviting user ${email} to group ${groupId}`);
+
+        // ✅ AGREGAR user_id MANUALMENTE A LA URL PARA POST
+        const result = await apiRequest(`/groups/invite?user_id=${encodeURIComponent(userId)}`, 'POST', {
+            group_id: groupId,
+            email: email
+        });
+
+        showNotification(`Invitación enviada a ${email} exitosamente!`, 'success');
+        closeModal('group-management-modal');
+
+        // Clear form
+        document.getElementById('invite-email').value = '';
+
+    } catch (error) {
+        console.error('❌ Failed to invite user:', error);
+        let errorMessage = 'Error al enviar la invitación';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+// Agregar función al objeto global window
+window.showInviteForm = showInviteForm;
+window.inviteUserByEmail = inviteUserByEmail;
 
 async function createGroup(event) {
     event.preventDefault();
@@ -673,12 +1431,16 @@ function debugState() {
 
 // Initialize
 window.onload = () => {
-    console.log('🚀 App initializing...');
+    console.log('🚀 [DEBUG] App initializing...');
+    console.log('📱 [DEBUG] About to call loadSession');
     loadSession();
+    console.log('📅 [DEBUG] About to call renderCalendar');
     renderCalendar();
-    
+
     // Debug cada 10 segundos
     setInterval(debugState, 10000);
+
+    console.log('✅ [DEBUG] App initialization completed');
 };
 
 // Delete event function

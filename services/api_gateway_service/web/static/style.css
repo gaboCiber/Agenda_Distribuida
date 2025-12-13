@@ -447,3 +447,166 @@ textarea {
         padding: 1px 3px;
     }
 }
+
+/* ✅ ESTILOS PARA GRUPOS CON COLORES SEGÚN LOS 3 CASOS */
+
+/* 1. Admin de grupo jerárquico - ROJO */
+.group-admin-hierarchical {
+    border-left: 5px solid #dc3545 !important;
+    background: linear-gradient(135deg, #ffe6e6 0%, #ffffff 100%) !important;
+}
+
+/* 2. Miembro de grupo jerárquico - VERDE */
+.group-member-hierarchical {
+    border-left: 5px solid #28a745 !important;
+    background: linear-gradient(135deg, #e6ffe6 0%, #ffffff 100%) !important;
+}
+
+/* 3. Pertenece a grupo no jerárquico - AZUL */
+.group-non-hierarchical {
+    border-left: 5px solid #007bff !important;
+    background: linear-gradient(135deg, #e6f3ff 0%, #ffffff 100%) !important;
+}
+
+/* Caso no definido - GRIS */
+.group-other {
+    border-left: 5px solid #6c757d !important;
+    background: linear-gradient(135deg, #f8f9fa 0%, #ffffff 100%) !important;
+}
+
+/* Badges para roles */
+.role-badge {
+    padding: 4px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    color: white;
+}
+
+.role-badge.admin {
+    background-color: #dc3545;
+}
+
+.role-badge.member {
+    background-color: #28a745;
+}
+
+.role-badge.viewer {
+    background-color: #6c757d;
+}
+
+/* Estilos para miembros en modal */
+.member-item {
+    padding: 12px;
+    margin-bottom: 8px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    border-left: 4px solid #007bff;
+}
+
+.member-item:hover {
+    background: #e9ecef;
+    transform: translateY(-2px);
+    transition: all 0.2s ease;
+}
+
+/* Botones para grupos */
+.group-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 12px;
+}
+
+.group-actions button {
+    flex: 1;
+}
+
+/* Responsive para grupos */
+@media (max-width: 768px) {
+    .member-item {
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .role-badge {
+        align-self: flex-start;
+    }
+}
+
+/* Estilos para la gestión de grupos */
+.tabs-container {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.tab-buttons {
+    display: flex;
+    gap: 5px;
+    border-bottom: 2px solid #e9ecef;
+    margin-bottom: 15px;
+}
+
+.tab-button {
+    padding: 10px 15px;
+    background: #f8f9fa;
+    border: none;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: #495057;
+    border-radius: 5px 5px 0 0;
+    transition: all 0.3s;
+}
+
+.tab-button:hover {
+    background: #e9ecef;
+}
+
+.tab-button.active {
+    background: #007bff;
+    color: white;
+    border-bottom: 2px solid #007bff;
+}
+
+.tab-content {
+    display: none;
+    animation: fadeIn 0.3s;
+}
+
+.tab-content.active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Estilos para los botones de gestión */
+.group-actions button {
+    padding: 8px 12px;
+    font-size: 13px;
+}
+
+/* Responsive para gestión de grupos */
+@media (max-width: 600px) {
+    .tab-buttons {
+        flex-wrap: wrap;
+    }
+
+    .tab-button {
+        flex: 1;
+        min-width: 100px;
+    }
+
+    .modal-content {
+        width: 95%;
+    }
+}
