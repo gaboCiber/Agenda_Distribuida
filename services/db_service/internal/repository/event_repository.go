@@ -177,13 +177,15 @@ func (r *eventRepository) Delete(ctx context.Context, id uuid.UUID) error {
 	return nil
 }
 
-// ListByUser lists events for a given user with pagination
+// ListByUser lists events for a given user with pagination (personal events and accepted group events)
 func (r *eventRepository) ListByUser(ctx context.Context, userID uuid.UUID, offset, limit int) ([]*models.Event, error) {
 	query := `
-		SELECT id, title, description, start_time, end_time, user_id, created_at, updated_at
-		FROM events
-		WHERE user_id = $1
-		ORDER BY start_time DESC
+		SELECT DISTINCT e.id, e.title, e.description, e.start_time, e.end_time, e.user_id, e.created_at, e.updated_at
+		FROM events e
+		LEFT JOIN group_event_status ges ON e.id = ges.event_id AND ges.user_id = $1
+		LEFT JOIN group_events ge ON ges.event_id = ge.event_id AND ges.group_id = ge.group_id
+		WHERE e.user_id = $1 OR (ges.status = 'accepted' AND ge.status = 'accepted')
+		ORDER BY e.start_time DESC
 		LIMIT $2 OFFSET $3
 	`
 
@@ -273,11 +275,11 @@ func (r *eventRepository) CheckTimeConflict(ctx context.Context, userID uuid.UUI
 		r.log.Error().
 			Err(err).
 			Str("user_id", userID.String()).
-			Str("exclude_event_id", func() string { 
-				if excludeEventID != nil { 
-					return excludeEventID.String() 
-				} 
-				return "none" 
+			Str("exclude_event_id", func() string {
+				if excludeEventID != nil {
+					return excludeEventID.String()
+				}
+				return "none"
 			}()).
 			Str("query", query).
 			Msg("Failed to check time conflict")
