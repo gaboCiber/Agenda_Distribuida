@@ -62,6 +62,31 @@ func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []stri
 	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
 }
 
+// UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado
+func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisURL string) (string, error) {
+	// Obtener el Redis primary actual desde el DB service
+	primary, err := s.dbClient.GetRedisPrimary(ctx)
+	if err != nil {
+		s.logger.Warn("No se pudo obtener el Redis primary", zap.Error(err))
+		return currentRedisURL, err
+	}
+
+	// Asegurar que la URL tenga el esquema redis://
+	if primary != "" && !strings.HasPrefix(primary, "redis://") {
+		primary = "redis://" + primary
+	}
+
+	// Si el primary es diferente al actual, necesitamos reconectar
+	if primary != currentRedisURL {
+		s.logger.Info("Redis primary ha cambiado", 
+			zap.String("old", currentRedisURL), 
+			zap.String("new", primary))
+		return primary, nil
+	}
+
+	return currentRedisURL, nil
+}
+
 // ProcessGroupEvent processes group-related events
 func (s *EventService) ProcessGroupEvent(ctx context.Context, event models.Event) (*models.EventResponse, error) {
 	switch event.Type {

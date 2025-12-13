@@ -1096,3 +1096,39 @@ func (c *DBServiceClient) isNodeLeader(ctx context.Context, nodeURL string) bool
 
 	return nodeInfo.State == "Leader"
 }
+
+// GetRedisPrimary obtiene la dirección del Redis primary desde el DB service
+func (c *DBServiceClient) GetRedisPrimary(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/api/v1/configs/redis_primary", c.baseURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("error getting redis primary config: status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var config struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+
+	if err := json.Unmarshal(body, &config); err != nil {
+		return "", err
+	}
+
+	return config.Value, nil
+}

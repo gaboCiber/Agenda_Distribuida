@@ -542,7 +542,7 @@ func (r *RaftGroupEventRepository) UpdateInvitation(ctx context.Context, id uuid
 }
 
 // GetUserInvitations delegates the read operation to the base repository.
-func (r *RaftGroupEventRepository) GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitation, error) {
+func (r *RaftGroupEventRepository) GetUserInvitations(ctx context.Context, userID uuid.UUID, status string) ([]*models.GroupInvitationResponse, error) {
 	return r.baseRepo.GetUserInvitations(ctx, userID, status)
 }
 

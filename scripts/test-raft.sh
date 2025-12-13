@@ -10,7 +10,7 @@ CURRENT_DIR="$(pwd)"
 if [ $# -eq 0 ]; then
     echo "Usage: $0 [all|redis|raft-db|user|group]"
     echo "  all     - Start all services in order"
-    echo "  redis   - Start Redis only"
+    echo "  redis   - Start Redis cluster + supervisor only"
     echo "  raft-db - Start Raft DB cluster (3 nodes)"
     echo "  user    - Start User Service only"
     echo "  group   - Start Group Service only"
@@ -24,12 +24,64 @@ echo "Checking Docker network..."
 docker network inspect $NETWORK_NAME >/dev/null 2>&1 || \
     docker network create --driver bridge $NETWORK_NAME
 
+# Redis cluster configuration
+REDIS_A_NAME="agenda-redis-a-service"
+REDIS_B_NAME="agenda-redis-b-service"
+REDIS_C_NAME="agenda-redis-c-service"
+REDIS_SUPERVISOR_NAME="agenda-redis-supervisor-service"
+
 start_redis() {
-    echo "Starting Redis container..."
-    docker run -d --name agenda-redis-service --network $NETWORK_NAME \
-      -p 6380:6379 \
+    echo "Starting Redis cluster + supervisor..."
+    
+    # Stop existing Redis containers
+    echo "Stopping existing Redis containers..."
+    docker stop $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME > /dev/null 2>&1 || true
+    docker rm $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME > /dev/null 2>&1 || true
+
+    # Start Redis A (Master)
+    echo "Starting Redis A (Master)..."
+    docker run -d --name $REDIS_A_NAME --network $NETWORK_NAME \
+      -p 6379:6379 \
       redis:7-alpine
-    echo "Redis started at localhost:6380"
+    echo "Redis A (Master) started on port 6379"
+    
+    sleep 2
+    
+    # Start Redis B (Replica)
+    echo "Starting Redis B (Replica)..."
+    docker run -d --name $REDIS_B_NAME --network $NETWORK_NAME \
+      -p 6380:6379 \
+      redis:7-alpine redis-server --replicaof $REDIS_A_NAME 6379
+    echo "Redis B (Replica) started on port 6380"
+    
+    sleep 2
+    
+    # Start Redis C (Replica)
+    echo "Starting Redis C (Replica)..."
+    docker run -d --name $REDIS_C_NAME --network $NETWORK_NAME \
+      -p 6381:6379 \
+      redis:7-alpine redis-server --replicaof $REDIS_A_NAME 6379
+    echo "Redis C (Replica) started on port 6381"
+    
+    sleep 2
+    
+    # Start Redis Supervisor
+    echo "Starting Redis Supervisor..."
+    docker run -d --name $REDIS_SUPERVISOR_NAME --network $NETWORK_NAME \
+      -v /var/run/docker.sock:/var/run/docker.sock \
+      -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379" \
+      -e DB_SERVICE_URL="http://agenda-db-raft-node-1:8001" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e PING_INTERVAL=1 \
+      -e FAILURE_THRESHOLD=3 \
+      agenda-redis-supervisor
+    echo "Redis Supervisor started"
+    
+    echo "=== Redis cluster started ==="
+    echo "Redis A (Master): ${REDIS_A_NAME}:6379"
+    echo "Redis B (Replica): ${REDIS_B_NAME}:6379" 
+    echo "Redis C (Replica): ${REDIS_C_NAME}:6379"
+    echo "Redis Supervisor: ${REDIS_SUPERVISOR_NAME}"
 }
 
 start_raft_db() {
@@ -85,7 +137,7 @@ start_user() {
     echo "Starting User Service..."
     docker run -d --name agenda-user-service --network $NETWORK_NAME \
       -p 8004:8004 \
-      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=users_events \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
       -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
@@ -98,7 +150,7 @@ start_group() {
     echo "Starting Group Service..."
     docker run -d --name agenda-group-service --network $NETWORK_NAME \
       -p 8005:8005 \
-      -e REDIS_URL=redis://agenda-redis-service:6379 \
+      -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=groups_events \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
       -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
@@ -109,8 +161,8 @@ start_group() {
 
 stop_services() {
     echo "Stopping all services..."
-    docker stop agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
-    docker rm agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-redis-service 2>/dev/null
+    docker stop agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
+    docker rm agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
     echo "All services stopped"
 }
 
@@ -124,8 +176,11 @@ clean_data() {
 
 show_status() {
     echo "=== Service Status ==="
-    echo "Redis:"
-    docker ps --filter "name=agenda-redis-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo "Redis Cluster:"
+    docker ps --filter "name=agenda-redis-" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo ""
+    echo "Redis Supervisor:"
+    docker ps --filter "name=agenda-redis-supervisor-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     echo ""
     echo "Raft DB Cluster:"
     docker ps --filter "name=agenda-db-raft-node" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
@@ -135,6 +190,14 @@ show_status() {
     echo ""
     echo "Group Service:"
     docker ps --filter "name=agenda-group-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo ""
+    echo "=== Redis Roles ==="
+    echo "Redis A:"
+    docker exec $REDIS_A_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
+    echo "Redis B:"
+    docker exec $REDIS_B_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
+    echo "Redis C:"
+    docker exec $REDIS_C_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
     echo ""
     echo "=== Raft Status ==="
     echo "Node 1 (8001):"
@@ -149,10 +212,10 @@ show_status() {
 
 case $SERVICE in
     all)
-        echo "Starting all services in order: redis → raft-db → user → group"
+        echo "Starting all services in order: redis cluster + supervisor → raft-db → user → group"
         clean_data
         start_redis
-        sleep 2
+        sleep 5  # Give Redis cluster + supervisor time to initialize
         start_raft_db
         sleep 5
         start_user
@@ -196,8 +259,11 @@ esac
 echo ""
 echo "=== Useful Commands ==="
 echo "Check Raft status: curl http://localhost:8001/raft/status"
+echo "Check Redis roles: docker exec $REDIS_A_NAME redis-cli INFO replication | grep role"
+echo "Check Redis Supervisor logs: docker logs $REDIS_SUPERVISOR_NAME"
 echo "Check User Service logs: docker logs agenda-user-service"
 echo "Check Group Service logs: docker logs agenda-group-service"
 echo "Test User Service: curl http://localhost:8004/health"
 echo "Test Group Service: curl http://localhost:8005/health"
 echo "Check Raft logs: docker logs agenda-db-raft-node-1"
+echo "Simulate Redis failover: docker stop $REDIS_A_NAME"
