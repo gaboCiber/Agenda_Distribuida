@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/agenda-distribuida/db-service/internal/consensus"
 	"github.com/agenda-distribuida/db-service/internal/models"
@@ -46,6 +47,8 @@ func (r *RaftUserRepository) Create(ctx context.Context, user *models.User) erro
 		Email          string    `json:"email"`
 		HashedPassword string    `json:"hashed_password"`
 		IsActive       bool      `json:"is_active"`
+		CreatedAt      time.Time `json:"created_at"`
+		UpdatedAt      time.Time `json:"updated_at"`
 	}
 
 	payload, err := json.Marshal(createPayload{
@@ -54,6 +57,8 @@ func (r *RaftUserRepository) Create(ctx context.Context, user *models.User) erro
 		Email:          user.Email,
 		HashedPassword: user.HashedPassword,
 		IsActive:       user.IsActive,
+		CreatedAt:      user.CreatedAt,
+		UpdatedAt:      user.UpdatedAt,
 	})
 	if err != nil {
 		return fmt.Errorf("error al serializar usuario: %w", err)

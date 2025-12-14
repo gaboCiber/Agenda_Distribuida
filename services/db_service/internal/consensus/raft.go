@@ -235,8 +235,15 @@ func (rn *RaftNode) Propose(command DBCommand) (<-chan error, error) {
 
 	logger.InfoLogger.Printf("[Líder %s]: Comando propuesto en índice %d. Nuevo tamaño del log: %d", rn.id, newLogIndex, len(rn.log))
 
-	// No esperamos a que se replique, simplemente lo añadimos y el siguiente
-	// heartbeat se encargará de enviarlo.
+	// Intentar actualizar el commitIndex inmediatamente.
+	// Esto es seguro porque updateCommitIndex() respeta el principio de Raft:
+	// - Solo compromete si matchCount >= majority
+	// - En un solo nodo: majority = 1, matchCount = 1 (el líder) → puede comprometer
+	// - En múltiples nodos: majority > 1, matchCount = 1 → NO compromete hasta que otros repliquen
+	// El siguiente heartbeat se encargará de enviar el comando a los seguidores y
+	// actualizar el commitIndex cuando otros nodos repliquen.
+	rn.updateCommitIndex()
+
 	return applyCh, nil
 }
 
@@ -963,20 +970,9 @@ func (rn *RaftNode) run() {
 		// Actualizar el leaderID si somos el líder
 		if state == Leader {
 			rn.leaderID = rn.id
-		} else {
-			// Si no somos el líder, intentamos descubrir quién es.
-			// Esto es una simplificación; en un Raft real, el líder se comunica a los seguidores.
-			// La lógica de AppendEntries ya actualiza el leaderID en el seguidor.
-			// Si no somos el líder y no hemos recibido un heartbeat, el leaderID podría estar desactualizado.
-			// Para una implementación más robusta, el líder debería enviar su ID en los heartbeats.
-			// Por ahora, si no somos el líder, y no hemos recibido un voto reciente, asumimos que no conocemos al líder.
-			if rn.state == Follower && rn.votedFor != "" {
-				// Si somos follower y hemos votado por alguien, asumimos que es el líder (simplificación)
-				rn.leaderID = rn.votedFor
-			} else {
-				rn.leaderID = ""
-			}
 		}
+		// Nota: Para los seguidores, el leaderID se actualiza en AppendEntries cuando reciben
+		// heartbeats del líder. No lo reseteamos aquí para evitar sobrescribir el valor correcto.
 		rn.mu.Unlock()
 
 		switch state {
@@ -994,7 +990,11 @@ func (rn *RaftNode) run() {
 					}
 				}
 			doneDraining:
-				logger.InfoLogger.Printf("[Nodo %s]: FOLLOWER del lider %s en el término %d", rn.id, rn.votedFor, rn.currentTerm+1)
+				rn.mu.Lock()
+				leaderID := rn.leaderID
+				currentTerm := rn.currentTerm
+				rn.mu.Unlock()
+				logger.InfoLogger.Printf("[Nodo %s]: FOLLOWER del lider %s en el término %d", rn.id, leaderID, currentTerm)
 				rn.resetElectionTimer()
 			case <-rn.electionTimer.C:
 				rn.mu.Lock()
@@ -1161,6 +1161,40 @@ func (rn *RaftNode) startElection() {
 			}
 		}(peerId)
 	}
+
+	// Verificar si somos el único nodo o si ya tenemos la mayoría después de un breve delay
+	// Esto permite que un nodo solitario se convierta en líder
+	electionTerm := rn.currentTerm // Capturar el término de esta elección
+	go func() {
+		// Esperar un poco para que las solicitudes RPC tengan tiempo de fallar si no hay otros nodos
+		time.Sleep(200 * time.Millisecond)
+
+		rn.mu.Lock()
+		defer rn.mu.Unlock()
+
+		// Solo verificar si todavía somos candidatos para el mismo término
+		if rn.state != Candidate || rn.currentTerm != electionTerm {
+			return
+		}
+
+		// Obtener el número actual de peers que respondieron
+		currentRespondedPeers := atomic.LoadInt32(&respondedPeers)
+		currentVoteCount := atomic.LoadInt32(&rn.voteCount)
+
+		// Calcular la mayoría necesaria
+		majority := int(currentRespondedPeers/2) + 1
+
+		// Si ya tenemos la mayoría (incluyendo el caso de un solo nodo), convertirnos en líder
+		if int(currentVoteCount) >= majority {
+			logger.InfoLogger.Printf("[Nodo %s]: Elección ganada (nodo solitario o mayoría alcanzada). Votos: %d. Nodos activos: %d. Mayoría necesaria: %d. Señalizando para convertirse en Líder.",
+				rn.id, currentVoteCount, currentRespondedPeers, majority)
+			select {
+			case rn.winElectionChan <- true:
+			default:
+				// El canal ya está lleno, alguien más ya señaló la victoria.
+			}
+		}
+	}()
 }
 
 // sendHeartbeats envía RPCs AppendEntries (posiblemente con logs) a todos los seguidores.
@@ -1273,7 +1307,11 @@ func (rn *RaftNode) updateCommitIndex() {
 		// --- QUORUM DINÁMICO ---
 		// La mayoría se calcula sobre los nodos activos en la partición actual.
 		activeClusterSize := len(rn.activePeers) + 1 // +1 para el líder
-		majority := activeClusterSize/2 + 1
+		// Calcular mayoría: (activeClusterSize / 2) + 1
+		// Para un solo nodo: (1 / 2) + 1 = 0 + 1 = 1
+		// Para dos nodos: (2 / 2) + 1 = 1 + 1 = 2
+		// Para tres nodos: (3 / 2) + 1 = 1 + 1 = 2
+		majority := (activeClusterSize / 2) + 1
 
 		if matchCount >= majority {
 			logger.InfoLogger.Printf("[Líder %s] INFO: Avanzando commitIndex a %d (matchCount: %d, mayoría: %d)", rn.id, N, matchCount, majority)
@@ -1296,7 +1334,7 @@ func (rn *RaftNode) becomeFollower(term int, leaderID string) {
 	rn.state = Follower
 	rn.currentTerm = term
 	rn.votedFor = ""
-	rn.leaderID = "" // Resetear el líder conocido al convertirse en seguidor.
+	rn.leaderID = leaderID // Establecer el líder conocido al convertirse en seguidor.
 	logger.InfoLogger.Printf("[Nodo %s]: Convertido a SEGUIDOR de %s para el término %d", rn.id, leaderID, term)
 	rn.resetElectionTimerUnlocked()
 }
