@@ -120,6 +120,9 @@ type RaftNode struct {
 
 	// --- Estado del líder (para consultas externas) ---
 	leaderID string // ID del líder actual (vacío si no se conoce o no es líder).
+
+	// --- Para quorum dinámico (flexibilización de Raft) ---
+	activePeers map[string]bool // Nodos considerados activos para el quorum dinámico.
 }
 
 // NewRaftNode crea e inicializa un nuevo nodo Raft.
@@ -169,6 +172,7 @@ func NewRaftNode(id string, peerAddress map[string]string, baseDir string, repos
 		repositories:      repos,
 		pendingCommands:   make(map[int]chan error),
 		leaderID:          "", // Inicialmente no conocemos al líder.
+		activePeers:       make(map[string]bool),
 	}
 	return rn
 }
@@ -288,10 +292,17 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 		userRepo := repo.(repository.UserRepository)
 		switch cmd.Method {
 		case "Create":
+			// --- DEBUGGING TIMESTAMP CORRUPTION ---
+			logger.InfoLogger.Printf("[DEBUG] Payload para Create User: %s", string(cmd.Payload))
+
 			var user models.User
 			if err := json.Unmarshal(cmd.Payload, &user); err != nil {
 				return fmt.Errorf("error al deserializar payload para UserRepository.Create: %w", err)
 			}
+
+			logger.InfoLogger.Printf("[DEBUG] User deserializado: %+v", user)
+			// --- FIN DEBUGGING ---
+
 			return userRepo.Create(context.Background(), &user)
 
 		case "Update":
@@ -303,6 +314,21 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para UserRepository.Update: %w", err)
 			}
+
+			// LWW Logic
+			existingUser, err := userRepo.GetByID(context.Background(), payload.ID)
+			if err != nil {
+				// Si el usuario no existe, podemos proceder con la "actualización" que en la práctica podría ser una creación o simplemente fallar.
+				// Por ahora, procedemos.
+				logger.InfoLogger.Printf("[LWW] Usuario con ID %s no encontrado, procediendo con la operación.", payload.ID)
+			} else {
+				// Si el timestamp del comando es más antiguo o igual, se ignora.
+				if !payload.User.UpdatedAt.After(existingUser.UpdatedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el usuario %s. El comando es más antiguo o igual que el estado actual.", payload.ID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
 			return userRepo.Update(context.Background(), payload.ID, payload.User)
 
 		case "Delete":
@@ -357,7 +383,20 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para EventRepository.Update: %w", err)
 			}
-			_, err := eventRepo.Update(context.Background(), payload.ID, payload.UpdateReq)
+
+			// LWW Logic
+			existingEvent, err := eventRepo.GetByID(context.Background(), payload.ID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Evento con ID %s no encontrado, procediendo con la operación.", payload.ID)
+			} else {
+				// LWW Logic - UpdatedAt is a value type, not a pointer
+				if !payload.UpdateReq.UpdatedAt.After(existingEvent.UpdatedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el evento %s. El comando es más antiguo o igual que el estado actual.", payload.ID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
+			_, err = eventRepo.Update(context.Background(), payload.ID, payload.UpdateReq)
 			return err
 
 		case "Delete":
@@ -408,6 +447,19 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &group); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupRepository.Update: %w", err)
 			}
+
+			// LWW Logic
+			existingGroup, err := groupRepo.GetByID(context.Background(), group.ID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Grupo con ID %s no encontrado, procediendo con la operación.", group.ID)
+			} else {
+				// LWW check
+				if !group.UpdatedAt.After(existingGroup.UpdatedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el grupo %s. El comando es más antiguo o igual que el estado actual.", group.ID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
 			return groupRepo.Update(context.Background(), &group)
 
 		case "Delete":
@@ -444,16 +496,23 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			return groupRepo.AddMember(context.Background(), member)
 
 		case "UpdateGroupMember":
-			type updateMemberPayload struct {
-				GroupID uuid.UUID `json:"group_id"`
-				UserID  uuid.UUID `json:"user_id"`
-				Role    string    `json:"role"`
-			}
-			var payload updateMemberPayload
-			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+			var member models.GroupMember
+			if err := json.Unmarshal(cmd.Payload, &member); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupRepository.UpdateGroupMember: %w", err)
 			}
-			return groupRepo.UpdateGroupMember(context.Background(), payload.GroupID, payload.UserID, payload.Role)
+
+			// LWW Logic
+			existingMember, err := groupRepo.GetGroupMember(context.Background(), member.GroupID, member.UserID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Miembro del grupo no encontrado, procediendo con la operación.")
+			} else {
+				if !member.JoinedAt.After(existingMember.JoinedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el miembro %s en el grupo %s. El comando es más antiguo o igual.", member.UserID, member.GroupID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
+			return groupRepo.UpdateGroupMember(context.Background(), member.GroupID, member.UserID, member.Role)
 
 		case "RemoveMember":
 			type removeMemberPayload struct {
@@ -533,12 +592,26 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 				EventID        uuid.UUID          `json:"event_id"`
 				Status         models.EventStatus `json:"status"`
 				IsHierarchical bool               `json:"is_hierarchical"`
+				UpdatedAt      time.Time          `json:"updated_at"` // Asumimos que este campo se añade al payload
 			}
 			var payload updateGroupEventPayload
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateGroupEvent: %w", err)
 			}
-			_, err := groupEventRepo.UpdateGroupEvent(context.Background(), payload.GroupID, payload.EventID, payload.Status, payload.IsHierarchical)
+
+			// LWW Logic
+			existingGroupEvent, err := groupEventRepo.GetGroupEvent(context.Background(), payload.EventID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Evento de grupo para Evento %s y Grupo %s no encontrado, procediendo.", payload.EventID, payload.GroupID)
+			} else {
+				// Asumimos que el modelo GroupEvent tiene un campo UpdatedAt o AddedAt que podemos usar.
+				if !payload.UpdatedAt.After(existingGroupEvent.AddedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el evento de grupo %s. El comando es más antiguo o igual.", payload.EventID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
+			_, err = groupEventRepo.UpdateGroupEvent(context.Background(), payload.GroupID, payload.EventID, payload.Status, payload.IsHierarchical)
 			return err
 
 		case "AddEventStatus":
@@ -559,6 +632,18 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateEventStatus: %w", err)
 			}
+
+			// LWW Logic
+			existingStatus, err := groupEventRepo.GetEventStatus(context.Background(), payload.EventID, payload.UserID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Estado de evento para Evento %s y Usuario %s no encontrado, procediendo.", payload.EventID, payload.UserID)
+			} else {
+				if !payload.UpdatedAt.After(*existingStatus.RespondedAt) { // El campo en el struct es RespondedAt (puntero)
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización de estado para el evento %s. El comando es más antiguo o igual.", payload.EventID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
 			return groupEventRepo.UpdateEventStatus(context.Background(), payload.EventID, payload.UserID, payload.Status, payload.UpdatedAt)
 
 		case "CreateInvitation":
@@ -570,14 +655,28 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 
 		case "UpdateInvitation":
 			type updateInvitationPayload struct {
-				ID     uuid.UUID `json:"id"`
-				Status string    `json:"status"`
+				ID        uuid.UUID          `json:"id"`
+				Status    models.EventStatus `json:"status"`
+				UpdatedAt time.Time          `json:"updated_at"`
 			}
 			var payload updateInvitationPayload
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateInvitation: %w", err)
 			}
-			return groupEventRepo.UpdateInvitation(context.Background(), payload.ID, payload.Status)
+
+			// LWW Logic
+			existingInvitation, err := groupEventRepo.GetInvitationByID(context.Background(), payload.ID)
+			if err != nil {
+				logger.InfoLogger.Printf("[LWW] Invitación con ID %s no encontrada, procediendo.", payload.ID)
+			} else {
+				// El campo RespondedAt es un puntero
+				if existingInvitation.RespondedAt != nil && !payload.UpdatedAt.After(*existingInvitation.RespondedAt) {
+					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para la invitación %s. El comando es más antiguo o igual.", payload.ID)
+					return nil // Operación ignorada exitosamente
+				}
+			}
+
+			return groupEventRepo.UpdateInvitation(context.Background(), payload.ID, string(payload.Status))
 
 		case "DeleteUserInvitations":
 			var userID uuid.UUID
@@ -602,7 +701,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatus: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -610,13 +709,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para DeleteEventStatus: %w", err)
 			}
-			
+
 			// Execute the delete operation
 			if err := groupEventRepo.DeleteEventStatus(context.Background(), tx, payload.EventID, payload.UserID); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al eliminar estado de evento: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para DeleteEventStatus: %w", err)
@@ -631,7 +730,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatuses: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -639,13 +738,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para DeleteEventStatuses: %w", err)
 			}
-			
+
 			// Execute the delete operation
 			if err := groupEventRepo.DeleteEventStatuses(context.Background(), tx, payload.EventID); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al eliminar estados de evento: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para DeleteEventStatuses: %w", err)
@@ -661,7 +760,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.DeleteEventStatusesByGroup: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -669,13 +768,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para DeleteEventStatusesByGroup: %w", err)
 			}
-			
+
 			// Execute the delete operation
 			if err := groupEventRepo.DeleteEventStatusesByGroup(context.Background(), tx, payload.GroupID, payload.EventID); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al eliminar estados de evento por grupo: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para DeleteEventStatusesByGroup: %w", err)
@@ -687,7 +786,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &status); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddEventStatusWithTx: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -695,13 +794,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para AddEventStatusWithTx: %w", err)
 			}
-			
+
 			// Execute the add operation
 			if err := groupEventRepo.AddEventStatusWithTx(context.Background(), tx, &status); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al agregar estado de evento: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para AddEventStatusWithTx: %w", err)
@@ -716,7 +815,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.BatchCreateEventStatus: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -724,13 +823,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para BatchCreateEventStatus: %w", err)
 			}
-			
+
 			// Execute the batch create operation
 			if err := groupEventRepo.BatchCreateEventStatus(context.Background(), tx, payload.Statuses); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al crear batch de estados de evento: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para BatchCreateEventStatus: %w", err)
@@ -745,7 +844,29 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.UpdateEventStatuses: %w", err)
 			}
-			
+
+			// LWW Logic for batch update
+			statusesToUpdate := []*models.GroupEventStatus{}
+			for _, status := range payload.Statuses {
+				existingStatus, err := groupEventRepo.GetEventStatus(context.Background(), status.EventID, status.UserID)
+				if err != nil {
+					logger.InfoLogger.Printf("[LWW] Estado no encontrado para Evento %s, Usuario %s. Añadiendo a la actualización.", status.EventID, status.UserID)
+					statusesToUpdate = append(statusesToUpdate, status)
+				} else {
+					// El campo RespondedAt es un puntero
+					if status.RespondedAt != nil && existingStatus.RespondedAt != nil && status.RespondedAt.After(*existingStatus.RespondedAt) {
+						statusesToUpdate = append(statusesToUpdate, status)
+					} else {
+						logger.InfoLogger.Printf("[LWW] Se ignoró la actualización de estado para Evento %s, Usuario %s. El comando es más antiguo o igual.", status.EventID, status.UserID)
+					}
+				}
+			}
+
+			if len(statusesToUpdate) == 0 {
+				logger.InfoLogger.Printf("[LWW] No hay estados que requieran actualización en el lote.")
+				return nil // Nada que hacer
+			}
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -753,13 +874,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para UpdateEventStatuses: %w", err)
 			}
-			
-			// Execute the update operation
-			if err := groupEventRepo.UpdateEventStatuses(context.Background(), tx, payload.Statuses); err != nil {
+
+			// Execute the update operation with the filtered list
+			if err := groupEventRepo.UpdateEventStatuses(context.Background(), tx, statusesToUpdate); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al actualizar batch de estados de evento: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para UpdateEventStatuses: %w", err)
@@ -771,7 +892,7 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err := json.Unmarshal(cmd.Payload, &groupEvent); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupEventRepository.AddGroupEventWithTx: %w", err)
 			}
-			
+
 			// Begin a transaction for this operation
 			tx, err := groupEventRepo.(interface {
 				BeginTx(context.Context, *sql.TxOptions) (*sql.Tx, error)
@@ -779,13 +900,13 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			if err != nil {
 				return fmt.Errorf("error al iniciar transacción para AddGroupEventWithTx: %w", err)
 			}
-			
+
 			// Execute the add operation
 			if err := groupEventRepo.AddGroupEventWithTx(context.Background(), tx, &groupEvent); err != nil {
 				tx.Rollback()
 				return fmt.Errorf("error al agregar evento de grupo: %w", err)
 			}
-			
+
 			// Commit the transaction
 			if err := tx.Commit(); err != nil {
 				return fmt.Errorf("error al confirmar transacción para AddGroupEventWithTx: %w", err)
@@ -965,6 +1086,9 @@ func (rn *RaftNode) startElection() {
 	// Inicializar contador de votos a 1 (voto por sí mismo)
 	atomic.StoreInt32(&rn.voteCount, 1)
 
+	// Para el quorum dinámico, contamos los nodos que responden.
+	respondedPeers := int32(1) // Contamos a nosotros mismos
+
 	logger.InfoLogger.Printf("[Nodo %s]: Iniciando elección para el término %d", rn.id, rn.currentTerm)
 
 	// Enviar RPCs RequestVote a todos los demás nodos en paralelo.
@@ -1012,16 +1136,20 @@ func (rn *RaftNode) startElection() {
 				return
 			}
 
+			// Independientemente del voto, si el nodo respondió, está activo para este quorum.
+			atomic.AddInt32(&respondedPeers, 1)
+
 			if reply.VoteGranted {
 				// Incrementar contador atómico de votos
 				newVoteCount := atomic.AddInt32(&rn.voteCount, 1)
-				totalPeers := len(rn.peerAddress)
-				majority := totalPeers/2 + 1
+				// --- QUORUM DINÁMICO ---
+				// La mayoría se calcula sobre los nodos que respondieron, no el total.
+				currentRespondedPeers := atomic.LoadInt32(&respondedPeers)
+				majority := int(currentRespondedPeers/2) + 1
 
-				logger.InfoLogger.Printf("[Nodo %s]: Voto recibido de %s. Total de votos: %d (mayoría necesaria: %d)",
-					rn.id, peerId, newVoteCount, majority)
+				logger.InfoLogger.Printf("[Nodo %s]: Voto recibido de %s. Votos: %d. Nodos activos: %d. Mayoría necesaria: %d",
+					rn.id, peerId, newVoteCount, currentRespondedPeers, majority)
 
-				// Verificar si tenemos mayoría
 				if int(newVoteCount) >= majority {
 					logger.InfoLogger.Printf("[Nodo %s]: Elección ganada. Señalizando para convertirse en Líder.", rn.id)
 					select {
@@ -1081,16 +1209,24 @@ func (rn *RaftNode) sendHeartbeats() {
 			rn.mu.Unlock()
 
 			var reply AppendEntriesReply
-			if err := rn.sendRPC(peerId, "AppendEntries", &args, &reply); err != nil {
-				// El error ya se loguea dentro de sendRPC
-				return
+			var success bool
+			if err := rn.sendRPC(peerId, "AppendEntries", &args, &reply); err == nil {
+				success = true
 			}
 
 			rn.mu.Lock()
 			defer rn.mu.Unlock()
 
+			// Actualizar el estado de actividad del peer basado en la respuesta del RPC
+			if success {
+				rn.activePeers[peerId] = true
+			} else {
+				delete(rn.activePeers, peerId)
+				return // No se pudo contactar al peer, no hay más que hacer.
+			}
+
 			if reply.Term > rn.currentTerm {
-				rn.becomeFollower(reply.Term)
+				rn.becomeFollower(reply.Term, "DESDE REPLY")
 				return
 			}
 
@@ -1134,9 +1270,13 @@ func (rn *RaftNode) updateCommitIndex() {
 			}
 		}
 
-		// Si una mayoría lo ha replicado, comprometemos el índice.
-		if matchCount > len(rn.peerAddress)/2 {
-			logger.InfoLogger.Printf("[Líder %s] INFO: Avanzando commitIndex a %d", rn.id, N)
+		// --- QUORUM DINÁMICO ---
+		// La mayoría se calcula sobre los nodos activos en la partición actual.
+		activeClusterSize := len(rn.activePeers) + 1 // +1 para el líder
+		majority := activeClusterSize/2 + 1
+
+		if matchCount >= majority {
+			logger.InfoLogger.Printf("[Líder %s] INFO: Avanzando commitIndex a %d (matchCount: %d, mayoría: %d)", rn.id, N, matchCount, majority)
 			rn.commitIndex = N
 			// Señalamos a la gorutina de aplicación que hay trabajo que hacer.
 			select {
@@ -1152,12 +1292,12 @@ func (rn *RaftNode) updateCommitIndex() {
 
 // DEBE llamarse cuando el mutex ya está adquirido.
 
-func (rn *RaftNode) becomeFollower(term int) {
+func (rn *RaftNode) becomeFollower(term int, leaderID string) {
 	rn.state = Follower
 	rn.currentTerm = term
 	rn.votedFor = ""
 	rn.leaderID = "" // Resetear el líder conocido al convertirse en seguidor.
-	logger.InfoLogger.Printf("[Nodo %s]: Convertido a SEGUIDOR para el término %d", rn.id, term)
+	logger.InfoLogger.Printf("[Nodo %s]: Convertido a SEGUIDOR de %s para el término %d", rn.id, leaderID, term)
 	rn.resetElectionTimerUnlocked()
 }
 
@@ -1165,6 +1305,15 @@ func (rn *RaftNode) becomeFollower(term int) {
 func (rn *RaftNode) initializeLeaderState() {
 	// Inicializar nextIndex y matchIndex para cada peer
 	lastLogIndex := len(rn.log) - 1
+
+	// Asumir que todos los peers están activos al convertirse en líder.
+	// Los heartbeats se encargarán de actualizar esta lista.
+	rn.activePeers = make(map[string]bool)
+	for peerID := range rn.peerAddress {
+		if peerID != rn.id {
+			rn.activePeers[peerID] = true
+		}
+	}
 
 	for peerID := range rn.peerAddress {
 		if peerID == rn.id {

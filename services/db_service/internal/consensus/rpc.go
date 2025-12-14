@@ -76,7 +76,7 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 
 	// Si el término del RPC es mayor, nos convertimos en seguidor.
 	if args.Term > rn.currentTerm {
-		rn.becomeFollower(args.Term)
+		rn.becomeFollower(args.Term, args.LeaderID)
 		rn.persist()
 	}
 
@@ -148,7 +148,7 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 		oldCommitIndex := rn.commitIndex
 		lastNewEntryIndex := args.PrevLogIndex + len(args.Entries)
 		rn.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
-		
+
 		// Notificar a applyChan si commitIndex cambió
 		if rn.commitIndex > oldCommitIndex {
 			select {
@@ -238,7 +238,7 @@ func (rn *RaftNode) sendRPC(peerId string, method string, args interface{}, repl
 	rn.mu.Lock()
 	peerAddress, ok := rn.peerAddress[peerId]
 	rn.mu.Unlock()
-	
+
 	if !ok {
 		return fmt.Errorf("dirección de peer desconocida para %s", peerId)
 	}
@@ -277,7 +277,7 @@ func (rn *RaftNode) sendRPC(peerId string, method string, args interface{}, repl
 			if err == nil {
 				return nil // Success
 			}
-			
+
 			lastErr = fmt.Errorf("error al llamar al método RaftNode.%s en %s (intento %d/%d): %w",
 				method, peerAddress, attempt+1, maxRetries, err)
 			logger.ErrorLogger.Printf("[Nodo %s] %v", rn.id, lastErr)
