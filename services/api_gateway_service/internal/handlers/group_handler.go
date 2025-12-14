@@ -29,6 +29,13 @@ type CreateGroupRequest struct {
 	IsHierarchical bool   `json:"is_hierarchical"`
 }
 
+type CreateGroupEventRequest struct {
+	GroupID        string `json:"group_id" binding:"required"`
+	EventID        string `json:"event_id" binding:"required"`
+	UserID         string `json:"user_id" binding:"required"`
+	IsHierarchical bool   `json:"is_hierarchical"`
+}
+
 func NewGroupHandler(redisClient *redis.Client, dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *GroupHandler {
 	return &GroupHandler{
 		redis:           redisClient,
@@ -303,6 +310,239 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"members": enrichedMembers})
 }
 
+func (h *GroupHandler) ListGroupEvents(c *gin.Context) {
+	groupID := c.Param("group_id")
+	userID := c.Query("user_id")
+
+	if userID == "" {
+		h.logger.Warn("⚠️ user_id parameter is missing")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("📋 Getting events for group",
+		zap.String("group_id", groupID),
+		zap.String("user_id", userID))
+
+	// Create event to request group events from group service
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.event.list",
+		"data": map[string]interface{}{
+			"group_id": groupID,
+			"user_id":  userID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Requesting group events from group service",
+		zap.String("event_id", eventID),
+		zap.String("group_id", groupID),
+		zap.String("user_id", userID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to get group events",
+			zap.Error(err),
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group events: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Get group events failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", groupID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group events: " + response.Error})
+		return
+	}
+
+	// Extract events from response
+	h.logger.Info("📦 Processing group events response",
+		zap.String("event_id", eventID),
+		zap.Any("response_data", response.Data))
+
+	// The response data should contain the events
+	events, ok := response.Data.([]interface{})
+	if !ok {
+		// Try alternative format
+		if data, ok := response.Data.(map[string]interface{}); ok {
+			if eventsField, exists := data["events"]; exists {
+				if eventsArray, ok := eventsField.([]interface{}); ok {
+					events = eventsArray
+				}
+			}
+		}
+	}
+
+	h.logger.Info("✅ Group events processing completed",
+		zap.String("group_id", groupID),
+		zap.String("user_id", userID),
+		zap.Int("events_count", len(events)))
+
+	// Always return an array, even if empty
+	c.JSON(http.StatusOK, gin.H{"events": events})
+}
+
+func (h *GroupHandler) AcceptGroupEvent(c *gin.Context) {
+	eventID := c.Param("event_id")
+
+	var req struct {
+		EventID string `json:"event_id" binding:"required"`
+		GroupID string `json:"group_id" binding:"required"`
+		UserID  string `json:"user_id" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing accept group event request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := req.UserID
+
+	h.logger.Info("✅ Accepting group event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", userID))
+
+	// Create event to accept group event
+	eventIDUUID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventIDUUID,
+		"type": "group.event.status.update",
+		"data": map[string]interface{}{
+			"event_id": eventID,
+			"group_id": req.GroupID,
+			"user_id":  userID,
+			"status":   "accepted",
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group event accept request",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", userID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to accept group event",
+			zap.Error(err),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to accept group event: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Accept group event failed",
+			zap.String("error", response.Error),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to accept group event: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group event accepted successfully",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Group event accepted successfully",
+		"event_id": eventID,
+		"user_id":  userID,
+		"status":   "accepted",
+	})
+}
+
+func (h *GroupHandler) DeclineGroupEvent(c *gin.Context) {
+	eventID := c.Param("event_id")
+
+	var req struct {
+		EventID string `json:"event_id" binding:"required"`
+		GroupID string `json:"group_id" binding:"required"`
+		UserID  string `json:"user_id" binding:"required"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing decline group event request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := req.UserID
+
+	h.logger.Info("❌ Declining group event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", userID))
+
+	// Create event to decline group event
+	eventIDUUID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventIDUUID,
+		"type": "group.event.status.update",
+		"data": map[string]interface{}{
+			"event_id": eventID,
+			"group_id": req.GroupID,
+			"user_id":  userID,
+			"status":   "declined",
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group event decline request",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", userID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to decline group event",
+			zap.Error(err),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to decline group event: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Decline group event failed",
+			zap.String("error", response.Error),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to decline group event: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group event declined successfully",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Group event declined successfully",
+		"event_id": eventID,
+		"user_id":  userID,
+		"status":   "declined",
+	})
+}
+
 // enrichMembersWithUsernames enriquece la lista de miembros con nombres de usuario
 func (h *GroupHandler) enrichMembersWithUsernames(ctx context.Context, members []interface{}) ([]interface{}, error) {
 	enrichedMembers := make([]interface{}, len(members))
@@ -373,6 +613,70 @@ func (h *GroupHandler) enrichGroupsWithUsernames(ctx context.Context, groups []i
 	}
 
 	return enrichedGroups, nil
+}
+
+// getUserEmailByID obtiene el email de usuario por ID consultando el servicio de usuarios
+func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (string, error) {
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "user.get",
+		"data": map[string]interface{}{
+			"user_id": userID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Send event to users_events channel (not groups_events)
+	// We need to publish directly to Redis instead of using sendEventAndWaitForResponse
+	// which is configured for groups_events
+	responseChan := h.responseHandler.WaitForResponse(eventID)
+
+	// Marshal event to JSON
+	eventJSON, err := json.Marshal(eventData)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal event: %w", err)
+	}
+
+	// Publish to the correct channel: users_events
+	if err := h.redis.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+		return "", fmt.Errorf("failed to publish event: %w", err)
+	}
+
+	// Wait for response with timeout
+	select {
+	case response := <-responseChan:
+		if !response.Success {
+			return "", fmt.Errorf("user service error: %s", response.Error)
+		}
+
+		// Extract email from response
+		if userData, ok := response.Data.(map[string]interface{}); ok {
+			if user, exists := userData["user"]; exists {
+				if userMap, ok := user.(map[string]interface{}); ok {
+					if email, exists := userMap["email"]; exists {
+						if emailStr, ok := email.(string); ok {
+							return emailStr, nil
+						}
+					}
+				}
+			}
+			// Try direct extraction if nested structure doesn't work
+			if email, exists := userData["email"]; exists {
+				if emailStr, ok := email.(string); ok {
+					return emailStr, nil
+				}
+			}
+		}
+
+		return "", fmt.Errorf("email not found in response")
+
+	case <-time.After(30 * time.Second):
+		return "", fmt.Errorf("timeout waiting for user email response after 30 seconds")
+	}
 }
 
 // getUsernameByID obtiene el nombre de usuario por ID consultando el servicio de usuarios
@@ -830,5 +1134,387 @@ func (h *GroupHandler) UpdateMemberRole(c *gin.Context) {
 		"group_id": req.GroupID,
 		"email":    req.Email,
 		"role":     req.Role,
+	})
+}
+
+type AcceptGroupInvitationRequest struct {
+	InvitationID string `json:"invitation_id" binding:"required"`
+	GroupID      string `json:"group_id" binding:"required"`
+	UserID       string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) AcceptGroupInvitation(c *gin.Context) {
+	var req AcceptGroupInvitationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing accept group invitation request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("✅ Accepting group invitation",
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", req.UserID))
+
+	// Create event to accept group invitation
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.invite.accept",
+		"data": map[string]interface{}{
+			"invitation_id": req.InvitationID,
+			"group_id":      req.GroupID,
+			"user_id":       req.UserID,
+			"status":        "accepted",
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group invitation acceptance event",
+		zap.String("event_id", eventID),
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to accept group invitation",
+			zap.Error(err),
+			zap.String("invitation_id", req.InvitationID),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to accept invitation: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Group invitation acceptance failed",
+			zap.String("error", response.Error),
+			zap.String("invitation_id", req.InvitationID),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to accept invitation: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group invitation accepted successfully",
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Group invitation accepted successfully",
+		"invitation_id": req.InvitationID,
+		"group_id":      req.GroupID,
+		"status":        "accepted",
+	})
+}
+
+type RejectGroupInvitationRequest struct {
+	InvitationID string `json:"invitation_id" binding:"required"`
+	GroupID      string `json:"group_id" binding:"required"`
+	UserID       string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) RejectGroupInvitation(c *gin.Context) {
+	var req RejectGroupInvitationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing reject group invitation request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("❌ Rejecting group invitation",
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", req.UserID))
+
+	// Create event to reject group invitation
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.invite.reject",
+		"data": map[string]interface{}{
+			"invitation_id": req.InvitationID,
+			"group_id":      req.GroupID,
+			"user_id":       req.UserID,
+			"status":        "rejected",
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group invitation rejection event",
+		zap.String("event_id", eventID),
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to reject group invitation",
+			zap.Error(err),
+			zap.String("invitation_id", req.InvitationID),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reject invitation: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Group invitation rejection failed",
+			zap.String("error", response.Error),
+			zap.String("invitation_id", req.InvitationID),
+			zap.String("group_id", req.GroupID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to reject invitation: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group invitation rejected successfully",
+		zap.String("invitation_id", req.InvitationID),
+		zap.String("group_id", req.GroupID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "Group invitation rejected successfully",
+		"invitation_id": req.InvitationID,
+		"group_id":      req.GroupID,
+		"status":        "rejected",
+	})
+}
+
+func (h *GroupHandler) GetGroupInvitations(c *gin.Context) {
+	userID := c.Query("user_id")
+	if userID == "" {
+		h.logger.Warn("⚠️ user_id parameter is missing")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id parameter is required"})
+		return
+	}
+
+	h.logger.Info("📋 Getting group invitations for user", zap.String("user_id", userID))
+
+	// Create event to request group invitations from group service
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.invite.list",
+		"data": map[string]interface{}{
+			"user_id": userID,
+			"status":  "pending",
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Requesting group invitations from group service",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to get group invitations",
+			zap.Error(err),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group invitations: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Get group invitations failed",
+			zap.String("error", response.Error),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve group invitations: " + response.Error})
+		return
+	}
+
+	// Extract invitations from response
+	h.logger.Info("📦 Processing group invitations response",
+		zap.String("event_id", eventID),
+		zap.Any("response_data", response.Data))
+
+	// The response data should contain the invitations
+	var invitations []interface{}
+
+	switch data := response.Data.(type) {
+	case []interface{}:
+		// Case 1: The response is directly an array of invitations
+		invitations = data
+		h.logger.Info("✅ Formato de respuesta: array directo de invitaciones")
+
+	case map[string]interface{}:
+		// Case 2: The response is an object that contains invitations
+		if invitationsField, exists := data["invitations"]; exists {
+			if invitationsArray, ok := invitationsField.([]interface{}); ok {
+				invitations = invitationsArray
+				h.logger.Info("✅ Formato de respuesta: objeto con campo 'invitations'")
+			}
+		}
+	}
+
+	h.logger.Info("✅ Group invitations processing completed",
+		zap.String("user_id", userID),
+		zap.Int("invitations_count", len(invitations)))
+
+	// Always return an array, even if empty
+	c.JSON(http.StatusOK, gin.H{"invitations": invitations})
+}
+
+type LeaveGroupRequest struct {
+	GroupID string `json:"group_id" binding:"required"`
+	UserID  string `json:"user_id" binding:"required"`
+}
+
+func (h *GroupHandler) CreateGroupEvent(c *gin.Context) {
+	var req CreateGroupEventRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing create group event request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	// Log the parsed request for debugging
+	h.logger.Info("📥 CreateGroupEvent parsed request",
+		zap.String("group_id", req.GroupID),
+		zap.String("event_id", req.EventID),
+		zap.String("user_id", req.UserID),
+		zap.Bool("is_hierarchical", req.IsHierarchical))
+
+	h.logger.Info("📅 Creating group event",
+		zap.String("group_id", req.GroupID),
+		zap.String("event_id", req.EventID),
+		zap.Bool("is_hierarchical", req.IsHierarchical))
+
+	// Create the group event
+	groupEventID := uuid.New().String()
+
+	groupEventData := map[string]interface{}{
+		"id":   groupEventID,
+		"type": "group.event.create",
+		"data": map[string]interface{}{
+			"group_id":        req.GroupID,
+			"event_id":        req.EventID,
+			"is_hierarchical": req.IsHierarchical,
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	// Add the user_id field
+	groupEventData["data"].(map[string]interface{})["user_id"] = req.UserID
+
+	h.logger.Info("📤 Creating group event",
+		zap.String("group_event_id", groupEventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("event_id", req.EventID))
+
+	// Send group event creation request
+	groupResponse, err := h.sendEventAndWaitForResponse(c.Request.Context(), groupEventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to create group event",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID),
+			zap.String("event_id", req.EventID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create group event: " + err.Error()})
+		return
+	}
+
+	if !groupResponse.Success {
+		h.logger.Warn("⚠️ Group event creation failed",
+			zap.String("error", groupResponse.Error),
+			zap.String("group_id", req.GroupID),
+			zap.String("event_id", req.EventID))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to create group event: " + groupResponse.Error})
+		return
+	}
+
+	h.logger.Info("✅ Group event created successfully",
+		zap.String("group_id", req.GroupID),
+		zap.String("event_id", req.EventID))
+
+	c.JSON(http.StatusCreated, gin.H{
+		"message":  "Group event created successfully",
+		"group_id": req.GroupID,
+		"event_id": req.EventID,
+	})
+}
+
+func (h *GroupHandler) LeaveGroup(c *gin.Context) {
+	var req LeaveGroupRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing leave group request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("🚪 User leaving group",
+		zap.String("group_id", req.GroupID),
+		zap.String("user_id", req.UserID))
+
+	// First, get the user's email from the user service
+	userEmail, err := h.getUserEmailByID(c.Request.Context(), req.UserID)
+	if err != nil {
+		h.logger.Error("❌ Failed to get user email for leave group operation",
+			zap.Error(err),
+			zap.String("user_id", req.UserID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get user information: " + err.Error()})
+		return
+	}
+
+	h.logger.Info("✅ Retrieved user email for leave group operation",
+		zap.String("user_id", req.UserID),
+		zap.String("email", userEmail))
+
+	// Create event to remove user from group
+	eventID := uuid.New().String()
+
+	eventData := map[string]interface{}{
+		"id":   eventID,
+		"type": "group.member.remove",
+		"data": map[string]interface{}{
+			"group_id": req.GroupID,
+			"email":    userEmail, // Use the actual email
+		},
+		"metadata": map[string]string{
+			"reply_to": "group_events_response",
+		},
+	}
+
+	h.logger.Info("📤 Sending group leave event",
+		zap.String("event_id", eventID),
+		zap.String("group_id", req.GroupID),
+		zap.String("email", userEmail))
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	if err != nil {
+		h.logger.Error("❌ Failed to leave group",
+			zap.Error(err),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", userEmail))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to leave group: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Leave group failed",
+			zap.String("error", response.Error),
+			zap.String("group_id", req.GroupID),
+			zap.String("email", userEmail))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Failed to leave group: " + response.Error})
+		return
+	}
+
+	h.logger.Info("✅ User left group successfully",
+		zap.String("group_id", req.GroupID),
+		zap.String("email", userEmail))
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":  "Left group successfully",
+		"group_id": req.GroupID,
+		"user_id":  req.UserID,
 	})
 }
