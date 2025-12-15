@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Docker network name
-NETWORK_NAME="agenda-network"
+NETWORK_NAME="agenda-test"
 
 # Get absolute path of the current directory
 CURRENT_DIR="$(pwd)"
@@ -131,7 +131,7 @@ start_raft_db() {
     
     # Node 4
     echo "Starting Raft DB Node 4..."
-    docker run -d --name agenda-db-raft-node-4 --network $NETWORK_NAME \
+    ssh -i ~/.ssh/id_script gabo@192.168.1.104 docker run -d --name agenda-db-raft-node-4 --network $NETWORK_NAME \
       -p 8004:8004 \
       -e RAFT_ID=node4 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \
@@ -145,7 +145,7 @@ start_raft_db() {
     
     # Node 5
     echo "Starting Raft DB Node 5..."
-    docker run -d --name agenda-db-raft-node-5 --network $NETWORK_NAME \
+    ssh -i ~/.ssh/id_script gabo@192.168.1.104 docker run -d --name agenda-db-raft-node-5 --network $NETWORK_NAME \
       -p 8005:8005 \
       -e RAFT_ID=node5 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \
@@ -159,7 +159,7 @@ start_raft_db() {
     
     # Node 6
     echo "Starting Raft DB Node 6..."
-    docker run -d --name agenda-db-raft-node-6 --network $NETWORK_NAME \
+    ssh -i ~/.ssh/id_script gabo@192.168.1.104 docker run -d --name agenda-db-raft-node-6 --network $NETWORK_NAME \
       -p 8006:8006 \
       -e RAFT_ID=node6 \
       -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \

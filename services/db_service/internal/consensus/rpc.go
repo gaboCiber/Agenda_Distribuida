@@ -124,10 +124,15 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 		if conflictIndex != -1 {
 			logger.InfoLogger.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Aplicando entradas truncadas antes de truncar para reconciliación LWW.", rn.id, conflictIndex)
 
-			// --- RECONCILIACIÓN LWW ---
-			// Antes de truncar, aplicar las entradas que van a ser truncadas.
-			// Esto permite que LWW reconcilie las operaciones de ambas particiones.
-			// Solo aplicamos las entradas que ya estaban comprometidas (hasta commitIndex).
+			// --- RECONCILIACIÓN LWW Y SINCRONIZACIÓN BIDIRECCIONAL ---
+			// Identificar las entradas que van a ser truncadas.
+			// Estas son las entradas únicas del follower que no están en el log del líder.
+			entriesToSync := make([]LogEntry, 0)
+			for i := conflictIndex; i < len(rn.log); i++ {
+				entriesToSync = append(entriesToSync, rn.log[i])
+			}
+
+			// Solo aplicamos localmente las entradas que ya estaban comprometidas (hasta commitIndex).
 			entriesToReconcile := make([]LogEntry, 0)
 			for i := conflictIndex; i < len(rn.log) && i <= rn.commitIndex; i++ {
 				entriesToReconcile = append(entriesToReconcile, rn.log[i])
@@ -137,7 +142,7 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 				logger.InfoLogger.Printf("[Nodo %s] Reconciliando %d entradas truncadas usando LWW", rn.id, len(entriesToReconcile))
 			}
 
-			// Aplicar las entradas truncadas fuera del mutex para evitar deadlocks
+			// Aplicar las entradas truncadas localmente fuera del mutex para evitar deadlocks
 			rn.mu.Unlock()
 			for idx, entry := range entriesToReconcile {
 				if entry.Command.Repository != "" {
@@ -148,6 +153,41 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 					}
 				}
 			}
+
+			// --- SINCRONIZACIÓN BIDIRECCIONAL ---
+			// Enviar las entradas únicas al líder para que las agregue a su log.
+			// Esto permite que las operaciones del follower se repliquen a todos los nodos.
+			if len(entriesToSync) > 0 {
+				// Capturar el término y la dirección del líder antes de liberar el mutex
+				rn.mu.Lock()
+				currentTerm := rn.currentTerm
+				followerID := rn.id
+				leaderAddress := rn.peerAddress[args.LeaderID]
+				rn.mu.Unlock()
+
+				logger.InfoLogger.Printf("[Nodo %s] Enviando %d entradas únicas al líder %s para sincronización bidireccional",
+					followerID, len(entriesToSync), args.LeaderID)
+
+				syncArgs := SyncEntriesArgs{
+					Term:       currentTerm,
+					FollowerID: followerID,
+					Entries:    entriesToSync,
+				}
+				var syncReply SyncEntriesReply
+
+				if leaderAddress != "" {
+					if err := rn.sendRPC(args.LeaderID, "SyncEntries", &syncArgs, &syncReply); err != nil {
+						logger.ErrorLogger.Printf("[Nodo %s] ERROR al enviar SyncEntries al líder %s: %v", followerID, args.LeaderID, err)
+					} else if syncReply.Success {
+						logger.InfoLogger.Printf("[Nodo %s] Entradas sincronizadas exitosamente con el líder: %s", followerID, syncReply.Message)
+					} else {
+						logger.InfoLogger.Printf("[Nodo %s] Sincronización rechazada por el líder: %s", followerID, syncReply.Message)
+					}
+				} else {
+					logger.ErrorLogger.Printf("[Nodo %s] No se pudo encontrar la dirección del líder %s", followerID, args.LeaderID)
+				}
+			}
+
 			rn.mu.Lock()
 
 			// Ahora truncar el log
@@ -174,6 +214,42 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 			logger.InfoLogger.Printf("[Nodo %s] Reseteando lastApplied de %d a %d porque se reemplazaron entradas",
 				rn.id, rn.lastApplied, args.PrevLogIndex)
 			rn.lastApplied = args.PrevLogIndex
+		}
+	}
+
+	if len(args.Entries) == 0 {
+		if len(rn.log) > args.PrevLogIndex+1 {
+			startIndex := args.PrevLogIndex + 1
+			endIndex := rn.commitIndex + 1
+			if endIndex > len(rn.log) {
+				endIndex = len(rn.log)
+			}
+			if endIndex > startIndex {
+				entriesToSync := make([]LogEntry, endIndex-startIndex)
+				copy(entriesToSync, rn.log[startIndex:endIndex])
+				currentTerm := rn.currentTerm
+				followerID := rn.id
+				leaderAddress := rn.peerAddress[args.LeaderID]
+				rn.mu.Unlock()
+				syncArgs := SyncEntriesArgs{
+					Term:       currentTerm,
+					FollowerID: followerID,
+					Entries:    entriesToSync,
+				}
+				var syncReply SyncEntriesReply
+				if leaderAddress != "" {
+					if err := rn.sendRPC(args.LeaderID, "SyncEntries", &syncArgs, &syncReply); err != nil {
+						logger.ErrorLogger.Printf("[Nodo %s] ERROR al enviar SyncEntries (adelantado) al líder %s: %v", followerID, args.LeaderID, err)
+					} else if syncReply.Success {
+						logger.InfoLogger.Printf("[Nodo %s] Entradas adelantadas sincronizadas exitosamente con el líder: %s", followerID, syncReply.Message)
+					} else {
+						logger.InfoLogger.Printf("[Nodo %s] Sincronización (adelantado) rechazada por el líder: %s", followerID, syncReply.Message)
+					}
+				} else {
+					logger.ErrorLogger.Printf("[Nodo %s] No se pudo encontrar la dirección del líder %s", followerID, args.LeaderID)
+				}
+				rn.mu.Lock()
+			}
 		}
 	}
 
@@ -259,6 +335,91 @@ func (rn *RaftNode) reconcileCommand(cmd DBCommand) error {
 
 	// Para otros errores, retornarlos normalmente
 	return err
+}
+
+// SyncEntriesArgs son los argumentos para la RPC SyncEntries.
+// Un follower la usa para enviar sus entradas únicas al líder cuando detecta conflictos.
+type SyncEntriesArgs struct {
+	Term       int        // Término del follower.
+	FollowerID string     // ID del follower que envía las entradas.
+	Entries    []LogEntry // Entradas únicas del follower que no están en el log del líder.
+}
+
+// SyncEntriesReply es la respuesta de la RPC SyncEntries.
+type SyncEntriesReply struct {
+	Term    int    // Término actual del líder.
+	Success bool   // Verdadero si el líder aceptó y agregó las entradas.
+	Message string // Mensaje descriptivo.
+}
+
+// SyncEntries maneja las solicitudes de sincronización de entradas desde un follower.
+// Solo el líder puede procesar esta solicitud.
+func (rn *RaftNode) SyncEntries(args *SyncEntriesArgs, reply *SyncEntriesReply) error {
+	rn.mu.Lock()
+	defer rn.mu.Unlock()
+
+	reply.Term = rn.currentTerm
+
+	// 1. Solo el líder puede procesar SyncEntries.
+	if rn.state != Leader {
+		reply.Success = false
+		reply.Message = "no es el líder"
+		return nil
+	}
+
+	// 2. Si el término del follower es menor, rechazar.
+	if args.Term < rn.currentTerm {
+		reply.Success = false
+		reply.Message = fmt.Sprintf("término obsoleto: follower=%d, líder=%d", args.Term, rn.currentTerm)
+		return nil
+	}
+
+	// 3. Si el término del follower es mayor, convertirnos en follower.
+	if args.Term > rn.currentTerm {
+		rn.becomeFollower(args.Term, args.FollowerID)
+		rn.persist()
+		reply.Success = false
+		reply.Message = "término mayor, convirtiéndose en follower"
+		return nil
+	}
+
+	// 4. Procesar las entradas del follower.
+	if len(args.Entries) == 0 {
+		reply.Success = true
+		reply.Message = "no hay entradas para sincronizar"
+		return nil
+	}
+
+	logger.InfoLogger.Printf("[Líder %s] Recibiendo %d entradas para sincronizar desde follower %s",
+		rn.id, len(args.Entries), args.FollowerID)
+
+	// Agregar las entradas al log del líder.
+	// Validar que no haya duplicados comparando con el log existente.
+	entriesAdded := 0
+	for _, entry := range args.Entries {
+		// Verificar si esta entrada ya existe en el log.
+		// Para simplificar, comparamos por término e índice, pero en realidad
+		// deberíamos comparar por el contenido del comando.
+		// Por ahora, agregamos todas las entradas y dejamos que LWW maneje los duplicados.
+		entry.Term = rn.currentTerm // Asegurar que la entrada tenga el término actual
+		rn.log = append(rn.log, entry)
+		entriesAdded++
+		logger.InfoLogger.Printf("[Líder %s] Entrada sincronizada agregada: Repo=%s, Method=%s",
+			rn.id, entry.Command.Repository, entry.Command.Method)
+	}
+
+	// Persistir el nuevo estado.
+	rn.persist()
+
+	// Intentar actualizar el commitIndex para las nuevas entradas.
+	rn.updateCommitIndex()
+
+	logger.InfoLogger.Printf("[Líder %s] Sincronización completada: %d entradas agregadas desde follower %s",
+		rn.id, entriesAdded, args.FollowerID)
+
+	reply.Success = true
+	reply.Message = fmt.Sprintf("%d entradas agregadas al log", entriesAdded)
+	return nil
 }
 
 // --- Infraestructura RPC ---

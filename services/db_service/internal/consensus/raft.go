@@ -1260,7 +1260,7 @@ func (rn *RaftNode) sendHeartbeats() {
 			}
 
 			if reply.Term > rn.currentTerm {
-				rn.becomeFollower(reply.Term, "DESDE REPLY")
+				rn.becomeFollower(reply.Term, "")
 				return
 			}
 
