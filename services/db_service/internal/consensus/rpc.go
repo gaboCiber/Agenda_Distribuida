@@ -122,7 +122,35 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 		}
 
 		if conflictIndex != -1 {
-			log.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Truncando log.", rn.id, conflictIndex)
+			logger.InfoLogger.Printf("[Nodo %s] Conflicto de log detectado en el índice %d. Aplicando entradas truncadas antes de truncar para reconciliación LWW.", rn.id, conflictIndex)
+
+			// --- RECONCILIACIÓN LWW ---
+			// Antes de truncar, aplicar las entradas que van a ser truncadas.
+			// Esto permite que LWW reconcilie las operaciones de ambas particiones.
+			// Solo aplicamos las entradas que ya estaban comprometidas (hasta commitIndex).
+			entriesToReconcile := make([]LogEntry, 0)
+			for i := conflictIndex; i < len(rn.log) && i <= rn.commitIndex; i++ {
+				entriesToReconcile = append(entriesToReconcile, rn.log[i])
+			}
+
+			if len(entriesToReconcile) > 0 {
+				logger.InfoLogger.Printf("[Nodo %s] Reconciliando %d entradas truncadas usando LWW", rn.id, len(entriesToReconcile))
+			}
+
+			// Aplicar las entradas truncadas fuera del mutex para evitar deadlocks
+			rn.mu.Unlock()
+			for idx, entry := range entriesToReconcile {
+				if entry.Command.Repository != "" {
+					if err := rn.reconcileCommand(entry.Command); err != nil {
+						logger.ErrorLogger.Printf("[Nodo %s] ERROR al reconciliar entrada truncada (índice %d): %v", rn.id, conflictIndex+idx, err)
+					} else {
+						logger.InfoLogger.Printf("[Nodo %s] Entrada reconciliada (LWW): índice=%d, Repo=%s, Method=%s", rn.id, conflictIndex+idx, entry.Command.Repository, entry.Command.Method)
+					}
+				}
+			}
+			rn.mu.Lock()
+
+			// Ahora truncar el log
 			rn.log = rn.log[:conflictIndex]
 			// Calcular el offset correcto en args.Entries
 			entryOffset := conflictIndex - (args.PrevLogIndex + 1)
@@ -138,24 +166,66 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 			rn.log = append(rn.log, args.Entries...)
 		}
 		rn.persist()
+
+		// Si se añadieron nuevas entradas que reemplazan entradas existentes,
+		// y esas entradas ya fueron aplicadas, resetear lastApplied para que
+		// las nuevas entradas se apliquen correctamente.
+		if len(args.Entries) > 0 && rn.lastApplied > args.PrevLogIndex {
+			logger.InfoLogger.Printf("[Nodo %s] Reseteando lastApplied de %d a %d porque se reemplazaron entradas",
+				rn.id, rn.lastApplied, args.PrevLogIndex)
+			rn.lastApplied = args.PrevLogIndex
+		}
 	}
 
 	// 4. Si hay nuevas entradas que no están en el log, añadirlas.
 	// (Esta lógica está implícita en el paso 3)
 
-	// 5. Si el commitIndex del líder es mayor que el nuestro, actualizamos el nuestro.
-	if args.LeaderCommit > rn.commitIndex {
-		oldCommitIndex := rn.commitIndex
-		lastNewEntryIndex := args.PrevLogIndex + len(args.Entries)
-		rn.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
+	// 5. Actualizar commitIndex basado en el commitIndex del líder y las nuevas entradas añadidas.
+	oldCommitIndex := rn.commitIndex
+	oldLastApplied := rn.lastApplied
+	lastNewEntryIndex := args.PrevLogIndex + len(args.Entries)
 
-		// Notificar a applyChan si commitIndex cambió
-		if rn.commitIndex > oldCommitIndex {
-			select {
-			case rn.applyChan <- struct{}{}:
-			default:
-				// No bloquear si el canal ya está lleno
+	// El commitIndex debe ser el mínimo entre el commitIndex del líder y el último índice de las nuevas entradas
+	if args.LeaderCommit > rn.commitIndex {
+		rn.commitIndex = min(args.LeaderCommit, lastNewEntryIndex)
+		logger.InfoLogger.Printf("[Nodo %s] Actualizando commitIndex (LeaderCommit > nuestro): %d -> %d (LeaderCommit=%d, lastNewEntryIndex=%d)",
+			rn.id, oldCommitIndex, rn.commitIndex, args.LeaderCommit, lastNewEntryIndex)
+	} else if len(args.Entries) > 0 {
+		// Si se añadieron nuevas entradas y están comprometidas (índice <= LeaderCommit),
+		// actualizar el commitIndex para incluir esas nuevas entradas
+		// Esto es importante después de un conflicto cuando el commitIndex del líder es igual
+		// pero se añadieron nuevas entradas que deben aplicarse
+		if lastNewEntryIndex <= args.LeaderCommit {
+			// Asegurar que el commitIndex incluya las nuevas entradas comprometidas
+			if lastNewEntryIndex > rn.commitIndex {
+				rn.commitIndex = lastNewEntryIndex
+				logger.InfoLogger.Printf("[Nodo %s] Actualizando commitIndex por nuevas entradas añadidas: %d -> %d (LeaderCommit=%d, lastNewEntryIndex=%d)",
+					rn.id, oldCommitIndex, rn.commitIndex, args.LeaderCommit, lastNewEntryIndex)
+			} else {
+				logger.InfoLogger.Printf("[Nodo %s] commitIndex ya incluye nuevas entradas: nuestro=%d, líder=%d, lastNewEntryIndex=%d",
+					rn.id, rn.commitIndex, args.LeaderCommit, lastNewEntryIndex)
 			}
+		} else {
+			logger.InfoLogger.Printf("[Nodo %s] Nuevas entradas no están comprometidas aún: nuestro=%d, líder=%d, lastNewEntryIndex=%d",
+				rn.id, rn.commitIndex, args.LeaderCommit, lastNewEntryIndex)
+		}
+	} else {
+		logger.InfoLogger.Printf("[Nodo %s] commitIndex no actualizado: nuestro=%d, líder=%d",
+			rn.id, rn.commitIndex, args.LeaderCommit)
+	}
+
+	// Notificar a applyChan si commitIndex cambió O si hay nuevas entradas comprometidas que aplicar
+	// (lastApplied se resetea arriba si se reemplazaron entradas, así que solo necesitamos verificar commitIndex)
+	shouldApply := rn.commitIndex > oldCommitIndex || (len(args.Entries) > 0 && lastNewEntryIndex <= rn.commitIndex && rn.lastApplied < lastNewEntryIndex)
+
+	if shouldApply {
+		logger.InfoLogger.Printf("[Nodo %s] Señalizando applyChan para aplicar entradas (commitIndex: %d->%d, lastApplied: %d, lastNewEntryIndex: %d)",
+			rn.id, oldCommitIndex, rn.commitIndex, oldLastApplied, lastNewEntryIndex)
+		select {
+		case rn.applyChan <- struct{}{}:
+		default:
+			// No bloquear si el canal ya está lleno
+			logger.InfoLogger.Printf("[Nodo %s] applyChan está lleno, no se pudo señalar", rn.id)
 		}
 	}
 
@@ -165,6 +235,30 @@ func (rn *RaftNode) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesR
 
 	reply.Success = true
 	return nil
+}
+
+// reconcileCommand aplica un comando durante la reconciliación, manejando casos especiales
+// como cuando un recurso ya existe (operaciones Create que fallan).
+func (rn *RaftNode) reconcileCommand(cmd DBCommand) error {
+	err := rn.dispatchCommand(cmd)
+	if err == nil {
+		return nil
+	}
+
+	// Si el error es de constraint único (recurso ya existe), manejarlo especialmente
+	errStr := err.Error()
+	if strings.Contains(errStr, "UNIQUE constraint failed") {
+		// Para operaciones Create que fallan porque el recurso ya existe,
+		// verificamos si el recurso existe y aplicamos LWW si es necesario.
+		// Si el recurso ya existe con el mismo ID, simplemente lo ignoramos
+		// (ya fue aplicado anteriormente).
+		logger.InfoLogger.Printf("[Nodo %s] Recurso ya existe durante reconciliación. Ignorando operación (ya fue aplicada): Repo=%s, Method=%s, Error=%v",
+			rn.id, cmd.Repository, cmd.Method, err)
+		return nil // Ignorar el error - el recurso ya existe, la operación ya fue aplicada
+	}
+
+	// Para otros errores, retornarlos normalmente
+	return err
 }
 
 // --- Infraestructura RPC ---
