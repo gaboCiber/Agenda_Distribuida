@@ -20,11 +20,11 @@ const (
 
 // ElectionMessage is exchanged between supervisor peers.
 type ElectionMessage struct {
-    Type        MessageType
-    SenderId    string
-    Epoch       uint64
-    LeaderId    string
-    PrimaryAddr string
+    Type        MessageType `protobuf:"varint,1,opt,name=type,proto3" json:"type,omitempty"`
+    SenderId    string      `protobuf:"bytes,2,opt,name=sender_id,json=senderId,proto3" json:"sender_id,omitempty"`
+    Epoch       uint64      `protobuf:"varint,3,opt,name=epoch,proto3" json:"epoch,omitempty"`
+    LeaderId    string      `protobuf:"bytes,4,opt,name=leader_id,json=leaderId,proto3" json:"leader_id,omitempty"`
+    PrimaryAddr string      `protobuf:"bytes,5,opt,name=primary_addr,json=primaryAddr,proto3" json:"primary_addr,omitempty"`
 }
 
 // Reset implements proto.Message.
