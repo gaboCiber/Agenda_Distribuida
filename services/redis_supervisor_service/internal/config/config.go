@@ -8,13 +8,23 @@ import (
 	"time"
 )
 
-// Config holds the application's configuration.
+// Config holds all configuration for the supervisor
 type Config struct {
 	RedisAddrs      []string
 	DBServiceURL    string
 	RaftNodesURLs   []string
 	PingInterval    time.Duration
 	FailureThreshold int
+	SupervisorID    string
+	SupervisorBindAddr string
+	SupervisorPeers []PeerConfig
+	HTTPPort        int
+}
+
+// PeerConfig represents another redis-supervisor instance available for leader election.
+type PeerConfig struct {
+	ID      string
+	Address string
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -44,12 +54,37 @@ func LoadConfig() (*Config, error) {
 		return nil, fmt.Errorf("invalid FAILURE_THRESHOLD: %w", err)
 	}
 
+	supervisorID := strings.TrimSpace(getEnv("SUPERVISOR_ID", ""))
+	if supervisorID == "" {
+		return nil, fmt.Errorf("SUPERVISOR_ID is required")
+	}
+
+	supervisorBindAddr := strings.TrimSpace(getEnv("SUPERVISOR_BIND_ADDR", ":6000"))
+	if supervisorBindAddr == "" {
+		return nil, fmt.Errorf("SUPERVISOR_BIND_ADDR must not be empty")
+	}
+
+	peersStr := strings.TrimSpace(getEnv("SUPERVISOR_PEERS", ""))
+	supervisorPeers, err := parseSupervisorPeers(peersStr)
+	if err != nil {
+		return nil, err
+	}
+
+	httpPort, err := strconv.Atoi(getEnv("HTTP_PORT", "8080"))
+	if err != nil {
+		return nil, fmt.Errorf("invalid HTTP_PORT: %w", err)
+	}
+
 	return &Config{
 		RedisAddrs:       redisAddrs,
 		DBServiceURL:     dbServiceURL,
 		RaftNodesURLs:    raftNodesURLs,
 		PingInterval:     time.Duration(pingIntervalSeconds) * time.Second,
 		FailureThreshold: failureThreshold,
+		SupervisorID:     supervisorID,
+		SupervisorBindAddr: supervisorBindAddr,
+		SupervisorPeers:  supervisorPeers,
+		HTTPPort:         httpPort,
 	}, nil
 }
 
@@ -59,4 +94,36 @@ func getEnv(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func parseSupervisorPeers(peers string) ([]PeerConfig, error) {
+	if peers == "" {
+		return []PeerConfig{}, nil
+	}
+
+	entries := strings.Split(peers, ",")
+	result := make([]PeerConfig, 0, len(entries))
+
+	for _, entry := range entries {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+
+		parts := strings.Split(entry, "=")
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("invalid peer format: %s (expected id=address)", entry)
+		}
+
+		id := strings.TrimSpace(parts[0])
+		addr := strings.TrimSpace(parts[1])
+
+		if id == "" || addr == "" {
+			return nil, fmt.Errorf("invalid peer format: %s (id and address must not be empty)", entry)
+		}
+
+		result = append(result, PeerConfig{ID: id, Address: addr})
+	}
+
+	return result, nil
 }

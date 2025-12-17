@@ -1,70 +1,130 @@
 package supervisor
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
-	"strings"
+	"sync"
 	"time"
 
 	"redis_supervisor_service/internal/clients"
 	"redis_supervisor_service/internal/config"
+	"redis_supervisor_service/internal/election"
 )
 
 // Supervisor contains the core logic for monitoring and failover.
 type Supervisor struct {
-	config         *config.Config
-	redisClient    *clients.RedisClient
-	dbClient       *clients.DBClient
-	dockerClient   *clients.DockerClient
-	currentPrimary string
+	config      *config.Config
+	redisClient *clients.RedisClient
+	dbClient    *clients.DBClient
+	elector     *election.Elector
+
+	stateMu         sync.RWMutex
+	currentPrimary  string
 	currentReplicas []string
-	redisNodes     []string
+	redisNodes      []string
+
+	leaderCancelMu sync.Mutex
+	leaderCancel   context.CancelFunc
+	leaderWg       sync.WaitGroup
 }
 
 // New creates a new Supervisor
-func New(cfg *config.Config, redisClient *clients.RedisClient, dbClient *clients.DBClient, dockerClient *clients.DockerClient) *Supervisor {
+func New(cfg *config.Config, redisClient *clients.RedisClient, dbClient *clients.DBClient, elector *election.Elector) *Supervisor {
 	return &Supervisor{
-		config:       cfg,
-		redisClient:  redisClient,
-		dbClient:     dbClient,
-		dockerClient: dockerClient,
-		redisNodes:   cfg.RedisAddrs,
+		config:      cfg,
+		redisClient: redisClient,
+		dbClient:    dbClient,
+		elector:     elector,
+		redisNodes:  cfg.RedisAddrs,
 	}
 }
 
 // Run starts the main monitoring loops.
-func (s *Supervisor) Run() {
-	log.Println("Supervisor is starting...")
-
-	// Initial attempt to find the primary
+func (s *Supervisor) Run(ctx context.Context) {
+	log.Println("Supervisor is starting, waiting for leadership...")
 	for {
-		err := s.findInitialPrimary()
-		if err == nil {
-			log.Printf("Initial primary found: %s. Replicas: %v.", s.currentPrimary, s.currentReplicas)
-			s.synchronizeDB()
-			break
+		select {
+		case <-ctx.Done():
+			s.stopLeaderLoops()
+			return
+		case isLeader := <-s.elector.LeadershipEvents():
+			if isLeader {
+				log.Println("Became leader, starting monitoring loops.")
+				s.startLeaderLoops(ctx)
+			} else {
+				log.Println("Lost leadership, stopping monitoring loops.")
+				s.stopLeaderLoops()
+			}
 		}
-		log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
-		time.Sleep(5 * time.Second)
 	}
+}
 
-	// Start the monitoring loops for primary and replicas
-	go s.monitorPrimaryLoop()
-	go s.monitorReplicasLoop()
-	go s.clusterHealthCheckLoop()
+func (s *Supervisor) startLeaderLoops(ctx context.Context) {
+	s.leaderCancelMu.Lock()
+	defer s.leaderCancelMu.Unlock()
 
-	// Block forever. The main function will handle graceful shutdown.
-	select {}
+	// Create a new cancellable context for leader-specific tasks
+	leaderCtx, cancel := context.WithCancel(ctx)
+	s.leaderCancel = cancel
+
+	s.leaderWg.Add(1)
+	go func() {
+		defer s.leaderWg.Done()
+		// Initial attempt to find the primary
+		for {
+			err := s.findInitialPrimary()
+			if err == nil {
+				log.Printf("Initial primary found: %s. Replicas: %v.", s.currentPrimary, s.currentReplicas)
+				s.synchronizeDB()
+				s.elector.UpdatePrimary(s.currentPrimary)
+				break
+			}
+			log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
+			select {
+			case <-time.After(5 * time.Second):
+			case <-leaderCtx.Done():
+				log.Println("Stopping initial primary search due to leadership loss.")
+				return
+			}
+		}
+
+		// Start the monitoring loops for primary and replicas
+		s.leaderWg.Add(2)
+		go s.monitorPrimaryLoop(leaderCtx)
+		go s.clusterHealthCheckLoop(leaderCtx)
+	}()
+}
+
+func (s *Supervisor) stopLeaderLoops() {
+	s.leaderCancelMu.Lock()
+	if s.leaderCancel != nil {
+		s.leaderCancel()
+		s.leaderCancel = nil
+	}
+	s.leaderCancelMu.Unlock()
+
+	// Wait for all leader-related goroutines to finish
+	s.leaderWg.Wait()
+	log.Println("All leader loops have been stopped.")
 }
 
 func (s *Supervisor) synchronizeDB() {
-	log.Println("Synchronizing DB service with initial primary...")
-	err := s.dbClient.SetRedisPrimary(s.currentPrimary)
+	s.stateMu.RLock()
+	primary := s.currentPrimary
+	s.stateMu.RUnlock()
+
+	if primary == "" {
+		return
+	}
+
+	log.Println("Synchronizing DB service with current primary...")
+	err := s.dbClient.SetRedisPrimary(primary)
 	if err != nil {
-		log.Printf("CRITICAL: Failed to synchronize DB service with initial primary: %v", err)
+		log.Printf("CRITICAL: Failed to synchronize DB service with primary %s: %v", primary, err)
 	} else {
-		log.Println("DB service synchronized with initial primary.")
+		log.Printf("DB service synchronized with primary %s.", primary)
 	}
 }
 
@@ -95,39 +155,55 @@ func (s *Supervisor) findInitialPrimary() error {
 		return errors.New("no primary found")
 	}
 
+	s.stateMu.Lock()
 	s.currentPrimary = foundPrimary
-	if len(foundReplicas) > 0 {
-		s.currentReplicas = foundReplicas
-	} else {
+	s.currentReplicas = foundReplicas
+	if len(foundReplicas) == 0 {
 		log.Println("Warning: No replicas found.")
-		s.currentReplicas = []string{}
 	}
+	s.stateMu.Unlock()
 
 	return nil
 }
 
 // monitorPrimaryLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
-func (s *Supervisor) monitorPrimaryLoop() {
+func (s *Supervisor) monitorPrimaryLoop(ctx context.Context) {
+	defer s.leaderWg.Done()
 	ticker := time.NewTicker(s.config.PingInterval)
 	defer ticker.Stop()
 
 	failureCount := 0
 
-	for range ticker.C {
-		log.Printf("Pinging primary: %s", s.currentPrimary)
-		err := s.redisClient.Ping(s.currentPrimary)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Stopping primary monitor loop.")
+			return
+		case <-ticker.C:
+		}
+
+		s.stateMu.RLock()
+		primary := s.currentPrimary
+		s.stateMu.RUnlock()
+
+		if primary == "" {
+			continue
+		}
+
+		log.Printf("Pinging primary: %s", primary)
+		err := s.redisClient.Ping(primary)
 		if err != nil {
 			failureCount++
-			log.Printf("Ping failed for primary %s. Failure count: %d/%d. Error: %v", s.currentPrimary, failureCount, s.config.FailureThreshold, err)
+			log.Printf("Ping failed for primary %s. Failure count: %d/%d. Error: %v", primary, failureCount, s.config.FailureThreshold, err)
 
 			if failureCount >= s.config.FailureThreshold {
-				log.Printf("Primary %s has reached failure threshold of %d. Initiating failover.", s.currentPrimary, s.config.FailureThreshold)
+				log.Printf("Primary %s has reached failure threshold of %d. Initiating failover.", primary, s.config.FailureThreshold)
 				s.initiateFailover()
 				failureCount = 0
 			}
 		} else {
 			if failureCount > 0 {
-				log.Printf("Successfully pinged primary %s after %d failures. Resetting failure count.", s.currentPrimary, failureCount)
+				log.Printf("Successfully pinged primary %s after %d failures. Resetting failure count.", primary, failureCount)
 				failureCount = 0
 			} else {
 				log.Println("Ping successful.")
@@ -136,50 +212,21 @@ func (s *Supervisor) monitorPrimaryLoop() {
 	}
 }
 
-// monitorReplicasLoop periodically pings all current replicas and resurrects them if they fail.
-func (s *Supervisor) monitorReplicasLoop() {
-	// A slightly longer interval for the replicas is fine.
-	ticker := time.NewTicker(s.config.PingInterval * 2)
-	defer ticker.Stop()
-
-	failureCounts := make(map[string]int)
-	const replicaFailureThreshold = 3
-
-	for range ticker.C {
-		for _, replica := range s.currentReplicas {
-			log.Printf("Pinging replica: %s", replica)
-			err := s.redisClient.Ping(replica)
-			if err != nil {
-				failureCounts[replica]++
-				log.Printf("Ping failed for replica %s. Failure count: %d/%d. Error: %v", replica, failureCounts[replica], replicaFailureThreshold, err)
-
-				if failureCounts[replica] >= replicaFailureThreshold {
-					log.Printf("Replica %s has reached failure threshold. Attempting resurrection.", replica)
-					go s.resurrectNodeAsReplica(replica, s.currentPrimary)
-					failureCounts[replica] = 0
-				}
-			} else {
-				if failureCounts[replica] > 0 {
-					log.Printf("Successfully pinged replica %s after %d failures. Resetting.", replica, failureCounts[replica])
-					failureCounts[replica] = 0
-				}
-			}
-		}
-	}
-}
-
-// initiateFailover promotes the best available replica to be the new primary and attempts to resurrect the old primary.
+// initiateFailover promotes the best available replica to be the new primary.
 func (s *Supervisor) initiateFailover() {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
 	if len(s.currentReplicas) == 0 {
 		log.Println("Cannot initiate failover: no replicas are configured or available.")
-		// We will keep trying to ping the old primary in the monitor loop
 		return
 	}
 
-	// Find the best replica to promote (first healthy one)
 	var chosenReplica string
 	for _, replica := range s.currentReplicas {
+		_, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := s.redisClient.Ping(replica)
+		cancel()
 		if err == nil {
 			chosenReplica = replica
 			break
@@ -195,20 +242,16 @@ func (s *Supervisor) initiateFailover() {
 
 	log.Printf("Attempting to promote %s to primary...", chosenReplica)
 
-	// 1. Promote chosen replica
 	err := s.redisClient.PromoteToPrimary(chosenReplica)
 	if err != nil {
 		log.Printf("CRITICAL: Failed to promote replica %s: %v", chosenReplica, err)
-		// If promotion fails, we do not proceed. The monitor loop will continue.
 		return
 	}
 	log.Printf("Successfully promoted %s to be the new primary.", chosenReplica)
 
-	// 2. Update internal state *immediately*. From this point on, we ping the new primary.
 	oldPrimaryAddr := s.currentPrimary
 	s.currentPrimary = chosenReplica
-	
-	// Update replicas list: remove the promoted replica and add the old primary
+
 	newReplicas := []string{}
 	for _, replica := range s.currentReplicas {
 		if replica != chosenReplica {
@@ -217,67 +260,43 @@ func (s *Supervisor) initiateFailover() {
 	}
 	newReplicas = append(newReplicas, oldPrimaryAddr)
 	s.currentReplicas = newReplicas
-	
+
 	log.Printf("Internal state updated. New primary: %s. New replicas: %v.", s.currentPrimary, s.currentReplicas)
 
-	// 3. Update DB service with the new primary's address
-	log.Printf("Updating DB service with new primary address: %s", s.currentPrimary)
-	err = s.dbClient.SetRedisPrimary(s.currentPrimary)
-	if err != nil {
-		log.Printf("CRITICAL: Failed to update DB about new primary: %v.", err)
-	} else {
-		log.Println("Successfully updated DB service.")
-	}
+	go s.synchronizeDB()
+	go s.elector.UpdatePrimary(s.currentPrimary)
 
 	log.Println("Failover complete.")
-
-	// 4. Attempt to resurrect the old primary as a replica of the new primary
-	go s.resurrectNodeAsReplica(oldPrimaryAddr, s.currentPrimary)
-}
-
-// resurrectNodeAsReplica attempts to restart a given Redis node and configure it as a replica of the current primary.
-func (s *Supervisor) resurrectNodeAsReplica(nodeToResurrectAddr, currentPrimaryAddr string) {
-	log.Printf("Attempting to resurrect %s as replica of %s...", nodeToResurrectAddr, currentPrimaryAddr)
-
-	containerName := strings.Split(nodeToResurrectAddr, ":")[0]
-
-	log.Printf("Restarting Docker container %s...", containerName)
-	err := s.dockerClient.RestartContainer(containerName)
-	if err != nil {
-		log.Printf("ERROR: Failed to restart container %s: %v", containerName, err)
-		return
-	}
-	log.Printf("Container %s restarted. Waiting for Redis to become ready...", containerName)
-
-	time.Sleep(5 * time.Second)
-
-	log.Printf("Configuring %s as replica of %s...", nodeToResurrectAddr, currentPrimaryAddr)
-	err = s.redisClient.SetAsReplicaOf(nodeToResurrectAddr, currentPrimaryAddr)
-	if err != nil {
-		log.Printf("ERROR: Failed to configure %s as replica: %v", nodeToResurrectAddr, err)
-		return
-	}
-	log.Printf("Successfully resurrected and reconfigured %s as a replica.", nodeToResurrectAddr)
 }
 
 // clusterHealthCheckLoop periodically checks if the cluster has a primary and promotes one if needed
-func (s *Supervisor) clusterHealthCheckLoop() {
-	ticker := time.NewTicker(15 * time.Second) // Check every 15 seconds (less frequent)
+func (s *Supervisor) clusterHealthCheckLoop(ctx context.Context) {
+	defer s.leaderWg.Done()
+	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		// Check if current primary is still healthy and is actually primary
-		if s.currentPrimary != "" {
-			err := s.redisClient.Ping(s.currentPrimary)
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Stopping cluster health check loop.")
+			return
+		case <-ticker.C:
+		}
+
+		s.stateMu.RLock()
+		primary := s.currentPrimary
+		s.stateMu.RUnlock()
+
+		if primary != "" {
+			err := s.redisClient.Ping(primary)
 			if err == nil {
-				role, err := s.redisClient.GetRole(s.currentPrimary)
+				role, err := s.redisClient.GetRole(primary)
 				if err == nil && role == "master" {
-					continue // Everything is fine
+					continue
 				}
 			}
 		}
 
-		// Only attempt recovery if we haven't recently done a failover
 		log.Println("Cluster health check: No healthy primary found, attempting recovery...")
 		s.attemptClusterRecovery()
 	}
@@ -285,15 +304,21 @@ func (s *Supervisor) clusterHealthCheckLoop() {
 
 // attemptClusterRecovery tries to find and promote a new primary from available replicas
 func (s *Supervisor) attemptClusterRecovery() {
-	// Find all healthy replicas
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+
 	var healthyReplicas []string
 	for _, replica := range s.currentReplicas {
+		_, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := s.redisClient.Ping(replica)
-		if err == nil {
-			role, err := s.redisClient.GetRole(replica)
-			if err == nil && role == "slave" {
-				healthyReplicas = append(healthyReplicas, replica)
-			}
+		if err != nil {
+			cancel()
+			continue
+		}
+		role, err := s.redisClient.GetRole(replica)
+		cancel()
+		if err == nil && role == "slave" {
+			healthyReplicas = append(healthyReplicas, replica)
 		}
 	}
 
@@ -302,7 +327,6 @@ func (s *Supervisor) attemptClusterRecovery() {
 		return
 	}
 
-	// Try to promote the first healthy replica
 	chosenReplica := healthyReplicas[0]
 	log.Printf("Attempting to promote %s to primary for cluster recovery...", chosenReplica)
 
@@ -314,11 +338,9 @@ func (s *Supervisor) attemptClusterRecovery() {
 
 	log.Printf("Successfully promoted %s to primary during cluster recovery", chosenReplica)
 
-	// Update internal state
 	oldPrimary := s.currentPrimary
 	s.currentPrimary = chosenReplica
-	
-	// Update replicas list
+
 	newReplicas := []string{}
 	for _, replica := range s.currentReplicas {
 		if replica != chosenReplica {
@@ -332,16 +354,6 @@ func (s *Supervisor) attemptClusterRecovery() {
 
 	log.Printf("Cluster recovery completed. New primary: %s, Replicas: %v", s.currentPrimary, s.currentReplicas)
 
-	// Update DB service
-	err = s.dbClient.SetRedisPrimary(s.currentPrimary)
-	if err != nil {
-		log.Printf("CRITICAL: Failed to update DB about new primary during recovery: %v", err)
-	}
-
-	// Try to resurrect other nodes as replicas
-	for _, replica := range s.currentReplicas {
-		if replica != oldPrimary {
-			go s.resurrectNodeAsReplica(replica, s.currentPrimary)
-		}
-	}
+	go s.synchronizeDB()
+	go s.elector.UpdatePrimary(s.currentPrimary)
 }
