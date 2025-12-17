@@ -25,6 +25,19 @@ const (
 	stateLeader
 )
 
+func (s state) String() string {
+	switch s {
+	case stateFollower:
+		return "Follower"
+	case stateCandidate:
+		return "Candidate"
+	case stateLeader:
+		return "Leader"
+	default:
+		return "Unknown"
+	}
+}
+
 type coordinatorInfo struct {
 	leaderID string
 	epoch    uint64
@@ -173,7 +186,9 @@ func (e *Elector) Stop() {
 func (e *Elector) IsLeader() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.currentState == stateLeader
+	isLeader := e.currentState == stateLeader
+	e.logger.Printf("[%s] IsLeader() called: currentState=%s, isLeader=%v", e.id, e.currentState, isLeader)
+	return isLeader
 }
 
 // LeadershipEvents emits true when this node becomes leader and false when it steps down.
@@ -498,14 +513,12 @@ func (e *Elector) handleElectionMessage(msg *ElectionMessage) {
 		// The OK response is automatically handled by SendMessage function
 		return
 	} else {
-		// We have lower priority, we should become follower and wait for coordinator
-		e.logger.Printf("[%s] has lower priority than %s, becoming follower", e.id, msg.SenderId)
+		// Lower priority: accept the sender as potential leader
+		e.logger.Printf("[%s] has lower priority than %s, accepting as potential leader", e.id, msg.SenderId)
 		e.mu.Lock()
-		if e.currentState == stateCandidate {
-			e.currentState = stateFollower
-			e.leaderID = msg.SenderId
-			e.lastHeartbeat = time.Now()
-		}
+		e.currentState = stateFollower
+		e.leaderID = msg.SenderId
+		e.lastHeartbeat = time.Now()
 		e.mu.Unlock()
 		// The OK response is automatically handled by SendMessage function
 		return
@@ -515,18 +528,30 @@ func (e *Elector) handleElectionMessage(msg *ElectionMessage) {
 func (e *Elector) handleCoordinatorMessage(msg *ElectionMessage) {
 	e.logger.Printf("[%s] received COORDINATOR message from %s (leader=%s, epoch=%d)", e.id, msg.SenderId, msg.LeaderId, msg.Epoch)
 
+	// Ignore our own coordinator messages
+	if msg.SenderId == e.id {
+		e.logger.Printf("[%s] ignoring own COORDINATOR message", e.id)
+		return
+	}
+
 	if msg.LeaderId == "" {
 		e.logger.Printf("[%s] received COORDINATOR with empty leader ID, ignoring", e.id)
 		return
 	}
 
 	e.mu.Lock()
+	defer e.mu.Unlock()
+	
 	accept := e.shouldAcceptLeaderLocked(msg.LeaderId, msg.Epoch)
+	e.logger.Printf("[%s] shouldAcceptLeaderLocked: accept=%v, candidate=%s/%d, current=%s/%d", e.id, accept, msg.LeaderId, msg.Epoch, e.leaderID, e.leaderEpoch)
+	
 	if accept {
 		e.logger.Printf("[%s] accepting leader %s with epoch %d", e.id, msg.LeaderId, msg.Epoch)
+		// Check for step-down BEFORE changing state
+		e.logger.Printf("[%s] step-down check: currentState=%s, msg.LeaderId=%s, e.id=%s", e.id, e.currentState, msg.LeaderId, e.id)
 		if e.currentState == stateLeader && msg.LeaderId != e.id {
 			e.logger.Printf("[%s] stepping down as leader in favor of %s", e.id, msg.LeaderId)
-			go e.notifyLeadership(false)
+			e.notifyLeadership(false)
 		}
 		e.currentState = stateFollower
 		e.leaderID = msg.LeaderId
@@ -536,17 +561,15 @@ func (e *Elector) handleCoordinatorMessage(msg *ElectionMessage) {
 	} else {
 		e.logger.Printf("[%s] rejecting leader %s with epoch %d (current: %s/%d)", e.id, msg.LeaderId, msg.Epoch, e.leaderID, e.leaderEpoch)
 	}
-	e.mu.Unlock()
-
-	if accept {
-		select {
-		case e.coordinatorCh <- coordinatorInfo{leaderID: msg.LeaderId, epoch: msg.Epoch}:
-		default:
-		}
-	}
 }
 
 func (e *Elector) handleHeartbeatMessage(msg *ElectionMessage) {
+	// Ignore our own heartbeat messages
+	if msg.SenderId == e.id {
+		e.logger.Printf("[%s] ignoring own HEARTBEAT message", e.id)
+		return
+	}
+
 	if msg.LeaderId == "" {
 		e.logger.Printf("[%s] received HEARTBEAT with empty leader ID, ignoring", e.id)
 		return
@@ -556,9 +579,10 @@ func (e *Elector) handleHeartbeatMessage(msg *ElectionMessage) {
 	accept := e.shouldAcceptLeaderLocked(msg.LeaderId, msg.Epoch)
 	if accept {
 		e.logger.Printf("[%s] accepting heartbeat from leader %s with epoch %d", e.id, msg.LeaderId, msg.Epoch)
+		// Check for step-down BEFORE changing state
 		if e.currentState == stateLeader && msg.LeaderId != e.id {
 			e.logger.Printf("[%s] stepping down as leader due to heartbeat from %s", e.id, msg.LeaderId)
-			go e.notifyLeadership(false)
+			e.notifyLeadership(false) // Synchronous call for step-down
 		}
 		e.currentState = stateFollower
 		e.leaderID = msg.LeaderId

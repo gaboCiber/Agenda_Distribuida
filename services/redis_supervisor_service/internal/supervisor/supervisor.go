@@ -182,6 +182,12 @@ func (s *Supervisor) monitorPrimaryLoop(ctx context.Context) {
 		case <-ticker.C:
 		}
 
+		// Check if we're still the leader before pinging
+		if !s.elector.IsLeader() {
+			log.Println("No longer leader, stopping primary monitor loop.")
+			return
+		}
+
 		s.stateMu.RLock()
 		primary := s.currentPrimary
 		s.stateMu.RUnlock()
