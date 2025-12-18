@@ -521,11 +521,14 @@ async function loadGroups() {
                         <button onclick="showGroupMembers('${group.id}', '${group.name}', ${group.is_hierarchical})" class="btn-secondary">
                             Ver Miembros
                         </button>
-                        ${userRole === 'admin' ?
-                            `<button onclick="manageGroup('${group.id}', '${group.name}', ${group.is_hierarchical}, '${userRole}')" class="btn-primary">
-                                Gestionar Grupo
+                        ${(userRole === 'admin' && group.is_hierarchical) || !group.is_hierarchical ?
+                            `<button onclick="manageGroup('${group.id}', '${group.name}', ${group.is_hierarchical}, '${userRole}')" class="btn-settings">
+                                ⚙️
                             </button>` : ''
                         }
+                        <button onclick="leaveGroup('${group.id}', '${group.name}')" class="btn-danger">
+                            Salir del Grupo
+                        </button>
                     </div>
                 `;
                 container.appendChild(groupCard);
@@ -788,6 +791,7 @@ function createGroupManagementModal(modalId) {
                         <div class="tab-buttons">
                             <button class="tab-button active" onclick="showGroupManagementTab('invite')">Invitar Usuario</button>
                             <button class="tab-button" onclick="showGroupManagementTab('members')">Miembros</button>
+                            <button class="tab-button" onclick="showGroupManagementTab('events')">Eventos</button>
                             <button class="tab-button" onclick="showGroupManagementTab('settings')">Configuración</button>
                         </div>
 
@@ -812,6 +816,20 @@ function createGroupManagementModal(modalId) {
                                 <h4>Miembros del Grupo</h4>
                                 <div id="management-members-list">
                                     <p>Cargando miembros...</p>
+                                </div>
+                            </div>
+
+                            <!-- Pestaña de Eventos -->
+                            <div id="group-tab-events" class="tab-content" style="display: none;">
+                                <h4>Eventos del Grupo</h4>
+                                <div id="group-events-actions" style="margin-bottom: 15px;">
+                                    <!-- Solo mostrar para admins de grupos jerárquicos -->
+                                    <button id="create-group-event-btn" onclick="showCreateGroupEventModal()" class="btn-primary" style="display: none;">
+                                        Crear Evento Grupal
+                                    </button>
+                                </div>
+                                <div id="management-events-list">
+                                    <p>Cargando eventos...</p>
                                 </div>
                             </div>
 
@@ -874,6 +892,8 @@ function showGroupManagementTab(tabName) {
         // Cargar datos específicos de la pestaña
         if (tabName === 'members') {
             loadManagementMembers();
+        } else if (tabName === 'events') {
+            loadManagementEvents();
         } else if (tabName === 'settings') {
             loadGroupSettings();
         }
@@ -885,6 +905,7 @@ function getTabTitle(tabName) {
     const titles = {
         'invite': 'Invitar',
         'members': 'Miembros',
+        'events': 'Eventos',
         'settings': 'Configuración'
     };
     return titles[tabName] || tabName;
@@ -1141,13 +1162,185 @@ async function deleteGroup() {
     }
 }
 
+// Función para cargar eventos en la pestaña de gestión
+async function loadManagementEvents() {
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const groupName = modal.dataset.groupName;
+    const isHierarchical = modal.dataset.isHierarchical === 'true';
+    const userRole = modal.dataset.userRole || 'member';
+
+    // Mostrar/ocultar botón de crear evento grupal
+    // Para grupos jerárquicos: solo admins pueden crear eventos grupales
+    // Para grupos no jerárquicos: cualquier miembro puede crear eventos grupales
+    const createBtn = document.getElementById('create-group-event-btn');
+    if ((isHierarchical && userRole === 'admin') || !isHierarchical) {
+        createBtn.style.display = 'inline-block';
+    } else {
+        createBtn.style.display = 'none';
+    }
+
+    try {
+        // Use the proper group events endpoint
+        const result = await apiRequest(`/groups/${groupId}/events?user_id=${encodeURIComponent(userId)}`);
+        const eventsList = document.getElementById('management-events-list');
+
+        if (result.events && result.events.length > 0) {
+            eventsList.innerHTML = '';
+
+            result.events.forEach((event, index) => {
+                const eventItem = document.createElement('div');
+                eventItem.className = 'event-item';
+                eventItem.style.marginBottom = '15px';
+                eventItem.style.padding = '10px';
+                eventItem.style.border = '1px solid #ddd';
+                eventItem.style.borderRadius = '5px';
+
+                // Get event details from the event_id (we need to fetch the actual event data)
+                // For now, we'll display basic info and add accept/decline buttons for pending events
+
+                // Check if this is a pending event that the user can respond to
+                const canRespond = event.user_status === 'pending' && event.status === 'pending';
+
+                let actionButtons = '';
+                if (canRespond) {
+                    actionButtons = `
+                        <div style="display: flex; gap: 10px; margin-top: 10px;">
+                            <button onclick="acceptGroupEvent('${event.event_id}', '${groupId}')" class="btn-primary" style="flex: 1; padding: 5px 10px; font-size: 12px;">
+                                ✅ Aceptar
+                            </button>
+                            <button onclick="declineGroupEvent('${event.event_id}', '${groupId}')" class="btn-danger" style="flex: 1; padding: 5px 10px; font-size: 12px;">
+                                ❌ Rechazar
+                            </button>
+                        </div>
+                    `;
+                }
+
+                // Status badge
+                const statusText = getEventStatusText(event.user_status || event.status);
+                const statusClass = getEventStatusClass(event.user_status || event.status);
+
+                eventItem.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                        <div style="flex: 1;">
+                            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                                <strong>Evento ID: ${event.event_id ? event.event_id.substring(0, 8) + '...' : 'N/A'}</strong>
+                                <span class="status-badge ${statusClass}" style="font-size: 11px; padding: 2px 6px; border-radius: 3px;">
+                                    ${statusText}
+                                </span>
+                            </div>
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">
+                                Creado: ${event.created_at ? new Date(event.created_at).toLocaleString() : 'N/A'}
+                            </div>
+                            <div style="font-size: 12px; color: #666; margin-bottom: 5px;">
+                                Tipo: ${event.is_hierarchical ? 'Jerárquico' : 'No jerárquico'}
+                            </div>
+                            ${actionButtons}
+                        </div>
+                    </div>
+                `;
+                eventsList.appendChild(eventItem);
+            });
+        } else {
+            eventsList.innerHTML = '<p>No hay eventos en este grupo</p>';
+        }
+    } catch (error) {
+        console.error('❌ Failed to load events in management:', error);
+        document.getElementById('management-events-list').innerHTML =
+            `<p style="color: #dc3545;">Error al cargar eventos: ${error.message}</p>`;
+    }
+}
+
+// Helper functions for event status
+function getEventStatusText(status) {
+    const statusTexts = {
+        'pending': 'Pendiente',
+        'accepted': 'Aceptado',
+        'declined': 'Rechazado',
+        'cancelled': 'Cancelado'
+    };
+    return statusTexts[status] || status;
+}
+
+function getEventStatusClass(status) {
+    const statusClasses = {
+        'pending': 'status-pending',
+        'accepted': 'status-accepted',
+        'declined': 'status-declined',
+        'cancelled': 'status-cancelled'
+    };
+    return statusClasses[status] || 'status-unknown';
+}
+
+// Functions for accepting/declining group events
+async function acceptGroupEvent(eventId, groupId) {
+    try {
+        console.log('✅ Accepting group event:', eventId, 'for group:', groupId);
+
+        const result = await apiRequest(`/groups/events/${eventId}/accept`, 'POST', {
+            event_id: eventId,
+            group_id: groupId,
+            user_id: userId
+        });
+
+        showNotification('Evento aceptado exitosamente!', 'success');
+        console.log('✅ Group event accepted successfully:', result);
+
+        // Refresh the events list
+        await loadManagementEvents();
+
+    } catch (error) {
+        console.error('❌ Failed to accept group event:', error);
+        let errorMessage = 'Error al aceptar el evento';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+async function declineGroupEvent(eventId, groupId) {
+    try {
+        console.log('❌ Declining group event:', eventId, 'for group:', groupId);
+
+        const result = await apiRequest(`/groups/events/${eventId}/decline`, 'POST', {
+            event_id: eventId,
+            group_id: groupId,
+            user_id: userId
+        });
+
+        showNotification('Evento rechazado exitosamente!', 'success');
+        console.log('✅ Group event declined successfully:', result);
+
+        // Refresh the events list
+        await loadManagementEvents();
+
+    } catch (error) {
+        console.error('❌ Failed to decline group event:', error);
+        let errorMessage = 'Error al rechazar el evento';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
 // Agregar estas funciones al objeto global window
 window.showGroupMembers = showGroupMembers;
 window.manageGroup = manageGroup;
 window.showGroupManagementTab = showGroupManagementTab;
 window.loadManagementMembers = loadManagementMembers;
+window.loadManagementEvents = loadManagementEvents;
 window.changeMemberRole = changeMemberRole;
 window.updateGroupSettings = updateGroupSettings;
+window.acceptGroupEvent = acceptGroupEvent;
+window.declineGroupEvent = declineGroupEvent;
 
 // Función para mostrar el formulario de invitación por email
 function showInviteForm(groupId, groupName) {
@@ -1233,9 +1426,118 @@ async function inviteUserByEmail(groupId) {
     }
 }
 
+// Función para mostrar el modal de crear evento grupal
+function showCreateGroupEventModal() {
+    // Limpiar el formulario
+    document.getElementById('group-event-title').value = '';
+    document.getElementById('group-event-description').value = '';
+    document.getElementById('group-event-start').value = '';
+    document.getElementById('group-event-end').value = '';
+    document.getElementById('group-event-location').value = '';
+
+    showModal('create-group-event-modal');
+}
+
+// Función para crear evento grupal
+async function createGroupEvent(event) {
+    event.preventDefault();
+
+    const modal = document.getElementById('group-management-modal');
+    const groupId = modal.dataset.groupId;
+    const groupName = modal.dataset.groupName;
+
+    const title = document.getElementById('group-event-title').value;
+    const description = document.getElementById('group-event-description').value;
+    const startTime = document.getElementById('group-event-start').value;
+    const endTime = document.getElementById('group-event-end').value;
+    const location = document.getElementById('group-event-location').value;
+
+    // Validaciones
+    if (!title || !startTime || !endTime) {
+        showNotification('Por favor complete todos los campos requeridos', 'error');
+        return;
+    }
+
+    const startDate = new Date(startTime);
+    const endDate = new Date(endTime);
+
+    if (isNaN(startDate.getTime()) || isNaN(endDate.getTime())) {
+        showNotification('Fechas inválidas', 'error');
+        return;
+    }
+
+    if (startDate >= endDate) {
+        showNotification('La fecha de fin debe ser posterior a la fecha de inicio', 'error');
+        return;
+    }
+
+    try {
+        console.log('🎯 Creating group event for group:', groupId);
+
+        // PASO 1: Crear el evento individual primero
+        const eventRequestData = {
+            title,
+            description,
+            start_time: startDate.toISOString(),
+            end_time: endDate.toISOString(),
+            user_id: userId,
+            group_id: groupId, // Incluir group_id en el evento individual
+            location: location || ''
+        };
+
+        console.log('📤 Creating individual event first:', eventRequestData);
+
+        const eventResult = await apiRequest('/events', 'POST', eventRequestData);
+
+        if (!eventResult.event_id) {
+            throw new Error('No se pudo obtener el ID del evento creado');
+        }
+
+        const eventId = eventResult.event_id;
+        console.log('✅ Individual event created with ID:', eventId);
+
+        // PASO 2: Crear el evento grupal usando el event_id obtenido
+        const isHierarchical = modal.dataset.isHierarchical === 'true';
+        const groupEventData = {
+            group_id: groupId,
+            event_id: eventId,
+            is_hierarchical: isHierarchical
+        };
+
+        // Add the user_id field (same for both hierarchical and non-hierarchical groups)
+        groupEventData.user_id = userId;
+
+        console.log('📤 Creating group event:', groupEventData);
+
+        // Enviar evento al group service
+        const groupEventResult = await apiRequest('/groups/events', 'POST', groupEventData);
+
+        console.log('✅ Group event created successfully:', groupEventResult);
+
+        showNotification('Evento grupal creado exitosamente!', 'success');
+        closeModal('create-group-event-modal');
+
+        // Recargar eventos para mostrar el nuevo evento grupal
+        await loadManagementEvents();
+
+    } catch (error) {
+        console.error('❌ Failed to create group event:', error);
+        let errorMessage = 'Error al crear evento grupal';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
 // Agregar función al objeto global window
 window.showInviteForm = showInviteForm;
 window.inviteUserByEmail = inviteUserByEmail;
+window.showCreateGroupEventModal = showCreateGroupEventModal;
+window.createGroupEvent = createGroupEvent;
 
 async function createGroup(event) {
     event.preventDefault();
@@ -1500,3 +1802,206 @@ window.onclick = (event) => {
         event.target.style.display = 'none';
     }
 };
+
+// Group Invitations Functions
+async function showGroupInvitations() {
+    try {
+        console.log('🎯 showGroupInvitations called', { userId });
+
+        if (!userId) {
+            console.error('❌ No user ID available for showGroupInvitations');
+            showNotification('Debe iniciar sesión para ver invitaciones', 'error');
+            return;
+        }
+
+        console.log('🔍 Loading group invitations for user:', userId);
+
+        // Call API to get group invitations
+        const result = await apiRequest(`/groups/invitations?user_id=${userId}`);
+        const container = document.getElementById('group-invitations-list');
+
+        console.log('📦 Group invitations response:', result);
+
+        container.innerHTML = '';
+
+        if (result.invitations && result.invitations.length > 0) {
+            console.log(`✅ Found ${result.invitations.length} invitations`);
+
+            result.invitations.forEach(invitation => {
+                const invitationCard = document.createElement('div');
+                invitationCard.className = 'invitation-card';
+
+                // Parse dates
+                const createdAt = new Date(invitation.created_at);
+                const respondedAt = invitation.responded_at && invitation.responded_at !== '0001-01-01T00:00:00Z'
+                    ? new Date(invitation.responded_at)
+                    : null;
+
+                invitationCard.innerHTML = `
+                    <div style="margin-bottom: 15px;">
+                        <h4 style="margin-bottom: 5px;">Invitación a grupo: ${invitation.group_name || 'Grupo desconocido'}</h4>
+                        <p style="margin-bottom: 5px;">Invitado por: ${invitation.inviter_name || invitation.invited_by_name || 'Usuario desconocido'}</p>
+                        <p style="margin-bottom: 5px;">Email: ${invitation.inviter_email || invitation.email || 'Email desconocido'}</p>
+                        <p style="margin-bottom: 10px;">Fecha: ${createdAt.toLocaleString()}</p>
+                        <p style="margin-bottom: 10px;">Estado: <span class="invitation-status ${invitation.status}">${getInvitationStatusDisplay(invitation.status)}</span></p>
+
+                        ${invitation.status === 'pending' ? `
+                        <div style="display: flex; gap: 10px; margin-top: 15px;">
+                            <button onclick="acceptGroupInvitation('${invitation.id}', '${invitation.group_id}')" class="btn-primary" style="flex: 1;">Aceptar</button>
+                            <button onclick="rejectGroupInvitation('${invitation.id}', '${invitation.group_id}')" class="btn-danger" style="flex: 1;">Rechazar</button>
+                        </div>
+                        ` : ''}
+
+                        ${respondedAt ? `<p style="margin-top: 10px; font-size: 12px; color: #666;">Respondido: ${respondedAt.toLocaleString()}</p>` : ''}
+                    </div>
+                `;
+
+                container.appendChild(invitationCard);
+            });
+        } else {
+            console.log('ℹ️ No group invitations found');
+            container.innerHTML = '<p>No tienes invitaciones pendientes a grupos</p>';
+        }
+
+        // Show the modal
+        showModal('group-invitations-modal');
+
+    } catch (error) {
+        console.error('❌ Failed to load group invitations:', error);
+        showNotification('Error al cargar invitaciones: ' + error.message, 'error');
+    }
+}
+
+async function acceptGroupInvitation(invitationId, groupId) {
+    try {
+        console.log('✅ Accepting group invitation:', invitationId, 'for group:', groupId);
+
+        if (!userId) {
+            showNotification('Debe iniciar sesión para aceptar invitaciones', 'error');
+            return;
+        }
+
+        // Call API to accept invitation - FIXED: Include group_id in the request body
+        const result = await apiRequest(`/groups/invitations/${invitationId}/accept`, 'POST', {
+            invitation_id: invitationId,
+            group_id: groupId,  // ← ADD THIS LINE
+            user_id: userId
+        });
+
+        showNotification('Invitación aceptada exitosamente!', 'success');
+        console.log('✅ Group invitation accepted successfully:', result);
+
+        // Refresh groups and invitations
+        await loadGroups();
+        await showGroupInvitations();
+
+    } catch (error) {
+        console.error('❌ Failed to accept group invitation:', error);
+        let errorMessage = 'Error al aceptar la invitación';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+async function rejectGroupInvitation(invitationId, groupId) {
+    try {
+        console.log('❌ Rejecting group invitation:', invitationId, 'for group:', groupId);
+
+        if (!userId) {
+            showNotification('Debe iniciar sesión para rechazar invitaciones', 'error');
+            return;
+        }
+
+        // Call API to reject invitation
+        const result = await apiRequest(`/groups/invitations/${invitationId}/reject`, 'POST', {
+            user_id: userId,
+            invitation_id: invitationId,
+            group_id: groupId,
+            status: 'rejected'
+        });
+
+        showNotification('Invitación rechazada exitosamente!', 'success');
+        console.log('✅ Group invitation rejected successfully:', result);
+
+        // Refresh invitations
+        await showGroupInvitations();
+
+    } catch (error) {
+        console.error('❌ Failed to reject group invitation:', error);
+        let errorMessage = 'Error al rechazar la invitación';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+function getInvitationStatusDisplay(status) {
+    const statusNames = {
+        'pending': 'Pendiente',
+        'accepted': 'Aceptada',
+        'rejected': 'Rechazada',
+        'expired': 'Expirada'
+    };
+    return statusNames[status] || status;
+}
+
+// Add functions to global window object
+window.showGroupInvitations = showGroupInvitations;
+window.acceptGroupInvitation = acceptGroupInvitation;
+window.rejectGroupInvitation = rejectGroupInvitation;
+window.getInvitationStatusDisplay = getInvitationStatusDisplay;
+
+async function leaveGroup(groupId, groupName) {
+    try {
+        console.log('🚪 Attempting to leave group:', groupId, groupName);
+
+        if (!userId) {
+            showNotification('Debe iniciar sesión para salir de un grupo', 'error');
+            return;
+        }
+
+        // Show confirmation dialog
+        const confirmed = confirm(`¿Estás seguro de que quieres salir del grupo "${groupName}"? Esta acción no se puede deshacer.`);
+        if (!confirmed) {
+            console.log('🔄 User cancelled leaving group');
+            return;
+        }
+
+        console.log('✅ User confirmed leaving group:', groupId);
+
+        // Call API to leave group
+        const result = await apiRequest(`/groups/${groupId}/leave`, 'POST', {
+            group_id: groupId,
+            user_id: userId
+        });
+
+        showNotification(`Has salido del grupo "${groupName}" exitosamente!`, 'success');
+        console.log('✅ Left group successfully:', result);
+
+        // Refresh groups to reflect the change
+        await loadGroups();
+
+    } catch (error) {
+        console.error('❌ Failed to leave group:', error);
+        let errorMessage = 'Error al salir del grupo';
+        try {
+            const errorData = JSON.parse(error.message);
+            errorMessage = errorData.error || errorMessage;
+        } catch (e) {
+            errorMessage = error.message;
+        }
+        showNotification(errorMessage, 'error');
+    }
+}
+
+// Add function to global window object
+window.leaveGroup = leaveGroup;

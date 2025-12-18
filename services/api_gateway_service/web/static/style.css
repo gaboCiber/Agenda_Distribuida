@@ -589,10 +589,107 @@ textarea {
     }
 }
 
+.invitation-card {
+    background: white;
+    padding: 15px;
+    margin-bottom: 15px;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    border-left: 4px solid #007bff;
+}
+
+.invitation-status {
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    color: white;
+}
+
+.invitation-status.pending {
+    background-color: #ffc107;
+    color: #212529;
+}
+
+.invitation-status.accepted {
+    background-color: #28a745;
+}
+
+.invitation-status.rejected {
+    background-color: #dc3545;
+}
+
+.invitation-status.expired {
+    background-color: #6c757d;
+}
+
+/* Responsive for invitations */
+@media (max-width: 600px) {
+    .invitation-card {
+        padding: 12px;
+    }
+
+    .invitation-card button {
+        padding: 8px 12px;
+        font-size: 13px;
+    }
+}
+
+/* Custom button styles for group actions */
+.btn-settings {
+    background: linear-gradient(135deg, #6c757d 0%, #545b62 100%);
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background-color 0.3s;
+    min-width: 40px;
+}
+
+.btn-settings:hover {
+    background: linear-gradient(135deg, #545b62 0%, #495057 100%);
+}
+
+/* Make Ver Miembros button blue */
+.group-actions .btn-secondary {
+    background: #007bff;
+}
+
+.group-actions .btn-secondary:hover {
+    background: #0056b3;
+}
+
 /* Estilos para los botones de gestión */
 .group-actions button {
     padding: 8px 12px;
     font-size: 13px;
+}
+
+/* Estilos para elementos de eventos en gestión */
+.event-item {
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 12px;
+    background: #f8f9fa;
+    margin-bottom: 8px;
+}
+
+.event-item strong {
+    color: #333;
+}
+
+.event-item span {
+    color: #666;
+}
+
+/* Estilos para elementos de eventos en gestión */
+.event-item {
+    border: 1px solid #e9ecef;
+    border-radius: 6px;
+    padding: 12px;
+    background: #f8f9fa;
 }
 
 /* Responsive para gestión de grupos */
