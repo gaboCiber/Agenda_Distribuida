@@ -41,7 +41,7 @@ func (c *DBClient) FindAndUpdateLeader(ctx context.Context) error {
 	for _, nodeURL := range c.raftNodesURLs {
 		// Limpiar URL
 		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
-		
+
 		// Hacer ping al nodo para ver si es líder
 		if c.isNodeLeader(ctx, nodeURL) {
 			c.baseURL = nodeURL
@@ -49,14 +49,14 @@ func (c *DBClient) FindAndUpdateLeader(ctx context.Context) error {
 			return nil
 		}
 	}
-	
+
 	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", c.raftNodesURLs)
 }
 
 // isNodeLeader verifica si un nodo específico es el líder
 func (c *DBClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
 	url := fmt.Sprintf("%s/raft/status", nodeURL)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return false
@@ -148,21 +148,25 @@ func (c *DBClient) SetRedisPrimary(primaryAddr string) error {
 		return fmt.Errorf("failed to check for existing config: %w", err)
 	}
 
-	payload := configPayload{Name: configName, Value: primaryAddr}
-	jsonPayload, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal json payload: %w", err)
-	}
-
 	var method, url string
+	var jsonPayload []byte
+
 	if existingValue != "" {
-		// Value exists, so we update it
+		// Value exists, so we update it with PUT (only value in payload)
 		method = "PUT"
 		url = fmt.Sprintf("%s/api/v1/configs/%s", c.baseURL, configName)
+		payload := map[string]string{"value": primaryAddr}
+		jsonPayload, err = json.Marshal(payload)
 	} else {
-		// Value does not exist, so we create it
+		// Value does not exist, so we create it with POST (full payload)
 		method = "POST"
 		url = fmt.Sprintf("%s/api/v1/configs", c.baseURL)
+		payload := configPayload{Name: configName, Value: primaryAddr}
+		jsonPayload, err = json.Marshal(payload)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed to marshal json payload: %w", err)
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bytes.NewBuffer(jsonPayload))

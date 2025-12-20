@@ -17,6 +17,12 @@ FROM debian:bullseye-slim
 
 WORKDIR /app
 
+# Install network diagnostic tools
+RUN apt-get update && apt-get install -y \
+    iputils-ping \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/redis-supervisor .
 
 EXPOSE 8080

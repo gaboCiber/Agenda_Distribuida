@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,17 @@ func (s *Supervisor) startLeaderLoops(ctx context.Context) {
 				break
 			}
 			log.Printf("Failed to find initial primary: %v. Retrying in 5 seconds...", err)
+
+			// Even if we can't find a primary, sync any existing primary state
+			s.stateMu.RLock()
+			existingPrimary := s.currentPrimary
+			s.stateMu.RUnlock()
+			if existingPrimary != "" {
+				log.Printf("Using existing primary %s for DB synchronization", existingPrimary)
+				s.synchronizeDB()
+				s.elector.UpdatePrimary(existingPrimary)
+			}
+
 			select {
 			case <-time.After(5 * time.Second):
 			case <-leaderCtx.Done():
@@ -126,6 +138,19 @@ func (s *Supervisor) synchronizeDB() {
 	err := s.dbClient.SetRedisPrimary(primary)
 	if err != nil {
 		log.Printf("CRITICAL: Failed to synchronize DB service with primary %s: %v", primary, err)
+		log.Printf("Will retry DB synchronization in 10 seconds...")
+
+		// Retry DB synchronization after 10 seconds
+		go func() {
+			time.Sleep(10 * time.Second)
+			log.Printf("Retrying DB synchronization with primary %s...", primary)
+			retryErr := s.dbClient.SetRedisPrimary(primary)
+			if retryErr != nil {
+				log.Printf("Retry failed: %v. Will continue trying...", retryErr)
+			} else {
+				log.Printf("DB service successfully synchronized with primary %s on retry.", primary)
+			}
+		}()
 	} else {
 		log.Printf("DB service synchronized with primary %s.", primary)
 	}
@@ -134,7 +159,7 @@ func (s *Supervisor) synchronizeDB() {
 // findInitialPrimary queries all configured redis nodes to determine the primary and replica.
 func (s *Supervisor) findInitialPrimary() error {
 	log.Println("Searching for initial Redis primary among:", s.redisNodes)
-	var foundPrimary string
+	var foundMasters []string
 	var foundReplicas []string
 
 	for _, addr := range s.redisNodes {
@@ -145,30 +170,31 @@ func (s *Supervisor) findInitialPrimary() error {
 		}
 
 		if role == "master" {
-			if foundPrimary != "" {
-				return fmt.Errorf("split-brain detected: multiple primaries found (%s and %s)", foundPrimary, addr)
-			}
-			foundPrimary = addr
+			foundMasters = append(foundMasters, addr)
 		} else {
 			foundReplicas = append(foundReplicas, addr)
 		}
 	}
 
-	if foundPrimary == "" {
+	if len(foundMasters) == 0 {
 		// No master found, try to promote one of the slaves
 		log.Println("No master found, attempting to promote one of the slaves...")
 		return s.attemptSlavePromotion()
+	} else if len(foundMasters) == 1 {
+		// Single master found - healthy state
+		s.stateMu.Lock()
+		s.currentPrimary = foundMasters[0]
+		s.currentReplicas = foundReplicas
+		if len(foundReplicas) == 0 {
+			log.Println("Warning: No replicas found.")
+		}
+		s.stateMu.Unlock()
+		return nil
+	} else {
+		// Multiple masters found - split-brain
+		log.Printf("split-brain detected: %d primaries found (%v), attempting resolution", len(foundMasters), foundMasters)
+		return s.resolveMultipleMasters(foundMasters, foundReplicas)
 	}
-
-	s.stateMu.Lock()
-	s.currentPrimary = foundPrimary
-	s.currentReplicas = foundReplicas
-	if len(foundReplicas) == 0 {
-		log.Println("Warning: No replicas found.")
-	}
-	s.stateMu.Unlock()
-
-	return nil
 }
 
 // monitorPrimaryLoop periodically pings the current primary and triggers a failover if it becomes unresponsive.
@@ -233,23 +259,25 @@ func (s *Supervisor) initiateFailover() {
 		return
 	}
 
-	var chosenReplica string
+	var healthyReplicas []string
 	for _, replica := range s.currentReplicas {
 		_, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		err := s.redisClient.Ping(replica)
 		cancel()
 		if err == nil {
-			chosenReplica = replica
-			break
+			healthyReplicas = append(healthyReplicas, replica)
 		} else {
 			log.Printf("Replica %s is not healthy: %v", replica, err)
 		}
 	}
 
-	if chosenReplica == "" {
+	if len(healthyReplicas) == 0 {
 		log.Println("Cannot initiate failover: no healthy replicas found.")
 		return
 	}
+
+	// Choose the replica with highest priority (lexicographically highest) for consistency
+	chosenReplica := s.selectPreferredMasterFromList(healthyReplicas)
 
 	log.Printf("Attempting to promote %s to primary...", chosenReplica)
 
@@ -281,16 +309,18 @@ func (s *Supervisor) initiateFailover() {
 			}
 		}
 	}
-	
+
 	// Add old primary to replicas list if it's different from the new primary
 	if oldPrimaryAddr != "" && oldPrimaryAddr != chosenReplica {
 		newReplicas = append(newReplicas, oldPrimaryAddr)
 	}
-	
+
 	s.currentReplicas = newReplicas
 
 	log.Printf("Internal state updated. New primary: %s. New replicas: %v.", s.currentPrimary, s.currentReplicas)
 
+	// Reconfigure all reachable nodes to point to the new primary
+	go s.reconfigureAllNodes(s.currentPrimary)
 	go s.synchronizeDB()
 	go s.elector.UpdatePrimary(s.currentPrimary)
 
@@ -303,30 +333,39 @@ func (s *Supervisor) clusterHealthCheckLoop(ctx context.Context) {
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
 
+	log.Println("Starting cluster health check loop (15s interval)...")
+
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("Stopping cluster health check loop.")
 			return
 		case <-ticker.C:
+			log.Println("Cluster health check: scanning cluster state...")
 		}
 
-		s.stateMu.RLock()
-		primary := s.currentPrimary
-		s.stateMu.RUnlock()
-
-		if primary != "" {
-			err := s.redisClient.Ping(primary)
-			if err == nil {
-				role, err := s.redisClient.GetRole(primary)
-				if err == nil && role == "master" {
-					continue
-				}
-			}
+		// Check for split-brain scenario
+		masters, replicas, err := s.scanClusterState()
+		if err != nil {
+			log.Printf("Cluster health check: Failed to scan cluster state: %v", err)
+			continue
 		}
 
-		log.Println("Cluster health check: No healthy primary found, attempting recovery...")
-		s.attemptClusterRecovery()
+		if len(masters) == 0 {
+			log.Println("Cluster health check: No primary found, attempting recovery...")
+			s.attemptClusterRecovery()
+		} else if len(masters) > 1 {
+			log.Printf("Cluster health check: Split-brain detected with %d masters: %v", len(masters), masters)
+			s.resolveMultipleMasters(masters, replicas)
+		} else {
+			// Exactly 1 master found - leader ensures DB is synchronized
+			foundMaster := masters[0]
+
+			// Leader's responsibility: keep DB synchronized with actual master
+			go s.synchronizeDB()
+
+			log.Printf("Cluster health check: Master: %s, Replicas: %d", foundMaster, len(replicas))
+		}
 	}
 }
 
@@ -355,7 +394,8 @@ func (s *Supervisor) attemptClusterRecovery() {
 		return
 	}
 
-	chosenReplica := healthyReplicas[0]
+	// Choose the replica with highest priority (lexicographically highest) for consistency
+	chosenReplica := s.selectPreferredMasterFromList(healthyReplicas)
 	log.Printf("Attempting to promote %s to primary for cluster recovery...", chosenReplica)
 
 	err := s.redisClient.PromoteToPrimary(chosenReplica)
@@ -387,16 +427,18 @@ func (s *Supervisor) attemptClusterRecovery() {
 			}
 		}
 	}
-	
+
 	// Add old primary to replicas list if it's different from the new primary
 	if oldPrimary != "" && oldPrimary != chosenReplica {
 		newReplicas = append(newReplicas, oldPrimary)
 	}
-	
+
 	s.currentReplicas = newReplicas
 
 	log.Printf("Cluster recovery completed. New primary: %s, Replicas: %v", s.currentPrimary, s.currentReplicas)
 
+	// Reconfigure all reachable nodes to point to the new primary
+	go s.reconfigureAllNodes(s.currentPrimary)
 	go s.synchronizeDB()
 	go s.elector.UpdatePrimary(s.currentPrimary)
 }
@@ -498,11 +540,11 @@ func (s *Supervisor) monitorAllNodesLoop(ctx context.Context) {
 func (s *Supervisor) immediateLeaderCheck(ctx context.Context) {
 	// Give a brief moment for leader loops to initialize
 	time.Sleep(1 * time.Second)
-	
+
 	s.stateMu.RLock()
 	primary := s.currentPrimary
 	s.stateMu.RUnlock()
-	
+
 	if primary == "" {
 		log.Println("Immediate leader check: No primary set, attempting to find one...")
 		// Try to find initial primary
@@ -514,7 +556,7 @@ func (s *Supervisor) immediateLeaderCheck(ctx context.Context) {
 		}
 		return
 	}
-	
+
 	log.Printf("Immediate leader check: Checking health of current primary %s", primary)
 	err := s.redisClient.Ping(primary)
 	if err != nil {
@@ -528,7 +570,7 @@ func (s *Supervisor) immediateLeaderCheck(ctx context.Context) {
 			log.Printf("Immediate leader check: Could not get role for %s: %v", primary, err)
 			return
 		}
-		
+
 		if role != "master" {
 			log.Printf("Immediate leader check: %s is not a master (role: %s), initiating failover", primary, role)
 			s.initiateFailover()
@@ -541,14 +583,14 @@ func (s *Supervisor) immediateLeaderCheck(ctx context.Context) {
 // attemptSlavePromotion tries to promote a healthy slave to master
 func (s *Supervisor) attemptSlavePromotion() error {
 	var healthySlaves []string
-	
+
 	for _, addr := range s.redisNodes {
 		role, err := s.redisClient.GetRole(addr)
 		if err != nil {
 			log.Printf("Could not get role for %s: %v", addr, err)
 			continue
 		}
-		
+
 		if role == "slave" {
 			// Check if slave is healthy
 			if err := s.redisClient.Ping(addr); err != nil {
@@ -558,26 +600,26 @@ func (s *Supervisor) attemptSlavePromotion() error {
 			healthySlaves = append(healthySlaves, addr)
 		}
 	}
-	
+
 	if len(healthySlaves) == 0 {
 		return errors.New("no healthy slaves found to promote")
 	}
-	
-	// Choose the first healthy slave to promote
-	chosenSlave := healthySlaves[0]
+
+	// Choose the slave with highest priority (lexicographically highest) for consistency
+	chosenSlave := s.selectPreferredMasterFromList(healthySlaves)
 	log.Printf("Attempting to promote %s to master (no master found)", chosenSlave)
-	
+
 	err := s.redisClient.PromoteToPrimary(chosenSlave)
 	if err != nil {
 		return fmt.Errorf("failed to promote %s: %w", chosenSlave, err)
 	}
-	
+
 	log.Printf("Successfully promoted %s to master", chosenSlave)
-	
+
 	// Update state
 	s.stateMu.Lock()
 	s.currentPrimary = chosenSlave
-	
+
 	// Add other slaves to replicas list
 	var replicas []string
 	for _, addr := range s.redisNodes {
@@ -587,8 +629,237 @@ func (s *Supervisor) attemptSlavePromotion() error {
 	}
 	s.currentReplicas = replicas
 	s.stateMu.Unlock()
-	
+
 	log.Printf("New cluster state - Primary: %s, Replicas: %v", chosenSlave, replicas)
-	
+
+	// Reconfigure all reachable nodes to point to the new primary
+	go s.reconfigureAllNodes(chosenSlave)
+
+	// Synchronize with DB service and elector
+	go s.synchronizeDB()
+	go s.elector.UpdatePrimary(chosenSlave)
+
 	return nil
+}
+
+// reconfigureAllNodes configures all reachable Redis nodes (except the primary) as replicas
+func (s *Supervisor) reconfigureAllNodes(primaryAddr string) {
+	log.Printf("Reconfiguring all reachable nodes to point to primary %s", primaryAddr)
+
+	for _, nodeAddr := range s.redisNodes {
+		// Skip the primary itself
+		if nodeAddr == primaryAddr {
+			continue
+		}
+
+		// Check if node is reachable
+		if err := s.redisClient.Ping(nodeAddr); err != nil {
+			log.Printf("Node %s is not reachable, skipping reconfiguration: %v", nodeAddr, err)
+			continue
+		}
+
+		// Check current role
+		role, err := s.redisClient.GetRole(nodeAddr)
+		if err != nil {
+			log.Printf("Could not get role for node %s: %v", nodeAddr, err)
+			continue
+		}
+
+		// If node is not already a replica of the correct primary, reconfigure it
+		if role == "master" {
+			log.Printf("Reconfiguring master %s as replica of %s", nodeAddr, primaryAddr)
+			if err := s.redisClient.SetAsReplicaOf(nodeAddr, primaryAddr); err != nil {
+				log.Printf("Failed to reconfigure %s as replica: %v", nodeAddr, err)
+			} else {
+				log.Printf("Successfully reconfigured %s as replica of %s", nodeAddr, primaryAddr)
+			}
+		} else if role == "slave" {
+			// Check if it's already pointing to the correct master
+			masterHost, err := s.redisClient.GetMasterHost(nodeAddr)
+			if err != nil {
+				log.Printf("Could not get master host for %s: %v", nodeAddr, err)
+				// Try reconfiguring anyway
+				if err := s.redisClient.SetAsReplicaOf(nodeAddr, primaryAddr); err != nil {
+					log.Printf("Failed to reconfigure replica %s: %v", nodeAddr, err)
+				} else {
+					log.Printf("Successfully reconfigured replica %s to point to %s", nodeAddr, primaryAddr)
+				}
+				continue
+			}
+
+			// Extract just the hostname part (without port) for comparison
+			expectedMaster := strings.Split(primaryAddr, ":")[0]
+			if masterHost != expectedMaster {
+				log.Printf("Reconfiguring replica %s from master %s to %s", nodeAddr, masterHost, primaryAddr)
+				if err := s.redisClient.SetAsReplicaOf(nodeAddr, primaryAddr); err != nil {
+					log.Printf("Failed to reconfigure replica %s: %v", nodeAddr, err)
+				} else {
+					log.Printf("Successfully reconfigured replica %s to point to %s", nodeAddr, primaryAddr)
+				}
+			} else {
+				log.Printf("Replica %s is already pointing to correct master %s", nodeAddr, masterHost)
+			}
+		}
+	}
+
+	log.Printf("Node reconfiguration completed for primary %s", primaryAddr)
+}
+
+// resolveSplitBrain handles the case where multiple Redis masters are detected
+func (s *Supervisor) resolveSplitBrain(master1, master2 string, currentReplicas []string) error {
+	log.Printf("Resolving split-brain between %s and %s", master1, master2)
+
+	// Choose the master with higher priority (simple selection: choose the one with higher port/IP)
+	chosenMaster := s.selectPreferredMaster(master1, master2)
+	demotedMaster := master2
+	if chosenMaster == master2 {
+		demotedMaster = master1
+	}
+
+	log.Printf("Choosing %s as primary, demoting %s to replica", chosenMaster, demotedMaster)
+
+	// Step 1: Force the demoted master to become a replica of the chosen master
+	err := s.redisClient.SetAsReplicaOf(demotedMaster, chosenMaster)
+	if err != nil {
+		log.Printf("Failed to demote %s to replica of %s: %v", demotedMaster, chosenMaster, err)
+		// Try the other way around
+		chosenMaster = demotedMaster
+		demotedMaster = master1
+		log.Printf("Trying alternative: choosing %s as primary, demoting %s", chosenMaster, demotedMaster)
+
+		err = s.redisClient.SetAsReplicaOf(demotedMaster, chosenMaster)
+		if err != nil {
+			return fmt.Errorf("failed to resolve split-brain: could not demote either master: %v", err)
+		}
+	}
+
+	log.Printf("Successfully demoted %s to replica of %s", demotedMaster, chosenMaster)
+
+	// Step 2: Update internal state
+	s.stateMu.Lock()
+	s.currentPrimary = chosenMaster
+
+	// Build new replicas list
+	var newReplicas []string
+	newReplicas = append(newReplicas, demotedMaster)      // Add the demoted master
+	newReplicas = append(newReplicas, currentReplicas...) // Add existing replicas
+
+	s.currentReplicas = newReplicas
+	s.stateMu.Unlock()
+
+	// Step 3: Reconfigure all reachable nodes to point to the correct master
+	go s.reconfigureAllNodes(chosenMaster)
+
+	// Step 4: Synchronize with DB service
+	go s.synchronizeDB()
+	go s.elector.UpdatePrimary(chosenMaster)
+
+	log.Printf("Split-brain resolved. New primary: %s, Replicas: %v", chosenMaster, newReplicas)
+	return nil
+}
+
+// selectPreferredMaster chooses which master to keep based on consistent criteria
+func (s *Supervisor) selectPreferredMaster(master1, master2 string) string {
+	// Simple selection: choose the one with lexicographically higher address
+	// This ensures consistent selection across all supervisors
+	if master1 > master2 {
+		return master1
+	}
+	return master2
+}
+
+// scanClusterState scans all Redis nodes and returns masters and replicas
+func (s *Supervisor) scanClusterState() ([]string, []string, error) {
+	var masters []string
+	var replicas []string
+
+	for _, addr := range s.redisNodes {
+		role, err := s.redisClient.GetRole(addr)
+		if err != nil {
+			log.Printf("Could not get role for %s during cluster scan: %v", addr, err)
+			continue
+		}
+
+		if role == "master" {
+			masters = append(masters, addr)
+		} else {
+			replicas = append(replicas, addr)
+		}
+	}
+
+	return masters, replicas, nil
+}
+
+// resolveMultipleMasters handles the case where multiple Redis masters are detected (N > 2)
+func (s *Supervisor) resolveMultipleMasters(masters []string, currentReplicas []string) error {
+	log.Printf("Resolving split-brain with %d masters: %v", len(masters), masters)
+
+	// Choose the master with highest priority (lexicographically highest)
+	chosenMaster := s.selectPreferredMasterFromList(masters)
+
+	var demotedMasters []string
+	for _, master := range masters {
+		if master != chosenMaster {
+			demotedMasters = append(demotedMasters, master)
+		}
+	}
+
+	log.Printf("Choosing %s as primary, demoting %d masters: %v", chosenMaster, len(demotedMasters), demotedMasters)
+
+	// Step 1: Force all other masters to become replicas of the chosen master
+	for _, demotedMaster := range demotedMasters {
+		err := s.redisClient.SetAsReplicaOf(demotedMaster, chosenMaster)
+		if err != nil {
+			log.Printf("Failed to demote %s to replica of %s: %v", demotedMaster, chosenMaster, err)
+			// If we can't demote this one, try choosing another master
+			// Remove this master from candidates and retry
+			var remainingMasters []string
+			for _, m := range masters {
+				if m != demotedMaster {
+					remainingMasters = append(remainingMasters, m)
+				}
+			}
+			if len(remainingMasters) <= 1 {
+				return fmt.Errorf("failed to resolve split-brain: could not demote any masters")
+			}
+			log.Printf("Retrying with remaining masters: %v", remainingMasters)
+			return s.resolveMultipleMasters(remainingMasters, currentReplicas)
+		}
+		log.Printf("Successfully demoted %s to replica of %s", demotedMaster, chosenMaster)
+	}
+
+	// Step 2: Update internal state
+	s.stateMu.Lock()
+	s.currentPrimary = chosenMaster
+
+	// Build new replicas list
+	var newReplicas []string
+	newReplicas = append(newReplicas, demotedMasters...)  // Add all demoted masters
+	newReplicas = append(newReplicas, currentReplicas...) // Add existing replicas
+
+	s.currentReplicas = newReplicas
+	s.stateMu.Unlock()
+
+	// Step 3: Reconfigure all reachable nodes to point to the correct master
+	go s.reconfigureAllNodes(chosenMaster)
+
+	// Step 4: Synchronize with DB service
+	go s.synchronizeDB()
+	go s.elector.UpdatePrimary(chosenMaster)
+
+	log.Printf("Split-brain resolved. New primary: %s, Replicas: %v", chosenMaster, newReplicas)
+	return nil
+}
+
+// selectPreferredMasterFromList chooses which master to keep from a list based on consistent criteria
+func (s *Supervisor) selectPreferredMasterFromList(masters []string) string {
+	// Simple selection: choose the lexicographically highest address
+	// This ensures consistent selection across all supervisors
+	chosen := masters[0]
+	for _, master := range masters[1:] {
+		if master > chosen {
+			chosen = master
+		}
+	}
+	return chosen
 }

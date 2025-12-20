@@ -62,6 +62,33 @@ func (c *RedisClient) GetRole(addr string) (string, error) {
 	return "", fmt.Errorf("could not determine role from Redis INFO replication for %s", addr)
 }
 
+// GetMasterHost gets the master host that a slave is replicating from
+func (c *RedisClient) GetMasterHost(addr string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	rdb := c.newRedisUniversalClient(addr)
+	defer rdb.Close()
+
+	info, err := rdb.Info(ctx, "replication").Result()
+	if err != nil {
+		return "", fmt.Errorf("failed to get INFO replication from %s: %w", addr, err)
+	}
+
+	// Parse the info string to find the master_host
+	lines := strings.Split(info, "\n")
+	for _, line := range lines {
+		if strings.HasPrefix(line, "master_host:") {
+			parts := strings.Split(line, ":")
+			if len(parts) == 2 {
+				return strings.TrimSpace(parts[1]), nil
+			}
+		}
+	}
+
+	return "", fmt.Errorf("could not determine master_host from Redis INFO replication for %s", addr)
+}
+
 // Ping checks the health of a Redis node
 func (c *RedisClient) Ping(addr string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)

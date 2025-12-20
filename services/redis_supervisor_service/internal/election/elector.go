@@ -40,7 +40,6 @@ func (s state) String() string {
 
 type coordinatorInfo struct {
 	leaderID string
-	epoch    uint64
 }
 
 // Elector coordinates leader selection among redis-supervisor instances.
@@ -63,7 +62,6 @@ type Elector struct {
 	mu            sync.RWMutex
 	currentState  state
 	leaderID      string
-	leaderEpoch   uint64
 	lastHeartbeat time.Time
 
 	primaryAddr   atomic.Value
@@ -107,11 +105,10 @@ func NewElector(id, addr string, peers map[string]string, logger *log.Logger) (*
 		clients:                make(map[string]*grpc.ClientConn),
 		currentState:           stateFollower,
 		leaderID:               "",
-		leaderEpoch:            0,
 		lastHeartbeat:          time.Now(),
-		heartbeatInterval:      2 * time.Second,
-		heartbeatTimeout:       6 * time.Second,
-		rpcTimeout:             900 * time.Millisecond,
+		heartbeatInterval:      1 * time.Second,
+		heartbeatTimeout:       3 * time.Second,
+		rpcTimeout:             500 * time.Millisecond,
 		leadershipCh:           make(chan bool, 1),
 		coordinatorCh:          make(chan coordinatorInfo, 1),
 		logger:                 logger,
@@ -196,11 +193,11 @@ func (e *Elector) LeadershipEvents() <-chan bool {
 	return e.leadershipCh
 }
 
-// CurrentLeader returns the ID and epoch of the known leader.
-func (e *Elector) CurrentLeader() (string, uint64) {
+// CurrentLeader returns the ID of the known leader.
+func (e *Elector) CurrentLeader() string {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
-	return e.leaderID, e.leaderEpoch
+	return e.leaderID
 }
 
 // UpdatePrimary sets the Redis primary address for heartbeats/coordinator messages.
@@ -298,51 +295,49 @@ func (e *Elector) startElection(reason string) {
 		e.mu.Unlock()
 		return
 	}
-	
+
 	e.currentState = stateCandidate
 	e.leaderID = ""
 	e.mu.Unlock()
 
 	higherPeers := e.higherPriorityPeers()
 	e.logger.Printf("[%s] higher priority peers: %v", e.id, higherPeers)
-	
+
 	// According to bully algorithm: send election messages to higher priority peers
-	// If no one responds, become leader
+	// If any respond OK, wait for coordinator; else become leader
 	responded := false
-	
+
 	for _, peerID := range higherPeers {
 		addr := e.peers[peerID]
-		e.logger.Printf("[%s] checking connectivity to higher priority peer %s at %s", e.id, peerID, addr)
-		
-		// First check connectivity with retry
-		isConnected := false
-		maxRetries := 3
-		for retry := 0; retry < maxRetries; retry++ {
-			if retry > 0 {
-				e.logger.Printf("[%s] retry %d for peer %s", e.id, retry+1, peerID)
-				time.Sleep(100 * time.Millisecond)
-			}
-			
-			if e.checkPeerConnectivity(peerID, addr) {
-				isConnected = true
-				break
-			}
+		e.logger.Printf("[%s] sending ELECTION to higher priority peer %s at %s", e.id, peerID, addr)
+
+		ctx, cancel := context.WithTimeout(e.ctx, e.rpcTimeout)
+		msg := &ElectionMessage{
+			Type:     MessageType_ELECTION,
+			SenderId: e.id,
 		}
-		
-		if isConnected {
-			e.logger.Printf("[%s] higher priority peer %s is responsive, waiting for coordinator", e.id, peerID)
+		resp, err := e.sendMessage(ctx, peerID, addr, msg)
+		cancel()
+
+		if err != nil {
+			e.logger.Printf("[%s] failed to send ELECTION to %s: %v", e.id, peerID, err)
+			continue
+		}
+
+		if resp != nil && resp.Type == MessageType_OK {
+			e.logger.Printf("[%s] higher priority peer %s responded OK, waiting for coordinator", e.id, peerID)
 			responded = true
-			break // At least one higher priority peer is alive, wait for them
+			break // At least one higher priority peer responded, wait for them
 		} else {
-			e.logger.Printf("[%s] higher priority peer %s is not responsive after %d attempts", e.id, peerID, maxRetries)
+			e.logger.Printf("[%s] higher priority peer %s did not respond OK: %+v", e.id, peerID, resp)
 		}
 	}
 
 	e.logger.Printf("[%s] election result: responded=%v", e.id, responded)
-	
+
 	if !responded {
-		// No higher priority peers responded, become leader according to bully algorithm
-		e.logger.Printf("[%s] no higher priority peers responded, becoming leader", e.id)
+		// No higher priority peers responded OK, become leader according to bully algorithm
+		e.logger.Printf("[%s] no higher priority peers responded OK, becoming leader", e.id)
 		e.becomeLeader()
 		return
 	}
@@ -360,10 +355,9 @@ func (e *Elector) startElection(reason string) {
 			e.mu.Lock()
 			e.currentState = stateFollower
 			e.leaderID = info.leaderID
-			e.leaderEpoch = info.epoch
 			e.lastHeartbeat = time.Now()
 			e.mu.Unlock()
-			e.logger.Printf("[%s] accepted leader %s with epoch %d", e.id, info.leaderID, info.epoch)
+			e.logger.Printf("[%s] accepted leader %s", e.id, info.leaderID)
 			e.notifyLeadership(false)
 			return
 		case <-waitTimer.C:
@@ -377,27 +371,20 @@ func (e *Elector) startElection(reason string) {
 func (e *Elector) becomeLeader() {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
+
 	// Double-check that we should still become leader
 	if e.currentState != stateCandidate {
 		e.logger.Printf("[%s] no longer candidate, not becoming leader", e.id)
 		return
 	}
-	
+
 	prevLeader := e.leaderID
-	prevEpoch := e.leaderEpoch
 
 	e.currentState = stateLeader
 	e.leaderID = e.id
 	e.lastHeartbeat = time.Now()
 
-	newEpoch := uint64(time.Now().UnixNano())
-	if newEpoch <= prevEpoch {
-		newEpoch = prevEpoch + 1
-	}
-	e.leaderEpoch = newEpoch
-
-	e.logger.Printf("[%s] became leader (prevLeader=%s, newEpoch=%d)", e.id, prevLeader, newEpoch)
+	e.logger.Printf("[%s] became leader (prevLeader=%s)", e.id, prevLeader)
 
 	e.notifyLeadership(true)
 	go e.broadcast(MessageType_COORDINATOR)
@@ -421,10 +408,10 @@ func messageTypeToString(mt MessageType) string {
 }
 
 func (e *Elector) broadcast(msgType MessageType) {
-	leaderID, epoch := e.CurrentLeader()
+	leaderID := e.CurrentLeader()
 	primaryAddr, _ := e.primaryAddr.Load().(string)
 
-	e.logger.Printf("[%s] broadcasting message type %d to all peers (leader=%s, epoch=%d)", e.id, msgType, leaderID, epoch)
+	e.logger.Printf("[%s] broadcasting message type %d to all peers (leader=%s)", e.id, msgType, leaderID)
 
 	for peerID, addr := range e.peers {
 		e.logger.Printf("[%s] sending %s message to %s at %s", e.id, messageTypeToString(msgType), peerID, addr)
@@ -432,7 +419,7 @@ func (e *Elector) broadcast(msgType MessageType) {
 		msg := &ElectionMessage{
 			Type:        msgType,
 			SenderId:    e.id,
-			Epoch:       epoch,
+			Epoch:       0, // Epoch siempre 0 - ya no usamos épocas
 			LeaderId:    leaderID,
 			PrimaryAddr: primaryAddr,
 		}
@@ -440,6 +427,8 @@ func (e *Elector) broadcast(msgType MessageType) {
 		cancel()
 		if err != nil {
 			e.logger.Printf("[%s] broadcast to %s failed: %v", e.id, peerID, err)
+		} else {
+			e.logger.Printf("[%s] successfully sent message to %s", e.id, peerID)
 		}
 	}
 }
@@ -477,7 +466,7 @@ func (e *Elector) lowerPriorityPeers() []string {
 // SendMessage handles incoming gRPC requests from peers.
 func (e *Elector) SendMessage(ctx context.Context, msg *ElectionMessage) (*ElectionMessage, error) {
 	e.logger.Printf("[%s] SendMessage called with message: %+v", e.id, msg)
-	
+
 	if msg == nil {
 		e.logger.Printf("[%s] received nil message", e.id)
 		return nil, errors.New("nil message")
@@ -504,7 +493,14 @@ func (e *Elector) SendMessage(ctx context.Context, msg *ElectionMessage) (*Elect
 
 func (e *Elector) handleElectionMessage(msg *ElectionMessage) {
 	e.logger.Printf("[%s] received election message from %s", e.id, msg.SenderId)
-	
+
+	// If we are the leader, respond with COORDINATOR to affirm leadership
+	if e.IsLeader() {
+		e.logger.Printf("[%s] is leader, sending COORDINATOR to %s", e.id, msg.SenderId)
+		go e.sendCoordinatorToPeer(msg.SenderId)
+		return
+	}
+
 	// If we have higher priority (higher ID), we should respond OK and start our own election
 	if compareIDs(e.id, msg.SenderId) > 0 {
 		e.logger.Printf("[%s] has higher priority than %s, responding OK and starting election", e.id, msg.SenderId)
@@ -526,7 +522,7 @@ func (e *Elector) handleElectionMessage(msg *ElectionMessage) {
 }
 
 func (e *Elector) handleCoordinatorMessage(msg *ElectionMessage) {
-	e.logger.Printf("[%s] received COORDINATOR message from %s (leader=%s, epoch=%d)", e.id, msg.SenderId, msg.LeaderId, msg.Epoch)
+	e.logger.Printf("[%s] received COORDINATOR message from %s (leader=%s)", e.id, msg.SenderId, msg.LeaderId)
 
 	// Ignore our own coordinator messages
 	if msg.SenderId == e.id {
@@ -541,12 +537,12 @@ func (e *Elector) handleCoordinatorMessage(msg *ElectionMessage) {
 
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	
-	accept := e.shouldAcceptLeaderLocked(msg.LeaderId, msg.Epoch)
-	e.logger.Printf("[%s] shouldAcceptLeaderLocked: accept=%v, candidate=%s/%d, current=%s/%d", e.id, accept, msg.LeaderId, msg.Epoch, e.leaderID, e.leaderEpoch)
-	
+
+	accept := e.shouldAcceptLeaderLocked(msg.LeaderId)
+	e.logger.Printf("[%s] shouldAcceptLeaderLocked: accept=%v, candidate=%s, current=%s", e.id, accept, msg.LeaderId, e.leaderID)
+
 	if accept {
-		e.logger.Printf("[%s] accepting leader %s with epoch %d", e.id, msg.LeaderId, msg.Epoch)
+		e.logger.Printf("[%s] accepting leader %s", e.id, msg.LeaderId)
 		// Check for step-down BEFORE changing state
 		e.logger.Printf("[%s] step-down check: currentState=%s, msg.LeaderId=%s, e.id=%s", e.id, e.currentState, msg.LeaderId, e.id)
 		if e.currentState == stateLeader && msg.LeaderId != e.id {
@@ -555,11 +551,10 @@ func (e *Elector) handleCoordinatorMessage(msg *ElectionMessage) {
 		}
 		e.currentState = stateFollower
 		e.leaderID = msg.LeaderId
-		e.leaderEpoch = msg.Epoch
 		e.lastHeartbeat = time.Now()
 		e.lastLeaderAnnouncement = time.Now()
 	} else {
-		e.logger.Printf("[%s] rejecting leader %s with epoch %d (current: %s/%d)", e.id, msg.LeaderId, msg.Epoch, e.leaderID, e.leaderEpoch)
+		e.logger.Printf("[%s] rejecting leader %s (current: %s)", e.id, msg.LeaderId, e.leaderID)
 	}
 }
 
@@ -576,9 +571,9 @@ func (e *Elector) handleHeartbeatMessage(msg *ElectionMessage) {
 	}
 
 	e.mu.Lock()
-	accept := e.shouldAcceptLeaderLocked(msg.LeaderId, msg.Epoch)
+	accept := e.shouldAcceptLeaderLocked(msg.LeaderId)
 	if accept {
-		e.logger.Printf("[%s] accepting heartbeat from leader %s with epoch %d", e.id, msg.LeaderId, msg.Epoch)
+		e.logger.Printf("[%s] accepting heartbeat from leader %s", e.id, msg.LeaderId)
 		// Check for step-down BEFORE changing state
 		if e.currentState == stateLeader && msg.LeaderId != e.id {
 			e.logger.Printf("[%s] stepping down as leader due to heartbeat from %s", e.id, msg.LeaderId)
@@ -586,27 +581,19 @@ func (e *Elector) handleHeartbeatMessage(msg *ElectionMessage) {
 		}
 		e.currentState = stateFollower
 		e.leaderID = msg.LeaderId
-		e.leaderEpoch = msg.Epoch
 		e.lastHeartbeat = time.Now()
 	} else {
-		e.logger.Printf("[%s] rejecting heartbeat from %s with epoch %d (current: %s/%d)", e.id, msg.LeaderId, msg.Epoch, e.leaderID, e.leaderEpoch)
+		e.logger.Printf("[%s] rejecting heartbeat from %s (current: %s)", e.id, msg.LeaderId, e.leaderID)
 	}
 	e.mu.Unlock()
 }
 
-func (e *Elector) shouldAcceptLeaderLocked(candidateID string, candidateEpoch uint64) bool {
+func (e *Elector) shouldAcceptLeaderLocked(candidateID string) bool {
 	if candidateID == "" {
 		return false
 	}
 
-	if candidateEpoch > e.leaderEpoch {
-		return true
-	}
-	if candidateEpoch < e.leaderEpoch {
-		return false
-	}
-
-	// Epoch tie: prefer higher ID to avoid oscillations, unless we already accept same leader.
+	// Pure Bully Algorithm: higher ID always wins
 	if e.leaderID == candidateID {
 		return true
 	}
@@ -622,23 +609,23 @@ func (e *Elector) notifyLeadership(becameLeader bool) {
 
 func (e *Elector) checkPeerConnectivity(peerID, addr string) bool {
 	e.logger.Printf("[%s] checking connectivity to %s at %s", e.id, peerID, addr)
-	
+
 	ctx, cancel := context.WithTimeout(e.ctx, e.rpcTimeout)
 	defer cancel()
-	
+
 	msg := &ElectionMessage{Type: MessageType_ELECTION, SenderId: e.id}
 	resp, err := e.sendMessage(ctx, peerID, addr, msg)
-	
+
 	if err != nil {
 		e.logger.Printf("[%s] connectivity check to %s failed: %v", e.id, peerID, err)
 		return false
 	}
-	
+
 	if resp != nil && resp.Type == MessageType_OK && resp.SenderId != "" {
 		e.logger.Printf("[%s] connectivity check to %s passed", e.id, peerID)
 		return true
 	}
-	
+
 	e.logger.Printf("[%s] connectivity check to %s failed: invalid response %+v", e.id, peerID, resp)
 	return false
 }
@@ -646,20 +633,20 @@ func (e *Elector) checkPeerConnectivity(peerID, addr string) bool {
 func (e *Elector) sendMessage(ctx context.Context, peerID, addr string, msg *ElectionMessage) (*ElectionMessage, error) {
 	e.logger.Printf("[%s] attempting to send message to %s at %s", e.id, peerID, addr)
 	e.logger.Printf("[%s] sending message: %+v", e.id, msg)
-	
+
 	conn, err := e.getOrDialClient(peerID, addr)
 	if err != nil {
 		e.logger.Printf("[%s] failed to get connection to %s: %v", e.id, peerID, err)
 		return nil, err
 	}
-	
+
 	client := NewElectionServiceClient(conn)
 	resp, err := client.SendMessage(ctx, msg)
 	if err != nil {
 		e.logger.Printf("[%s] gRPC call to %s failed: %v", e.id, peerID, err)
 		return nil, err
 	}
-	
+
 	e.logger.Printf("[%s] successfully sent message to %s, received: %+v", e.id, peerID, resp)
 	return resp, nil
 }
@@ -688,4 +675,31 @@ func compareIDs(a, b string) int {
 // GetID returns the ID of this elector instance
 func (e *Elector) GetID() string {
 	return e.id
+}
+
+func (e *Elector) sendCoordinatorToPeer(peerID string) {
+	addr, ok := e.peers[peerID]
+	if !ok {
+		e.logger.Printf("[%s] peer %s not found in peers map", e.id, peerID)
+		return
+	}
+
+	leaderID := e.CurrentLeader()
+	primaryAddr, _ := e.primaryAddr.Load().(string)
+
+	ctx, cancel := context.WithTimeout(e.ctx, e.rpcTimeout)
+	defer cancel()
+
+	msg := &ElectionMessage{
+		Type:        MessageType_COORDINATOR,
+		SenderId:    e.id,
+		Epoch:       0, // Epoch siempre 0 - ya no usamos épocas
+		LeaderId:    leaderID,
+		PrimaryAddr: primaryAddr,
+	}
+
+	_, err := e.sendMessage(ctx, peerID, addr, msg)
+	if err != nil {
+		e.logger.Printf("[%s] failed to send COORDINATOR to %s: %v", e.id, peerID, err)
+	}
 }

@@ -23,7 +23,6 @@ func NewHandler(elector *election.Elector) *Handler {
 type LeaderResponse struct {
 	LeaderID    string `json:"leader_id"`
 	IsLeader    bool   `json:"is_leader"`
-	Epoch       uint64 `json:"epoch"`
 	SupervisorID string `json:"supervisor_id"`
 }
 
@@ -34,13 +33,12 @@ func (h *Handler) LeaderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	leaderID, epoch := h.elector.CurrentLeader()
+	leaderID := h.elector.CurrentLeader()
 	isLeader := h.elector.IsLeader()
 
 	response := LeaderResponse{
 		LeaderID:     leaderID,
 		IsLeader:     isLeader,
-		Epoch:        epoch,
 		SupervisorID: h.elector.GetID(),
 	}
 
