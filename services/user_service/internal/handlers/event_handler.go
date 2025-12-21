@@ -77,11 +77,27 @@ func (h *EventHandler) reconnectRedis(newRedisURL string) error {
 	// Crear nuevo cliente
 	newRedisClient := redis.NewClient(redisOpts)
 	
-	// Verificar conexión
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Verificar conexión con timeout más corto para detectar rápidamente DNS issues
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	
 	if err := newRedisClient.Ping(ctx).Err(); err != nil {
+		// Si falla la conexión, intentar obtener el primary actualizado
+		h.logger.Warn("Error verificando nueva conexión Redis, intentando obtener primary actualizado", zap.Error(err))
+		
+		// Intentar obtener el primary actualizado desde el servicio
+		updatedCtx, updatedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer updatedCancel()
+		
+		if updatedURL, updateErr := h.eventService.UpdateRedisConnection(updatedCtx, newRedisURL); updateErr == nil && updatedURL != newRedisURL {
+			h.logger.Info("Se obtuvo un primary actualizado, intentando con nueva URL",
+				zap.String("failed_url", newRedisURL),
+				zap.String("updated_url", updatedURL))
+			
+			// Intentar reconectar con la URL actualizada
+			return h.reconnectRedis(updatedURL)
+		}
+		
 		return fmt.Errorf("error verificando nueva conexión Redis: %w", err)
 	}
 	
@@ -129,6 +145,18 @@ func (h *EventHandler) Start(ctx context.Context) error {
 		default:
 		}
 
+		// Verificar el Redis primario antes de suscribirse
+		newRedisURL, err := h.eventService.UpdateRedisConnection(ctx, h.currentRedisURL)
+		if err == nil && newRedisURL != h.currentRedisURL {
+			h.logger.Info("Redis primary actualizado antes de suscripción, reconectando...",
+				zap.String("old", h.currentRedisURL),
+				zap.String("new", newRedisURL))
+			
+			if reconnectErr := h.reconnectRedis(newRedisURL); reconnectErr != nil {
+				h.logger.Error("Error reconectando antes de suscripción", zap.Error(reconnectErr))
+			}
+		}
+
 		// Suscribirse al canal de Redis
 		h.pubsub = h.redisClient.Subscribe(ctx, h.channel)
 		ch := h.pubsub.Channel()
@@ -153,22 +181,22 @@ func (h *EventHandler) Start(ctx context.Context) error {
 				h.logger.Info("Señal de reconexión recibida, cerrando pubsub actual")
 				keepRunning = false
 
-			case <-time.After(30 * time.Second): // Timeout para detectar conexiones inactivas
+			case <-time.After(10 * time.Second): // Timeout para detectar conexiones inactivas
 				h.logger.Debug("Timeout de pubsub, verificando conexión...")
-				if err := h.redisClient.Ping(ctx).Err(); err != nil {
+				
+				// Primero verificar si el Redis primary ha cambiado
+				newRedisURL, redisErr := h.eventService.UpdateRedisConnection(ctx, h.currentRedisURL)
+				if redisErr == nil && newRedisURL != h.currentRedisURL {
+					h.logger.Info("Redis primary ha cambiado durante timeout, reconectando...",
+						zap.String("old", h.currentRedisURL),
+						zap.String("new", newRedisURL))
+					if reconnectErr := h.reconnectRedis(newRedisURL); reconnectErr != nil {
+						h.logger.Error("Error reconectando", zap.Error(reconnectErr))
+					}
+					keepRunning = false
+				} else if err := h.redisClient.Ping(ctx).Err(); err != nil {
 					h.logger.Error("Redis client desconectado, forzando reconexión", zap.Error(err))
 					keepRunning = false
-				} else {
-					newRedisURL, redisErr := h.eventService.UpdateRedisConnection(ctx, h.currentRedisURL)
-					if redisErr == nil && newRedisURL != h.currentRedisURL {
-						h.logger.Info("Redis primary ha cambiado durante timeout, reconectando...",
-							zap.String("old", h.currentRedisURL),
-							zap.String("new", newRedisURL))
-						if reconnectErr := h.reconnectRedis(newRedisURL); reconnectErr != nil {
-							h.logger.Error("Error reconectando", zap.Error(reconnectErr))
-						}
-						keepRunning = false
-					}
 				}
 
 			case <-ctx.Done():
@@ -199,7 +227,7 @@ func (h *EventHandler) processMessage(ctx context.Context, msg *redis.Message) {
 	}
 
 	// Verificar si el Redis primary ha cambiado (solo si ha pasado suficiente tiempo)
-	if time.Since(h.lastRedisCheck) > 15*time.Second {
+	if time.Since(h.lastRedisCheck) > 5*time.Second {
 		newRedisURL, redisErr := h.eventService.UpdateRedisConnection(ctx, h.currentRedisURL)
 		h.lastRedisCheck = time.Now()
 		
