@@ -8,17 +8,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
+	"github.com/agenda-distribuida/api-gateway-service/internal/loadbalancer"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-
-	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 )
 
 type EventHandler struct {
 	dbClient        *clients.DBClient
 	responseHandler *ResponseHandler
 	logger          *zap.Logger
+	loadBalancer    *loadbalancer.LoadBalancer
 }
 
 type CreateEventRequest struct {
@@ -31,11 +32,12 @@ type CreateEventRequest struct {
 	Location    string    `json:"location,omitempty"`
 }
 
-func NewEventHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *EventHandler {
+func NewEventHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger, loadBalancer *loadbalancer.LoadBalancer) *EventHandler {
 	return &EventHandler{
 		dbClient:        dbClient,
 		responseHandler: responseHandler,
 		logger:          logger,
+		loadBalancer:    loadBalancer,
 	}
 }
 
@@ -62,9 +64,6 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 			"location":    req.Location,
 			"user_id":     req.UserID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "events_response", // Use the correct response channel
-		},
 	}
 
 	// If group_id is provided, add it to the event data
@@ -78,7 +77,7 @@ func (h *EventHandler) CreateEvent(c *gin.Context) {
 		zap.String("user_id", req.UserID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to create event",
 			zap.Error(err),
@@ -165,9 +164,6 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 			"offset":  0,  // ✅ Incluir paginación
 			"limit":   50, // ✅ Límite por defecto
 		},
-		"metadata": map[string]string{
-			"reply_to": "events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting events list from user service",
@@ -175,7 +171,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to get events",
 			zap.Error(err),
@@ -235,7 +231,7 @@ func (h *EventHandler) GetEvents(c *gin.Context) {
 }
 
 // sendEventAndWaitForResponse publishes an event and waits for a response using the response handler
-func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}, replyChannel string) (*UserEventResponse, error) {
+func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}) (*UserEventResponse, error) {
 	// Extract event ID from eventData
 	eventMap, ok := eventData.(map[string]interface{})
 	if !ok {
@@ -247,9 +243,25 @@ func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		return nil, fmt.Errorf("eventData must contain an 'id' field")
 	}
 
+	// Get the user channel from load balancer
+	userChannel := h.loadBalancer.SelectUserNode()
+	// Calculate corresponding response channel (user_events_1 -> users_events_response_1)
+	nodeNumber := strings.TrimPrefix(userChannel, "user_events_")
+	replyChannel := "users_events_response_" + nodeNumber
+
+	// Update the reply_to in metadata
+	if metadata, ok := eventMap["metadata"].(map[string]interface{}); ok {
+		metadata["reply_to"] = replyChannel
+	} else {
+		eventMap["metadata"] = map[string]interface{}{
+			"reply_to": replyChannel,
+		}
+	}
+
 	// Create a response channel for this specific event
 	h.logger.Info("⏳ Esperando respuesta para evento",
 		zap.String("event_id", eventID),
+		zap.String("publish_channel", userChannel),
 		zap.String("reply_channel", replyChannel))
 
 	responseChan := h.responseHandler.WaitForResponse(eventID)
@@ -265,15 +277,15 @@ func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		zap.String("event_json", string(eventJSON)),
 		zap.Any("event_data", eventData))
 
-	// Publish event to user service channel - using users_events as per your working examples
+	// Publish event to user service channel
 	redisClient := h.responseHandler.GetRedisClient()
-	if err := redisClient.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+	if err := redisClient.Publish(ctx, userChannel, eventJSON).Err(); err != nil {
 		return nil, fmt.Errorf("failed to publish event: %w", err)
 	}
 
 	h.logger.Info("✅ Evento ENVIADO al user_service",
 		zap.String("event_id", eventID),
-		zap.String("channel", "users_events"))
+		zap.String("channel", userChannel))
 
 	// Wait for response with timeout
 	select {
@@ -327,9 +339,6 @@ func (h *EventHandler) DeleteEvent(c *gin.Context) {
 			"event_id": eventID,
 			"user_id":  userID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting event deletion from user service",
@@ -338,7 +347,7 @@ func (h *EventHandler) DeleteEvent(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to delete event",
 			zap.Error(err),

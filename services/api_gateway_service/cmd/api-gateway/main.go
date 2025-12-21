@@ -14,6 +14,7 @@ import (
 	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 	"github.com/agenda-distribuida/api-gateway-service/internal/config"
 	"github.com/agenda-distribuida/api-gateway-service/internal/handlers"
+	"github.com/agenda-distribuida/api-gateway-service/internal/loadbalancer"
 	"github.com/agenda-distribuida/api-gateway-service/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
@@ -85,10 +86,23 @@ func main() {
 		}
 	}()
 
+	// Initialize load balancer with node monitoring
+	loadBalancer := loadbalancer.NewLoadBalancer(cfg.UserNodesURLs, cfg.GroupNodesURLs, logger)
+	logger.Info("Load balancer con monitoreo de nodos activos",
+		zap.Strings("nodos_usuario", cfg.UserNodesURLs),
+		zap.Strings("nodos_grupo", cfg.GroupNodesURLs))
+
+	// Registrar manejador para apagado limpio
+	go func() {
+		<-ctx.Done()
+		logger.Info("Deteniendo balanceador de carga...")
+		loadBalancer.Stop()
+	}()
+
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
-	eventHandler := handlers.NewEventHandler(dbClient, responseHandler, logger)
-	groupHandler := handlers.NewGroupHandler(dbClient, responseHandler, logger)
+	authHandler := handlers.NewAuthHandler(cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, loadBalancer, logger)
+	eventHandler := handlers.NewEventHandler(dbClient, responseHandler, logger, loadBalancer)
+	groupHandler := handlers.NewGroupHandler(dbClient, responseHandler, logger, loadBalancer, authHandler)
 
 	// API routes
 	api := r.Group("/api")

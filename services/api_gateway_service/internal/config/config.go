@@ -27,7 +27,11 @@ type Config struct {
 	}
 	// RaftNodesURLs contiene las URLs de todos los nodos del cluster Raft
 	RaftNodesURLs []string
-	LogLevel      string
+	// UserNodesURLs contiene las URLs de todos los nodos de user service
+	UserNodesURLs []string
+	// GroupNodesURLs contiene las URLs de todos los nodos de group service
+	GroupNodesURLs []string
+	LogLevel       string
 }
 
 func Load() *Config {
@@ -61,6 +65,30 @@ func Load() *Config {
 		}
 	}
 	cfg.RaftNodesURLs = raftNodesURLs
+
+	// Obtener URLs de nodos User Service
+	userNodesStr := getEnv("USER_NODES_URLS", "agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007")
+	var userNodesURLs []string
+	if userNodesStr != "" {
+		userNodesURLs = strings.Split(userNodesStr, ",")
+		// Limpiar espacios en blanco
+		for i, url := range userNodesURLs {
+			userNodesURLs[i] = strings.TrimSpace(url)
+		}
+	}
+	cfg.UserNodesURLs = userNodesURLs
+
+	// Obtener URLs de nodos Group Service
+	groupNodesStr := getEnv("GROUP_NODES_URLS", "agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008")
+	var groupNodesURLs []string
+	if groupNodesStr != "" {
+		groupNodesURLs = strings.Split(groupNodesStr, ",")
+		// Limpiar espacios en blanco
+		for i, url := range groupNodesURLs {
+			groupNodesURLs[i] = strings.TrimSpace(url)
+		}
+	}
+	cfg.GroupNodesURLs = groupNodesURLs
 
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")

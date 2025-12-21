@@ -5,19 +5,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
+	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
+	"github.com/agenda-distribuida/api-gateway-service/internal/loadbalancer"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
-
-	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 )
 
 type GroupHandler struct {
 	dbClient        *clients.DBClient
 	responseHandler *ResponseHandler
 	logger          *zap.Logger
+	loadBalancer    *loadbalancer.LoadBalancer
+	authHandler     *AuthHandler // Referencia al AuthHandler para operaciones de usuario
 }
 
 type CreateGroupRequest struct {
@@ -34,11 +37,13 @@ type CreateGroupEventRequest struct {
 	IsHierarchical bool   `json:"is_hierarchical"`
 }
 
-func NewGroupHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *GroupHandler {
+func NewGroupHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger, loadBalancer *loadbalancer.LoadBalancer, authHandler *AuthHandler) *GroupHandler {
 	return &GroupHandler{
 		dbClient:        dbClient,
 		responseHandler: responseHandler,
+		authHandler:     authHandler,
 		logger:          logger,
+		loadBalancer:    loadBalancer,
 	}
 }
 
@@ -63,9 +68,6 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 			"is_hierarchical": req.IsHierarchical,
 			"creator_id":      req.UserID, // ✅ CAMPO CORRECTO: creator_id en lugar de user_id
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response", // ✅ CANAL CORRECTO
-		},
 	}
 
 	h.logger.Info("📤 Enviando evento de creación de grupo",
@@ -74,7 +76,7 @@ func (h *GroupHandler) CreateGroup(c *gin.Context) {
 		zap.String("creator_id", req.UserID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to create group",
 			zap.Error(err),
@@ -137,9 +139,6 @@ func (h *GroupHandler) GetGroups(c *gin.Context) {
 		"data": map[string]interface{}{
 			"user_id": userID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting groups from group service",
@@ -147,7 +146,7 @@ func (h *GroupHandler) GetGroups(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to get groups",
 			zap.Error(err),
@@ -244,9 +243,6 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		"data": map[string]interface{}{
 			"group_id": groupID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting group members from group service",
@@ -254,7 +250,7 @@ func (h *GroupHandler) GetGroupMembers(c *gin.Context) {
 		zap.String("group_id", groupID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to get group members",
 			zap.Error(err),
@@ -331,9 +327,6 @@ func (h *GroupHandler) ListGroupEvents(c *gin.Context) {
 			"group_id": groupID,
 			"user_id":  userID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting group events from group service",
@@ -342,7 +335,7 @@ func (h *GroupHandler) ListGroupEvents(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to get group events",
 			zap.Error(err),
@@ -422,9 +415,6 @@ func (h *GroupHandler) AcceptGroupEvent(c *gin.Context) {
 			"user_id":  userID,
 			"status":   "accepted",
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group event accept request",
@@ -433,7 +423,7 @@ func (h *GroupHandler) AcceptGroupEvent(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to accept group event",
 			zap.Error(err),
@@ -498,9 +488,6 @@ func (h *GroupHandler) DeclineGroupEvent(c *gin.Context) {
 			"user_id":  userID,
 			"status":   "declined",
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group event decline request",
@@ -509,7 +496,7 @@ func (h *GroupHandler) DeclineGroupEvent(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to decline group event",
 			zap.Error(err),
@@ -640,7 +627,8 @@ func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (str
 
 	// Publish to the correct channel: users_events
 	redisClient := h.responseHandler.GetRedisClient()
-	if err := redisClient.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+	groupChannel := h.loadBalancer.SelectGroupNode()
+	if err := redisClient.Publish(ctx, groupChannel, eventJSON).Err(); err != nil {
 		return "", fmt.Errorf("failed to publish event: %w", err)
 	}
 
@@ -677,46 +665,28 @@ func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (str
 	}
 }
 
-// getUsernameByID obtiene el nombre de usuario por ID consultando el servicio de usuarios
+// getUsernameByID obtiene el nombre de usuario por ID consultando el servicio de usuarios a través del AuthHandler
 func (h *GroupHandler) getUsernameByID(ctx context.Context, userID string) (string, error) {
-	eventID := uuid.New().String()
-
-	eventData := map[string]interface{}{
-		"id":   eventID,
-		"type": "user.get",
-		"data": map[string]interface{}{
-			"user_id": userID,
-		},
-		"metadata": map[string]string{
-			"reply_to": "users_events_response",
-		},
-	}
-
-	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(ctx, eventData, "users_events_response")
+	// Usar el authHandler para obtener la información del usuario
+	userData, err := h.authHandler.GetUserByID(ctx, userID)
 	if err != nil {
 		return "", fmt.Errorf("failed to get user info: %w", err)
 	}
 
-	if !response.Success {
-		return "", fmt.Errorf("DB service error: %s", response.Error)
+	// Extraer el nombre de usuario de la respuesta
+	if username, exists := userData["username"]; exists {
+		if usernameStr, ok := username.(string); ok {
+			return usernameStr, nil
+		}
 	}
 
-	// Extract username from response
-	if userData, ok := response.Data.(map[string]interface{}); ok {
-		if user, exists := userData["user"]; exists {
-			if userMap, ok := user.(map[string]interface{}); ok {
-				if username, exists := userMap["username"]; exists {
-					if usernameStr, ok := username.(string); ok {
-						return usernameStr, nil
-					}
+	// Si no se encuentra el username en la raíz, buscar en un campo "user" anidado
+	if user, exists := userData["user"]; exists {
+		if userMap, ok := user.(map[string]interface{}); ok {
+			if username, exists := userMap["username"]; exists {
+				if usernameStr, ok := username.(string); ok {
+					return usernameStr, nil
 				}
-			}
-		}
-		// Try direct extraction if nested structure doesn't work
-		if username, exists := userData["username"]; exists {
-			if usernameStr, ok := username.(string); ok {
-				return usernameStr, nil
 			}
 		}
 	}
@@ -724,36 +694,28 @@ func (h *GroupHandler) getUsernameByID(ctx context.Context, userID string) (stri
 	return "", fmt.Errorf("username not found in response")
 }
 
-// getUserIDByEmail obtiene el ID de usuario por email consultando el servicio de usuarios
+// getUserIDByEmail obtiene el ID de usuario por email consultando el servicio de usuarios a través del AuthHandler
 func (h *GroupHandler) getUserIDByEmail(ctx context.Context, email string) (string, error) {
-	eventID := uuid.New().String()
-
-	eventData := map[string]interface{}{
-		"id":   eventID,
-		"type": "user.get.by.email",
-		"data": map[string]interface{}{
-			"email": email,
-		},
-		"metadata": map[string]string{
-			"reply_to": "users_events_response",
-		},
-	}
-
-	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(ctx, eventData, "users_events_response")
+	// Usar el authHandler para obtener la información del usuario por email
+	userData, err := h.authHandler.GetUserByEmail(ctx, email)
 	if err != nil {
-		return "", fmt.Errorf("failed to get user info: %w", err)
+		return "", fmt.Errorf("failed to get user info by email: %w", err)
 	}
 
-	if !response.Success {
-		return "", fmt.Errorf("DB service error: %s", response.Error)
+	// Extraer el ID de usuario de la respuesta
+	if userID, exists := userData["id"]; exists {
+		if userIDStr, ok := userID.(string); ok {
+			return userIDStr, nil
+		}
 	}
 
-	// Extract user ID from response
-	if userData, ok := response.Data.(map[string]interface{}); ok {
-		if userID, exists := userData["id"]; exists {
-			if userIDStr, ok := userID.(string); ok {
-				return userIDStr, nil
+	// Si no se encuentra el ID en la raíz, buscar en un campo "user" anidado
+	if user, exists := userData["user"]; exists {
+		if userMap, ok := user.(map[string]interface{}); ok {
+			if userID, exists := userMap["id"]; exists {
+				if userIDStr, ok := userID.(string); ok {
+					return userIDStr, nil
+				}
 			}
 		}
 	}
@@ -762,7 +724,7 @@ func (h *GroupHandler) getUserIDByEmail(ctx context.Context, email string) (stri
 }
 
 // sendEventAndWaitForResponse publishes an event and waits for a response using the response handler
-func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}, replyChannel string) (*UserEventResponse, error) {
+func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventData interface{}) (*UserEventResponse, error) {
 	// Extract event ID from eventData
 	eventMap, ok := eventData.(map[string]interface{})
 	if !ok {
@@ -774,9 +736,25 @@ func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		return nil, fmt.Errorf("eventData must contain an 'id' field")
 	}
 
+	// Get the group channel from load balancer
+	groupChannel := h.loadBalancer.SelectGroupNode()
+	// Calculate corresponding response channel (group_events_1 -> groups_events_response_1)
+	nodeNumber := strings.TrimPrefix(groupChannel, "group_events_")
+	replyChannel := "groups_events_response_" + nodeNumber
+
+	// Update the reply_to in metadata
+	if metadata, ok := eventMap["metadata"].(map[string]interface{}); ok {
+		metadata["reply_to"] = replyChannel
+	} else {
+		eventMap["metadata"] = map[string]interface{}{
+			"reply_to": replyChannel,
+		}
+	}
+
 	// Create a response channel for this specific event
 	h.logger.Info("⏳ Esperando respuesta para evento",
 		zap.String("event_id", eventID),
+		zap.String("publish_channel", groupChannel),
 		zap.String("reply_channel", replyChannel))
 
 	responseChan := h.responseHandler.WaitForResponse(eventID)
@@ -792,15 +770,15 @@ func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		zap.String("event_json", string(eventJSON)),
 		zap.Any("event_data", eventData))
 
-	// ✅ PUBLICAR EN EL CANAL CORRECTO: groups_events
+	// Publish event to group service channel
 	redisClient := h.responseHandler.GetRedisClient()
-	if err := redisClient.Publish(ctx, "groups_events", eventJSON).Err(); err != nil {
+	if err := redisClient.Publish(ctx, groupChannel, eventJSON).Err(); err != nil {
 		return nil, fmt.Errorf("failed to publish event: %w", err)
 	}
 
 	h.logger.Info("✅ Evento ENVIADO al group_service",
 		zap.String("event_id", eventID),
-		zap.String("channel", "groups_events"))
+		zap.String("channel", groupChannel))
 
 	// Wait for response with timeout
 	select {
@@ -862,9 +840,6 @@ func (h *GroupHandler) InviteUserByEmail(c *gin.Context) {
 			"email":      req.Email,
 			"invited_by": currentUserID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group invitation event with email",
@@ -874,7 +849,7 @@ func (h *GroupHandler) InviteUserByEmail(c *gin.Context) {
 		zap.String("invited_by", currentUserID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to create group invitation",
 			zap.Error(err),
@@ -961,9 +936,6 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 			"id":   req.GroupID,
 			"data": updateDataWithCreator,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group update event",
@@ -972,7 +944,7 @@ func (h *GroupHandler) UpdateGroup(c *gin.Context) {
 		zap.Any("update_data", updateData))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to update group",
 			zap.Error(err),
@@ -1024,9 +996,6 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 		"data": map[string]interface{}{
 			"id": req.GroupID,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group delete event",
@@ -1034,7 +1003,7 @@ func (h *GroupHandler) DeleteGroup(c *gin.Context) {
 		zap.String("group_id", req.GroupID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to delete group",
 			zap.Error(err),
@@ -1092,9 +1061,6 @@ func (h *GroupHandler) UpdateMemberRole(c *gin.Context) {
 			"email":    req.Email,
 			"role":     req.Role,
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending member role update event",
@@ -1104,7 +1070,7 @@ func (h *GroupHandler) UpdateMemberRole(c *gin.Context) {
 		zap.String("role", req.Role))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to update member role",
 			zap.Error(err),
@@ -1167,9 +1133,6 @@ func (h *GroupHandler) AcceptGroupInvitation(c *gin.Context) {
 			"user_id":       req.UserID,
 			"status":        "accepted",
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group invitation acceptance event",
@@ -1178,7 +1141,7 @@ func (h *GroupHandler) AcceptGroupInvitation(c *gin.Context) {
 		zap.String("group_id", req.GroupID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to accept group invitation",
 			zap.Error(err),
@@ -1240,9 +1203,6 @@ func (h *GroupHandler) RejectGroupInvitation(c *gin.Context) {
 			"user_id":       req.UserID,
 			"status":        "rejected",
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group invitation rejection event",
@@ -1251,7 +1211,7 @@ func (h *GroupHandler) RejectGroupInvitation(c *gin.Context) {
 		zap.String("group_id", req.GroupID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to reject group invitation",
 			zap.Error(err),
@@ -1302,9 +1262,6 @@ func (h *GroupHandler) GetGroupInvitations(c *gin.Context) {
 			"user_id": userID,
 			"status":  "pending",
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Requesting group invitations from group service",
@@ -1312,7 +1269,7 @@ func (h *GroupHandler) GetGroupInvitations(c *gin.Context) {
 		zap.String("user_id", userID))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to get group invitations",
 			zap.Error(err),
@@ -1411,7 +1368,7 @@ func (h *GroupHandler) CreateGroupEvent(c *gin.Context) {
 		zap.String("event_id", req.EventID))
 
 	// Send group event creation request
-	groupResponse, err := h.sendEventAndWaitForResponse(c.Request.Context(), groupEventData, "group_events_response")
+	groupResponse, err := h.sendEventAndWaitForResponse(c.Request.Context(), groupEventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to create group event",
 			zap.Error(err),
@@ -1477,9 +1434,6 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 			"group_id": req.GroupID,
 			"email":    userEmail, // Use the actual email
 		},
-		"metadata": map[string]string{
-			"reply_to": "group_events_response",
-		},
 	}
 
 	h.logger.Info("📤 Sending group leave event",
@@ -1488,7 +1442,7 @@ func (h *GroupHandler) LeaveGroup(c *gin.Context) {
 		zap.String("email", userEmail))
 
 	// Send event and wait for response
-	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData, "group_events_response")
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
 	if err != nil {
 		h.logger.Error("❌ Failed to leave group",
 			zap.Error(err),
