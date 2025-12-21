@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -10,7 +11,7 @@ import (
 
 	"github.com/agenda-distribuida/user-service/internal/clients"
 	"github.com/agenda-distribuida/user-service/internal/config"
-	"github.com/agenda-distribuida/user-service/internal/handlers"
+	handlers "github.com/agenda-distribuida/user-service/internal/handlers"
 	"github.com/agenda-distribuida/user-service/internal/services"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -66,8 +67,26 @@ func main() {
 	go func() {
 		logger.Info("Iniciando manejador de eventos",
 			zap.String("canal", cfg.RedisChannel))
-		
+
 		if err := eventHandler.Start(ctx); err != nil {
+			errChan <- err
+		}
+	}()
+
+	// Iniciar servidor HTTP para health checks
+	httpHandler := handlers.NewHTTPHandler(logger)
+	mux := http.NewServeMux()
+	httpHandler.SetupRoutes(mux)
+
+	httpServer := &http.Server{
+		Addr:    ":8007",
+		Handler: mux,
+	}
+
+	go func() {
+		logger.Info("Iniciando servidor HTTP en :8007")
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Error("Error al iniciar el servidor HTTP", zap.Error(err))
 			errChan <- err
 		}
 	}()
@@ -78,21 +97,29 @@ func main() {
 
 	select {
 	case sig := <-sigChan:
-		logger.Info("Recibida señal de terminación", 
+		logger.Info("Recibida señal de terminación",
 			zap.String("señal", sig.String()))
 		cancel()
 	case err := <-errChan:
-		logger.Error("Error en el manejador de eventos", 
+		logger.Error("Error en el servicio",
 			zap.Error(err))
 		cancel()
 	}
 
+	// Apagar el servidor HTTP de forma ordenada
+	httpShutdownCtx, httpShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer httpShutdownCancel()
+
+	if err := httpServer.Shutdown(httpShutdownCtx); err != nil {
+		logger.Error("Error al apagar el servidor HTTP", zap.Error(err))
+	}
+
 	// Dar tiempo para que las operaciones en curso finalicen
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer shutdownCancel()
+	gracefulShutdownCtx, gracefulShutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer gracefulShutdownCancel()
 
 	// Esperar a que todas las goroutines finalicen
-	<-shutdownCtx.Done()
+	<-gracefulShutdownCtx.Done()
 
 	logger.Info("Servicio detenido correctamente")
 }
