@@ -2,9 +2,12 @@ package clients
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"go.uber.org/zap"
@@ -17,6 +20,8 @@ type DBClient struct {
 }
 
 func NewDBClient(baseURL string, logger *zap.Logger) *DBClient {
+	// Asegurarse de que la URL base no termine con /
+	baseURL = strings.TrimSuffix(baseURL, "/")
 	return &DBClient{
 		baseURL: baseURL,
 		client: &http.Client{
@@ -24,6 +29,99 @@ func NewDBClient(baseURL string, logger *zap.Logger) *DBClient {
 		},
 		logger: logger,
 	}
+}
+
+// RaftNodeInfo represents information about a Raft node
+type RaftNodeInfo struct {
+	ID     string `json:"id"`
+	State  string `json:"state"`
+	Leader string `json:"leader"`
+}
+
+// FindAndUpdateLeader busca el líder actualizando el baseURL
+func (c *DBClient) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
+	// Intentar con las URLs de nodos Raft proporcionadas
+	for _, nodeURL := range raftNodes {
+		// Limpiar URL
+		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+		
+		// Hacer ping al nodo para ver si es líder
+		if c.isNodeLeader(ctx, nodeURL) {
+			c.baseURL = nodeURL
+			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
+			return nil
+		}
+	}
+	
+	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", raftNodes)
+}
+
+// isNodeLeader verifica si un nodo específico es el líder
+func (c *DBClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
+	url := fmt.Sprintf("%s/raft/status", nodeURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return false
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false
+	}
+
+	var nodeInfo RaftNodeInfo
+	if err := json.Unmarshal(body, &nodeInfo); err != nil {
+		return false
+	}
+
+	return nodeInfo.State == "Leader"
+}
+
+// GetRedisPrimary obtiene la dirección del Redis primary desde el DB service
+func (c *DBClient) GetRedisPrimary(ctx context.Context) (string, error) {
+	url := fmt.Sprintf("%s/api/v1/configs/redis_primary", c.baseURL)
+	
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("error getting redis primary config: status %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+
+	var config struct {
+		Name  string `json:"name"`
+		Value string `json:"value"`
+	}
+
+	if err := json.Unmarshal(body, &config); err != nil {
+		return "", err
+	}
+
+	return config.Value, nil
 }
 
 func (c *DBClient) GetEvents(userID string) ([]map[string]interface{}, error) {

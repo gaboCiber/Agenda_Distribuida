@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -24,7 +25,9 @@ type Config struct {
 	DBService struct {
 		URL string
 	}
-	LogLevel string
+	// RaftNodesURLs contiene las URLs de todos los nodos del cluster Raft
+	RaftNodesURLs []string
+	LogLevel      string
 }
 
 func Load() *Config {
@@ -46,6 +49,18 @@ func Load() *Config {
 
 	// DB Service configuration
 	cfg.DBService.URL = getEnv("DB_SERVICE_URL", "http://agenda-db-service:8000")
+
+	// Obtener URLs de nodos Raft (pueden venir separadas por comas)
+	raftNodesStr := getEnv("RAFT_NODES_URLS", "http://localhost:8001,http://localhost:8002,http://localhost:8003")
+	var raftNodesURLs []string
+	if raftNodesStr != "" {
+		raftNodesURLs = strings.Split(raftNodesStr, ",")
+		// Limpiar espacios en blanco
+		for i, url := range raftNodesURLs {
+			raftNodesURLs[i] = strings.TrimSpace(url)
+		}
+	}
+	cfg.RaftNodesURLs = raftNodesURLs
 
 	// Logging
 	cfg.LogLevel = getEnv("LOG_LEVEL", "info")

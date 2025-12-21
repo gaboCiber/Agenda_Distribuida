@@ -1,17 +1,29 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
+	"time"
 
+	"github.com/agenda-distribuida/api-gateway-service/internal/services"
+	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
 )
 
 // ResponseHandler manages async responses from microservices
 type ResponseHandler struct {
-	mu      sync.RWMutex
-	waiting map[string]chan *UserEventResponse
-	logger  *zap.Logger
+	mu              sync.RWMutex
+	waiting         map[string]chan *UserEventResponse
+	logger          *zap.Logger
+	raftNodes       []string
+	eventService    *services.EventService
+	redisClient     *redis.Client
+	currentRedisURL string
+	reconnectChan   chan struct{} // Canal para señalizar reconexión
+	reconnecting    bool          // Flag para evitar reconexiones simultáneas
+	lastRedisCheck  time.Time     // Última vez que se verificó Redis primary
 }
 
 // UserEventResponse represents the response from user service
@@ -24,11 +36,197 @@ type UserEventResponse struct {
 }
 
 // NewResponseHandler creates a new response handler
-func NewResponseHandler(logger *zap.Logger) *ResponseHandler {
+func NewResponseHandler(redisClient *redis.Client, eventService *services.EventService, raftNodes []string, redisURL string, logger *zap.Logger) *ResponseHandler {
 	return &ResponseHandler{
-		waiting: make(map[string]chan *UserEventResponse),
-		logger:  logger.Named("response_handler"),
+		waiting:         make(map[string]chan *UserEventResponse),
+		logger:          logger.Named("response_handler"),
+		raftNodes:       raftNodes,
+		eventService:    eventService,
+		redisClient:     redisClient,
+		currentRedisURL: redisURL,
+		reconnectChan:   make(chan struct{}),
+		lastRedisCheck:  time.Now(), // Inicializar al momento de creación
 	}
+}
+
+// reconnectRedis crea una nueva conexión Redis con la nueva URL
+func (rh *ResponseHandler) reconnectRedis(newRedisURL string) error {
+	// Evitar reconexiones simultáneas
+	if rh.reconnecting {
+		rh.logger.Debug("Reconexión ya en progreso, ignorando solicitud")
+		return nil
+	}
+
+	rh.reconnecting = true
+	defer func() { rh.reconnecting = false }()
+
+	rh.logger.Info("Reconectando a nuevo Redis primary", zap.String("new_url", newRedisURL))
+
+	// Validar que tengamos un cliente actual
+	if rh.redisClient == nil {
+		rh.logger.Error("Redis client es nil, creando nuevo cliente")
+	} else {
+		// Cerrar conexión actual
+		if err := rh.redisClient.Close(); err != nil {
+			rh.logger.Error("Error cerrando conexión Redis actual", zap.Error(err))
+		}
+	}
+
+	// Parsear nueva URL
+	redisOpts, err := redis.ParseURL(newRedisURL)
+	if err != nil {
+		return fmt.Errorf("error parseando Redis URL: %w", err)
+	}
+
+	// Crear nuevo cliente
+	newRedisClient := redis.NewClient(redisOpts)
+
+	// Verificar conexión con timeout más corto para detectar rápidamente DNS issues
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if err := newRedisClient.Ping(ctx).Err(); err != nil {
+		// Si falla la conexión, intentar obtener el primary actualizado
+		rh.logger.Warn("Error verificando nueva conexión Redis, intentando obtener primary actualizado", zap.Error(err))
+		
+		// Intentar obtener el primary actualizado desde el servicio
+		updatedCtx, updatedCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer updatedCancel()
+		
+		if updatedURL, updateErr := rh.eventService.UpdateRedisConnection(updatedCtx, newRedisURL); updateErr == nil && updatedURL != newRedisURL {
+			rh.logger.Info("Se obtuvo un primary actualizado, intentando con nueva URL",
+				zap.String("failed_url", newRedisURL),
+				zap.String("updated_url", updatedURL))
+			
+			// Intentar reconectar con la URL actualizada
+			return rh.reconnectRedis(updatedURL)
+		}
+		
+		return fmt.Errorf("error verificando nueva conexión Redis: %w", err)
+	}
+
+	// Actualizar el cliente solo si la verificación fue exitosa
+	rh.redisClient = newRedisClient
+	rh.currentRedisURL = newRedisURL
+
+	// Señalizar que necesitamos reconectar el pubsub
+	select {
+	case rh.reconnectChan <- struct{}{}:
+		rh.logger.Debug("Señal de reconexión enviada")
+	default:
+		rh.logger.Debug("Canal de reconexión ya ocupado")
+	}
+
+	rh.logger.Info("Reconexión Redis exitosa", zap.String("new_url", newRedisURL))
+	return nil
+}
+
+// StartResponseListener inicia el listener global de respuestas con soporte de reconexión
+func (rh *ResponseHandler) StartResponseListener(ctx context.Context) error {
+	// Verificar el Redis primario al iniciar y reconectar si es necesario
+	rh.logger.Info("Verificando Redis primario al iniciar...")
+	newRedisURL, err := rh.eventService.UpdateRedisConnection(ctx, rh.currentRedisURL)
+	if err != nil {
+		rh.logger.Warn("No se pudo verificar Redis primario al iniciar", zap.Error(err))
+	} else if newRedisURL != rh.currentRedisURL {
+		rh.logger.Info("Redis primario diferente al configurado, reconectando...",
+			zap.String("old", rh.currentRedisURL),
+			zap.String("new", newRedisURL))
+
+		if reconnectErr := rh.reconnectRedis(newRedisURL); reconnectErr != nil {
+			rh.logger.Error("Error reconectando a Redis primario al iniciar",
+				zap.Error(reconnectErr),
+				zap.String("new_url", newRedisURL))
+		} else {
+			rh.logger.Info("Reconexión inicial exitosa", zap.String("new_url", newRedisURL))
+		}
+	}
+
+	// Bucle principal
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		// Verificar el Redis primario antes de suscribirse
+		newRedisURL, err := rh.eventService.UpdateRedisConnection(ctx, rh.currentRedisURL)
+		if err == nil && newRedisURL != rh.currentRedisURL {
+			rh.logger.Info("Redis primary actualizado antes de suscripción, reconectando...",
+				zap.String("old", rh.currentRedisURL),
+				zap.String("new", newRedisURL))
+			
+			if reconnectErr := rh.reconnectRedis(newRedisURL); reconnectErr != nil {
+				rh.logger.Error("Error reconectando antes de suscripción", zap.Error(reconnectErr))
+			}
+		}
+
+		// Suscribirse a los canales de Redis
+		pubsub := rh.redisClient.Subscribe(ctx, "users_events_response", "events_response", "groups_events_response", "group_events_response")
+		ch := pubsub.Channel()
+
+		rh.logger.Info("Escuchando respuestas de Redis",
+			zap.Strings("channels", []string{"users_events_response", "events_response", "groups_events_response", "group_events_response"}),
+			zap.String("redis_url", rh.currentRedisURL))
+
+		// Bucle de procesamiento de mensajes
+		keepRunning := true
+		for keepRunning {
+			select {
+			case msg := <-ch:
+				if msg == nil {
+					rh.logger.Warn("Conexión pubsub perdida, reintentando suscripción...")
+					keepRunning = false
+					continue
+				}
+				go rh.HandleResponse(msg.Channel, msg.Payload)
+
+			case <-rh.reconnectChan:
+				rh.logger.Info("Señal de reconexión recibida, cerrando pubsub actual")
+				keepRunning = false
+
+			case <-time.After(10 * time.Second): // Timeout para detectar conexiones inactivas
+				rh.logger.Debug("Timeout de pubsub, verificando conexión...")
+				
+				// Primero verificar si el Redis primary ha cambiado
+				newRedisURL, redisErr := rh.eventService.UpdateRedisConnection(ctx, rh.currentRedisURL)
+				if redisErr == nil && newRedisURL != rh.currentRedisURL {
+					rh.logger.Info("Redis primary ha cambiado durante timeout, reconectando...",
+						zap.String("old", rh.currentRedisURL),
+						zap.String("new", newRedisURL))
+					if reconnectErr := rh.reconnectRedis(newRedisURL); reconnectErr != nil {
+						rh.logger.Error("Error reconectando", zap.Error(reconnectErr))
+					}
+					keepRunning = false
+				} else if err := rh.redisClient.Ping(ctx).Err(); err != nil {
+					rh.logger.Error("Redis client desconectado, forzando reconexión", zap.Error(err))
+					keepRunning = false
+				}
+
+			case <-ctx.Done():
+				pubsub.Close()
+				return ctx.Err()
+			}
+		}
+
+		// Cerrar pubsub actual antes de reintentar
+		if pubsub != nil {
+			pubsub.Close()
+		}
+
+		// Pausa antes de reintentar
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
+	}
+}
+
+// GetRedisClient devuelve el cliente Redis actualizado
+func (rh *ResponseHandler) GetRedisClient() *redis.Client {
+	return rh.redisClient
 }
 
 // WaitForResponse creates a channel to wait for a response with the given event ID
@@ -48,6 +246,34 @@ func (rh *ResponseHandler) WaitForResponse(eventID string) chan *UserEventRespon
 
 // HandleResponse processes an incoming response from Redis
 func (rh *ResponseHandler) HandleResponse(channel, payload string) {
+	// Antes de procesar el mensaje, encontrar y actualizar el líder Raft
+	ctx := context.Background()
+	if err := rh.eventService.FindAndUpdateLeader(ctx, rh.raftNodes); err != nil {
+		rh.logger.Warn("No se pudo encontrar líder Raft, usando baseURL actual", zap.Error(err))
+	}
+
+	// Verificar si el Redis primary ha cambiado (solo si ha pasado suficiente tiempo)
+	if time.Since(rh.lastRedisCheck) > 5*time.Second {
+		newRedisURL, redisErr := rh.eventService.UpdateRedisConnection(ctx, rh.currentRedisURL)
+		rh.lastRedisCheck = time.Now()
+
+		if redisErr != nil {
+			rh.logger.Debug("No se pudo verificar Redis primary, usando conexión actual", zap.Error(redisErr))
+		} else if newRedisURL != rh.currentRedisURL {
+			rh.logger.Info("Redis primary ha cambiado, intentando reconexión",
+				zap.String("old", rh.currentRedisURL),
+				zap.String("new", newRedisURL))
+
+			// Reconectar al nuevo Redis primary
+			if reconnectErr := rh.reconnectRedis(newRedisURL); reconnectErr != nil {
+				rh.logger.Error("Error reconectando a Redis primary", 
+					zap.Error(reconnectErr),
+					zap.String("new_url", newRedisURL))
+				// Continuar con la conexión actual por ahora
+			}
+		}
+	}
+
 	rh.logger.Info("🎯🎯🎯 RESPONSE_HANDLER ACTIVADO",
 		zap.String("channel", channel),
 		zap.String("payload", payload),

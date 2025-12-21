@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"log"
 	"net/http"
 	"os"
@@ -15,6 +14,7 @@ import (
 	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 	"github.com/agenda-distribuida/api-gateway-service/internal/config"
 	"github.com/agenda-distribuida/api-gateway-service/internal/handlers"
+	"github.com/agenda-distribuida/api-gateway-service/internal/services"
 	"github.com/gin-gonic/gin"
 	"github.com/go-redis/redis/v8"
 	"go.uber.org/zap"
@@ -43,18 +43,11 @@ func main() {
 	}
 	logger.Info("Connected to Redis", zap.String("url", cfg.Redis.URL))
 
-	// Get Redis info for debugging
-	// redisInfo, err := redisClient.Info(context.Background()).Result()
-	// if err != nil {
-	// 	logger.Error("Failed to get Redis info", zap.Error(err))
-	// } else {
-	// 	logger.Info("Redis info", zap.String("version", extractRedisVersion(redisInfo)))
-	// }
-
 	// Initialize DB client
-	// logger.Info("🔧 Initializing DB client...")
 	dbClient := clients.NewDBClient(cfg.DBService.URL, logger)
-	// logger.Info("✅ DB client initialized")
+
+	// Initialize EventService
+	eventService := services.NewEventService(dbClient, logger)
 
 	// Set Gin mode
 	if cfg.LogLevel == "debug" {
@@ -72,83 +65,30 @@ func main() {
 	r.Use(corsMiddleware())
 
 	// Initialize response handler for async responses
-	// logger.Info("🔧 Initializing ResponseHandler...")
-	responseHandler := handlers.NewResponseHandler(logger)
-	// logger.Info("✅ ResponseHandler initialized")
+	responseHandler := handlers.NewResponseHandler(redisClient, eventService, cfg.RaftNodesURLs, cfg.Redis.URL, logger)
 
-	// Start global response listener with proper error handling
-	// logger.Info("🚀 About to start global response listener goroutine...")
+	// Context for graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
+	// Start global response listener
 	go func() {
-		// Add panic recovery
 		defer func() {
 			if r := recover(); r != nil {
-				logger.Error("💥 PANIC in ResponseHandler goroutine",
+				logger.Error("PANIC in ResponseHandler goroutine",
 					zap.Any("recover", r),
 					zap.String("stack", string(debug.Stack())))
 			}
 		}()
-
-		// logger.Info("🔄 Inside goroutine - Creating Redis subscription...")
-
-		// Subscribe to channels
-		pubsub := redisClient.Subscribe(context.Background(), "users_events_response", "events_response", "groups_events_response", "group_events_response")
-		defer func() {
-			pubsub.Close()
-			// logger.Info("🔴 Redis subscription closed")
-		}()
-
-		// Verify subscription
-		_, err := pubsub.Receive(context.Background())
-		if err != nil {
-			logger.Error("❌ Failed to subscribe to Redis channels", zap.Error(err))
-			return
+		if err := responseHandler.StartResponseListener(ctx); err != nil {
+			logger.Error("Response listener stopped with error", zap.Error(err))
 		}
-
-		ch := pubsub.Channel()
-
-		// logger.Info("✅✅✅ STARTED GLOBAL RESPONSE LISTENER",
-		// 	zap.Strings("channels", []string{"users_events_response", "events_response", "groups_events_response"}))
-
-		// Test that we can receive messages
-		go func() {
-			time.Sleep(2 * time.Second)
-			// logger.Info("🧪 Sending test message to verify pub/sub...")
-			testMsg := map[string]interface{}{
-				"event_id": "test-event-123",
-				"type":     "test",
-				"success":  true,
-				"data":     map[string]string{"id": "test-user-id"},
-			}
-			testJSON, _ := json.Marshal(testMsg)
-			if err := redisClient.Publish(context.Background(), "users_events_response", string(testJSON)).Err(); err != nil {
-				logger.Error("❌ TEST: Error publishing test message", zap.Error(err))
-			} else {
-				// logger.Info("✅ TEST: Test message published successfully")
-			}
-		}()
-
-		for msg := range ch {
-			// logger.Info("📨📨📨 RESPONSE LISTENER: Received message",
-			// 	zap.String("channel", msg.Channel),
-			// 	zap.String("payload", msg.Payload),
-			// 	zap.Int("payload_length", len(msg.Payload)))
-
-			responseHandler.HandleResponse(msg.Channel, msg.Payload)
-		}
-
-		// logger.Warn("❌ Response listener stopped - channel closed")
 	}()
 
-	// Wait for ResponseHandler to initialize
-	// logger.Info("⏳ Waiting for ResponseHandler to initialize...")
-	time.Sleep(3 * time.Second)
-	// logger.Info("✅ ResponseHandler should be ready now")
-
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(redisClient, cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
-	eventHandler := handlers.NewEventHandler(redisClient, dbClient, responseHandler, logger)
-	groupHandler := handlers.NewGroupHandler(redisClient, dbClient, responseHandler, logger)
+	authHandler := handlers.NewAuthHandler(responseHandler.GetRedisClient(), cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
+	eventHandler := handlers.NewEventHandler(dbClient, responseHandler, logger)
+	groupHandler := handlers.NewGroupHandler(responseHandler.GetRedisClient(), dbClient, responseHandler, logger)
 
 	// API routes
 	api := r.Group("/api")
@@ -216,9 +156,12 @@ func main() {
 	<-quit
 	logger.Info("Shutting down server...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := srv.Shutdown(ctx); err != nil {
+	// Cancel the context to stop the response listener
+	cancel()
+
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer shutdownCancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		logger.Fatal("Server forced to shutdown", zap.Error(err))
 	}
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
@@ -17,7 +16,6 @@ import (
 )
 
 type EventHandler struct {
-	redis           *redis.Client
 	dbClient        *clients.DBClient
 	responseHandler *ResponseHandler
 	logger          *zap.Logger
@@ -33,9 +31,8 @@ type CreateEventRequest struct {
 	Location    string    `json:"location,omitempty"`
 }
 
-func NewEventHandler(redisClient *redis.Client, dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *EventHandler {
+func NewEventHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *EventHandler {
 	return &EventHandler{
-		redis:           redisClient,
 		dbClient:        dbClient,
 		responseHandler: responseHandler,
 		logger:          logger,
@@ -269,7 +266,8 @@ func (h *EventHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		zap.Any("event_data", eventData))
 
 	// Publish event to user service channel - using users_events as per your working examples
-	if err := h.redis.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+	redisClient := h.responseHandler.GetRedisClient()
+	if err := redisClient.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
 		return nil, fmt.Errorf("failed to publish event: %w", err)
 	}
 
