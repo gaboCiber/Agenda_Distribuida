@@ -8,14 +8,12 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
 
 type AuthHandler struct {
-	redis           *redis.Client
 	jwtSecret       string
 	jwtExpiry       time.Duration
 	responseHandler *ResponseHandler
@@ -38,9 +36,8 @@ type LoginResponse struct {
 	UserID uuid.UUID `json:"user_id"`
 }
 
-func NewAuthHandler(redisClient *redis.Client, jwtSecret string, jwtExpiry time.Duration, responseHandler *ResponseHandler, logger *zap.Logger) *AuthHandler {
+func NewAuthHandler(jwtSecret string, jwtExpiry time.Duration, responseHandler *ResponseHandler, logger *zap.Logger) *AuthHandler {
 	return &AuthHandler{
-		redis:           redisClient,
 		jwtSecret:       jwtSecret,
 		jwtExpiry:       jwtExpiry,
 		responseHandler: responseHandler,
@@ -245,7 +242,8 @@ func (h *AuthHandler) sendEventAndWaitForResponse(ctx context.Context, eventData
 		zap.Any("event_data", eventData))
 
 	// Publish event to user service channel
-	if err := h.redis.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+	redisClient := h.responseHandler.GetRedisClient()
+	if err := redisClient.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
 		return nil, fmt.Errorf("failed to publish event: %w", err)
 	}
 
@@ -320,7 +318,8 @@ func (h *AuthHandler) DeleteAccount(c *gin.Context) {
 	}
 
 	// Publish to Redis
-	if err := h.redis.Publish(c.Request.Context(), "users_events", eventJSON).Err(); err != nil {
+	redisClient := h.responseHandler.GetRedisClient()
+	if err := redisClient.Publish(c.Request.Context(), "users_events", eventJSON).Err(); err != nil {
 		h.logger.Error("Failed to publish user.delete event", zap.Error(err))
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete account"})
 		return

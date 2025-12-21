@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 
@@ -16,7 +15,6 @@ import (
 )
 
 type GroupHandler struct {
-	redis           *redis.Client
 	dbClient        *clients.DBClient
 	responseHandler *ResponseHandler
 	logger          *zap.Logger
@@ -36,9 +34,8 @@ type CreateGroupEventRequest struct {
 	IsHierarchical bool   `json:"is_hierarchical"`
 }
 
-func NewGroupHandler(redisClient *redis.Client, dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *GroupHandler {
+func NewGroupHandler(dbClient *clients.DBClient, responseHandler *ResponseHandler, logger *zap.Logger) *GroupHandler {
 	return &GroupHandler{
-		redis:           redisClient,
 		dbClient:        dbClient,
 		responseHandler: responseHandler,
 		logger:          logger,
@@ -642,7 +639,8 @@ func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (str
 	}
 
 	// Publish to the correct channel: users_events
-	if err := h.redis.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
+	redisClient := h.responseHandler.GetRedisClient()
+	if err := redisClient.Publish(ctx, "users_events", eventJSON).Err(); err != nil {
 		return "", fmt.Errorf("failed to publish event: %w", err)
 	}
 
@@ -795,7 +793,8 @@ func (h *GroupHandler) sendEventAndWaitForResponse(ctx context.Context, eventDat
 		zap.Any("event_data", eventData))
 
 	// ✅ PUBLICAR EN EL CANAL CORRECTO: groups_events
-	if err := h.redis.Publish(ctx, "groups_events", eventJSON).Err(); err != nil {
+	redisClient := h.responseHandler.GetRedisClient()
+	if err := redisClient.Publish(ctx, "groups_events", eventJSON).Err(); err != nil {
 		return nil, fmt.Errorf("failed to publish event: %w", err)
 	}
 

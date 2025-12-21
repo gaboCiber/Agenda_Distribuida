@@ -86,9 +86,9 @@ func main() {
 	}()
 
 	// Initialize handlers
-	authHandler := handlers.NewAuthHandler(responseHandler.GetRedisClient(), cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
+	authHandler := handlers.NewAuthHandler(cfg.JWT.Secret, cfg.JWT.Expiration, responseHandler, logger)
 	eventHandler := handlers.NewEventHandler(dbClient, responseHandler, logger)
-	groupHandler := handlers.NewGroupHandler(responseHandler.GetRedisClient(), dbClient, responseHandler, logger)
+	groupHandler := handlers.NewGroupHandler(dbClient, responseHandler, logger)
 
 	// API routes
 	api := r.Group("/api")
