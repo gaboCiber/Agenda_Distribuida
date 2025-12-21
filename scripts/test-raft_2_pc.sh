@@ -8,12 +8,13 @@ CURRENT_DIR="$(pwd)"
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|raft-db|user|group|stop|clean|status|failover]"
+    echo "Usage: $0 [all|redis|raft-db|user|group|api|stop|clean|status|failover]"
     echo "  all       - Start all services in order"
     echo "  redis     - Start Redis cluster + supervisors only (distributed)"
     echo "  raft-db   - Start Raft DB cluster (6 nodes)"
     echo "  user      - Start User Service only"
     echo "  group     - Start Group Service only"
+    echo "  api       - Start API Gateway only"
     echo "  stop      - Stop all distributed services"
     echo "  clean     - Stop services and clean data"
     echo "  status    - Show status of all distributed services"
@@ -354,6 +355,20 @@ start_group() {
     echo "Group Service started at localhost:8008"
 }
 
+start_api() {
+    echo "Starting API Gateway..."
+    docker run -d --name agenda-api-gateway --network $NETWORK_NAME \
+      -p 8080:8080 \
+      -e REDIS_URL=redis://agenda-redis-a-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e JWT_SECRET="your-secret-key-change-in-production" \
+      -e JWT_EXPIRATION="24h" \
+      -e LOG_LEVEL=debug \
+      agenda-api-gateway
+    echo "API Gateway started at localhost:8080"
+}
+
 stop_services() {
     echo "Stopping all distributed services..."
     
@@ -365,8 +380,9 @@ stop_services() {
     run_on_pc $PC1_IP "docker stop agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 > /dev/null 2>&1 || true"
     run_on_pc $PC2_IP "docker stop agenda-db-raft-node-4 agenda-db-raft-node-5 agenda-db-raft-node-6 > /dev/null 2>&1 || true"
     
-    # Stop user and group services on PC1
-    run_on_pc $PC1_IP "docker stop agenda-user-service agenda-group-service > /dev/null 2>&1 || true"
+    # Stop User, Group, and API services
+    run_on_pc $PC1_IP "docker stop agenda-user-service agenda-group-service agenda-api-gateway > /dev/null 2>&1 || true"
+    run_on_pc $PC2_IP "docker stop agenda-user-service agenda-group-service agenda-api-gateway > /dev/null 2>&1 || true"
     
     echo "All distributed services stopped"
 }
@@ -453,11 +469,17 @@ show_status() {
     echo "PC1: http://${PC1_IP}:8080/leader, http://${PC1_IP}:8081/leader, http://${PC1_IP}:8082/leader"
     echo "PC2: http://${PC2_IP}:8083/leader, http://${PC2_IP}:8084/leader, http://${PC2_IP}:8085/leader"
     echo ""
+    echo "=== Service Status ==="
+    echo "API Gateway:"
+    run_on_pc $PC1_IP "docker ps --filter 'name=agenda-api-gateway' --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null || echo '  Not running'"
+    echo ""
     echo "=== Useful Commands ==="
     echo "Check all Redis roles: ./test-raft_2_pc.sh status"
     echo "Connect to Redis nodes:"
     echo "  PC1: redis-cli -h ${PC1_IP} -p 6379 (A), redis-cli -h ${PC1_IP} -p 6380 (B), redis-cli -h ${PC1_IP} -p 6381 (C)"
     echo "  PC2: redis-cli -h ${PC2_IP} -p 6379 (D), redis-cli -h ${PC2_IP} -p 6380 (E), redis-cli -h ${PC2_IP} -p 6381 (F)"
+    echo "Test API Gateway: curl http://localhost:8080/"
+    echo "Test API registration: curl -X POST http://localhost:8080/api/auth/register -H 'Content-Type: application/json' -d '{\"username\":\"test\",\"email\":\"test@example.com\",\"password\":\"password123\"}'"
 }
 
 test_failover() {
@@ -534,7 +556,7 @@ test_failover() {
 
 case $SERVICE in
     all)
-        echo "Starting all services in order: redis cluster + supervisor → raft-db → user → group"
+        echo "Starting all services in order: redis cluster + supervisor → raft-db → user → group → api"
         clean_data
         start_redis
         sleep 5  # Give Redis cluster + supervisor time to initialize
@@ -544,6 +566,8 @@ case $SERVICE in
         sleep 2
         start_group
         sleep 2
+        # start_api
+        # sleep 2
         echo ""
         echo "=== All Services Started ==="
         show_status
@@ -560,6 +584,9 @@ case $SERVICE in
         ;;
     group)
         start_group
+        ;;
+    api)
+        start_api
         ;;
     stop)
         stop_services
@@ -584,7 +611,7 @@ case $SERVICE in
         ;;
     *)
         echo "Unknown service: $SERVICE"
-        echo "Available services: all, redis, raft-db, user, group, stop, clean, status, failover"
+        echo "Available services: all, redis, raft-db, user, group, api, stop, clean, status, failover"
         exit 1
         ;;
 esac

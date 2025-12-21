@@ -8,12 +8,13 @@ CURRENT_DIR="$(pwd)"
 
 # Check if service name is provided
 if [ $# -eq 0 ]; then
-    echo "Usage: $0 [all|redis|raft-db|user|group]"
+    echo "Usage: $0 [all|redis|raft-db|user|group|api]"
     echo "  all     - Start all services in order"
     echo "  redis   - Start Redis cluster + supervisor only"
     echo "  raft-db - Start Raft DB cluster (6 nodes)"
     echo "  user    - Start User Service only"
     echo "  group   - Start Group Service only"
+    echo "  api     - Start API Gateway only"
     exit 1
 fi
 
@@ -68,14 +69,20 @@ start_redis() {
     # Start Redis Supervisor
     echo "Starting Redis Supervisor..."
     docker run -d --name $REDIS_SUPERVISOR_NAME --network $NETWORK_NAME \
-      -v /var/run/docker.sock:/var/run/docker.sock \
-      -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379" \
-      -e DB_SERVICE_URL="http://agenda-db-raft-node-1:8001" \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -p 6001:6001 -p 8080:8080 \
+      -e REDIS_ADDRS=\"${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379,${REDIS_D_NAME}:6379,${REDIS_E_NAME}:6379,${REDIS_F_NAME}:6379\" \
+      -e DB_SERVICE_URL=\"http://agenda-db-raft-node-1:8001\" \
+      -e RAFT_NODES_URLS=\"http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006\" \
+      -e SUPERVISOR_ID=sup-1 \
+      -e SUPERVISOR_BIND_ADDR=:6001 \
+      -e HTTP_PORT=8080 \
+      -e SUPERVISOR_PEERS=$PEERS_LIST \
       -e PING_INTERVAL=1 \
       -e FAILURE_THRESHOLD=3 \
       agenda-redis-supervisor
+
     echo "Redis Supervisor started"
+
     
     echo "=== Redis cluster started ==="
     echo "Redis A (Master): ${REDIS_A_NAME}:6379"
@@ -201,10 +208,24 @@ start_group() {
     echo "Group Service started at localhost:8008"
 }
 
+start_api() {
+    echo "Starting API Gateway..."
+    docker run -d --name agenda-api-gateway --network $NETWORK_NAME \
+      -p 8080:8080 \
+      -e REDIS_URL=redis://agenda-redis-a-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e JWT_SECRET="your-secret-key-change-in-production" \
+      -e JWT_EXPIRATION="24h" \
+      -e LOG_LEVEL=debug \
+      agenda-api-gateway
+    echo "API Gateway started at localhost:8080"
+}
+
 stop_services() {
     echo "Stopping all services..."
-    docker stop agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-db-raft-node-4 agenda-db-raft-node-5 agenda-db-raft-node-6 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
-    docker rm agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-db-raft-node-4 agenda-db-raft-node-5 agenda-db-raft-node-6 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
+    docker stop agenda-api-gateway agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-db-raft-node-4 agenda-db-raft-node-5 agenda-db-raft-node-6 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
+    docker rm agenda-api-gateway agenda-group-service agenda-user-service agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 agenda-db-raft-node-4 agenda-db-raft-node-5 agenda-db-raft-node-6 $REDIS_SUPERVISOR_NAME $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null
     echo "All services stopped"
 }
 
@@ -236,6 +257,9 @@ show_status() {
     echo "Group Service:"
     docker ps --filter "name=agenda-group-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
     echo ""
+    echo "API Gateway:"
+    docker ps --filter "name=agenda-api-gateway" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+    echo ""
     echo "=== Redis Roles ==="
     echo "Redis A:"
     docker exec $REDIS_A_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
@@ -266,7 +290,7 @@ show_status() {
 
 case $SERVICE in
     all)
-        echo "Starting all services in order: redis cluster + supervisor → raft-db → user → group"
+        echo "Starting all services in order: redis cluster + supervisor → raft-db → user → group → api"
         clean_data
         start_redis
         sleep 5  # Give Redis cluster + supervisor time to initialize
@@ -275,6 +299,8 @@ case $SERVICE in
         start_user
         sleep 2
         start_group
+        sleep 2
+        start_api
         sleep 2
         echo ""
         echo "=== All Services Started ==="
@@ -293,6 +319,9 @@ case $SERVICE in
     group)
         start_group
         ;;
+    api)
+        start_api
+        ;;
     stop)
         stop_services
         ;;
@@ -305,7 +334,7 @@ case $SERVICE in
         ;;
     *)
         echo "Unknown service: $SERVICE"
-        echo "Available services: all, redis, raft-db, user, group, stop, clean, status"
+        echo "Available services: all, redis, raft-db, user, group, api, stop, clean, status"
         exit 1
         ;;
 esac
@@ -317,7 +346,10 @@ echo "Check Redis roles: docker exec $REDIS_A_NAME redis-cli INFO replication | 
 echo "Check Redis Supervisor logs: docker logs $REDIS_SUPERVISOR_NAME"
 echo "Check User Service logs: docker logs agenda-user-service"
 echo "Check Group Service logs: docker logs agenda-group-service"
+echo "Check API Gateway logs: docker logs agenda-api-gateway"
 echo "Test User Service: curl http://localhost:8007/health"
 echo "Test Group Service: curl http://localhost:8008/health"
+echo "Test API Gateway: curl http://localhost:8080/"
 echo "Check Raft logs: docker logs agenda-db-raft-node-1"
 echo "Simulate Redis failover: docker stop $REDIS_A_NAME"
+echo "Test API registration: curl -X POST http://localhost:8080/api/auth/register -H 'Content-Type: application/json' -d '{\"username\":\"test\",\"email\":\"test@example.com\",\"password\":\"password123\"}'"
