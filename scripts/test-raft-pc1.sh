@@ -192,61 +192,168 @@ start_raft_db() {
 }
 
 start_user() {
-    echo "Starting User Service..."
-    docker run -d --name agenda-user-service --network $NETWORK_NAME \
+    echo "Starting User Service instances..."
+    
+    # User Service 1
+    docker run -d --name agenda-user-service-1 --network $NETWORK_NAME \
       -p 8007:8007 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
-      -e REDIS_CHANNEL=users_events \
+      -e REDIS_CHANNEL=user_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
       -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
       -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=1 \
       agenda-user_event
-    echo "User Service started at localhost:8007"
+    echo "User Service 1 started at localhost:8007"
+
+    # User Service 2
+    docker run -d --name agenda-user-service-2 --network $NETWORK_NAME \
+      -p 8008:8007 \
+      -e REDIS_URL=redis://agenda-redis-b-service:6379 \
+      -e REDIS_CHANNEL=user_events_2 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=2 \
+      agenda-user_event
+    echo "User Service 2 started at localhost:8008"
+
+    # User Service 3
+    docker run -d --name agenda-user-service-3 --network $NETWORK_NAME \
+      -p 8009:8007 \
+      -e REDIS_URL=redis://agenda-redis-c-service:6379 \
+      -e REDIS_CHANNEL=user_events_3 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=3 \
+      agenda-user_event
+    echo "User Service 3 started at localhost:8009"
 }
 
 start_group() {
-    echo "Starting Group Service..."
-    docker run -d --name agenda-group-service --network $NETWORK_NAME \
-      -p 8008:8008 \
+    echo "Starting Group Service instances..."
+    
+    # Group Service 1
+    docker run -d --name agenda-group-service-1 --network $NETWORK_NAME \
+      -p 8010:8008 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
-      -e REDIS_CHANNEL=groups_events \
+      -e REDIS_CHANNEL=group_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
       -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
       -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=1 \
       agenda-group_event
-    echo "Group Service started at localhost:8008"
+    echo "Group Service 1 started at localhost:8010"
+
+    # Group Service 2
+    docker run -d --name agenda-group-service-2 --network $NETWORK_NAME \
+      -p 8011:8008 \
+      -e REDIS_URL=redis://agenda-redis-b-service:6379 \
+      -e REDIS_CHANNEL=group_events_2 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=2 \
+      agenda-group_event
+    echo "Group Service 2 started at localhost:8011"
+
+    # Group Service 3
+    docker run -d --name agenda-group-service-3 --network $NETWORK_NAME \
+      -p 8012:8008 \
+      -e REDIS_URL=redis://agenda-redis-c-service:6379 \
+      -e REDIS_CHANNEL=group_events_3 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=3 \
+      agenda-group_event
+    echo "Group Service 3 started at localhost:8012"
 }
 
 start_api() {
-    echo "Starting API Gateway..."
-    docker run -d --name agenda-api-gateway --network $NETWORK_NAME \
+    echo "Starting API Gateway instances..."
+    
+    # API Gateway 1
+    docker run -d --name agenda-api-gateway-1 --network $NETWORK_NAME \
       -p 8070:8080 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
       -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
       -e JWT_EXPIRATION="24h" \
       -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=1 \
       agenda-api-gateway
-    echo "API Gateway started at localhost:8080"
+    echo "API Gateway 1 started at localhost:8070"
+
+    # API Gateway 2
+    docker run -d --name agenda-api-gateway-2 --network $NETWORK_NAME \
+      -p 8071:8080 \
+      -e REDIS_URL=redis://agenda-redis-b-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
+      -e JWT_SECRET="your-secret-key-change-in-production" \
+      -e JWT_EXPIRATION="24h" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=2 \
+      agenda-api-gateway
+    echo "API Gateway 2 started at localhost:8071"
+
+    # API Gateway 3
+    docker run -d --name agenda-api-gateway-3 --network $NETWORK_NAME \
+      -p 8072:8080 \
+      -e REDIS_URL=redis://agenda-redis-c-service:6379 \
+      -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
+      -e JWT_SECRET="your-secret-key-change-in-production" \
+      -e JWT_EXPIRATION="24h" \
+      -e LOG_LEVEL=debug \
+      -e INSTANCE_ID=3 \
+      agenda-api-gateway
+    echo "API Gateway 3 started at localhost:8072"
 }
 
 stop_services() {
     echo "Stopping all PC1 services..."
     
-    # Stop Redis and supervisors
-    docker stop $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME $REDIS_SUPERVISOR_1_NAME $REDIS_SUPERVISOR_2_NAME $REDIS_SUPERVISOR_3_NAME > /dev/null 2>&1 || true
-    docker rm $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME $REDIS_SUPERVISOR_1_NAME $REDIS_SUPERVISOR_2_NAME $REDIS_SUPERVISOR_3_NAME > /dev/null 2>&1 || true
+    # Stop API Gateway instances
+    for i in {1..3}; do
+        docker stop "agenda-api-gateway-$i" 2>/dev/null || true
+        docker rm "agenda-api-gateway-$i" 2>/dev/null || true
+    done
     
-    # Stop Raft nodes
-    docker stop agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 > /dev/null 2>&1 || true
-    docker rm agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 > /dev/null 2>&1 || true
+    # Stop Group Service instances
+    for i in {1..3}; do
+        docker stop "agenda-group-service-$i" 2>/dev/null || true
+        docker rm "agenda-group-service-$i" 2>/dev/null || true
+    done
     
-    # Stop User, Group, and API services
-    docker stop agenda-user-service agenda-group-service agenda-api-gateway > /dev/null 2>&1 || true
-    docker rm agenda-user-service agenda-group-service agenda-api-gateway > /dev/null 2>&1 || true
+    # Stop User Service instances
+    for i in {1..3}; do
+        docker stop "agenda-user-service-$i" 2>/dev/null || true
+        docker rm "agenda-user-service-$i" 2>/dev/null || true
+    done
     
-    echo "All PC1 services stopped"
+    # Stop other services
+    docker stop agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 2>/dev/null || true
+    docker rm agenda-db-raft-node-1 agenda-db-raft-node-2 agenda-db-raft-node-3 2>/dev/null || true
+    
+    # Stop Redis services
+    docker stop $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null || true
+    docker rm $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME 2>/dev/null || true
+    
+    # Stop Redis supervisors
+    docker stop $REDIS_SUPERVISOR_1_NAME $REDIS_SUPERVISOR_2_NAME $REDIS_SUPERVISOR_3_NAME 2>/dev/null || true
+    docker rm $REDIS_SUPERVISOR_1_NAME $REDIS_SUPERVISOR_2_NAME $REDIS_SUPERVISOR_3_NAME 2>/dev/null || true
+    
+    echo "All PC1 services stopped and containers removed"
 }
 
 clean_data() {
@@ -258,59 +365,31 @@ clean_data() {
 }
 
 show_status() {
-    echo "=== PC1 Service Status ==="
-    echo "Redis Cluster:"
-    echo "  Redis A:"
-    docker ps --filter "name=$REDIS_A_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo "  Redis B:"
-    docker ps --filter "name=$REDIS_B_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo "  Redis C:"
-    docker ps --filter "name=$REDIS_C_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo ""
-    echo "Redis Supervisors:"
-    echo "  Supervisor 1:"
-    docker ps --filter "name=$REDIS_SUPERVISOR_1_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo "  Supervisor 2:"
-    docker ps --filter "name=$REDIS_SUPERVISOR_2_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo "  Supervisor 3:"
-    docker ps --filter "name=$REDIS_SUPERVISOR_3_NAME" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null || echo '    Not running'
-    echo ""
-    echo "Raft DB Cluster:"
-    docker ps --filter "name=agenda-db-raft-node" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo ""
-    echo "User Service:"
-    docker ps --filter "name=agenda-user-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo ""
-    echo "Group Service:"
-    docker ps --filter "name=agenda-group-service" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo ""
-    echo "API Gateway:"
-    docker ps --filter "name=agenda-api-gateway" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo ""
-    echo "=== Redis Roles ==="
-    echo "Redis A:"
-    docker exec $REDIS_A_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
-    echo "Redis B:"
-    docker exec $REDIS_B_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
-    echo "Redis C:"
-    docker exec $REDIS_C_NAME redis-cli INFO replication 2>/dev/null | grep role || echo "Not responding"
-    echo ""
-    echo "=== Raft Status ==="
-    echo "Node 1 (8001):"
-    curl -s http://localhost:8001/raft/status | jq . 2>/dev/null || echo "Not responding"
-    echo ""
-    echo "Node 2 (8002):"
-    curl -s http://localhost:8002/raft/status | jq . 2>/dev/null || echo "Not responding"
-    echo ""
-    echo "Node 3 (8003):"
-    curl -s http://localhost:8003/raft/status | jq . 2>/dev/null || echo "Not responding"
-    echo ""
-    echo "=== Supervisor HTTP Endpoints ==="
-    echo "PC1: http://localhost:8080/leader, http://localhost:8081/leader, http://localhost:8082/leader"
-    echo ""
-    echo "=== Useful Commands ==="
-    echo "Test API Gateway: curl http://localhost:8080/"
-    echo "Test API registration: curl -X POST http://localhost:8080/api/auth/register -H 'Content-Type: application/json' -d '{\"username\":\"test\",\"email\":\"test@example.com\",\"password\":\"password123\"}'"
+    echo "=== Services Status ==="
+    echo "User Services:"
+    for i in {1..3}; do
+        echo "- agenda-user-service-$i: $(docker inspect -f '{{.State.Running}}' "agenda-user-service-$i" 2>/dev/null || echo 'Not running')"
+    done
+    
+    echo -e "\nGroup Services:"
+    for i in {1..3}; do
+        echo "- agenda-group-service-$i: $(docker inspect -f '{{.State.Running}}' "agenda-group-service-$i" 2>/dev/null || echo 'Not running')"
+    done
+    
+    echo -e "\nAPI Gateways:"
+    for i in {1..3}; do
+        echo "- agenda-api-gateway-$i: $(docker inspect -f '{{.State.Running}}' "agenda-api-gateway-$i" 2>/dev/null || echo 'Not running')"
+    done
+    
+    echo -e "\nRaft DB Nodes:"
+    for i in {1..3}; do
+        echo "- agenda-db-raft-node-$i: $(docker inspect -f '{{.State.Running}}' "agenda-db-raft-node-$i" 2>/dev/null || echo 'Not running')"
+    done
+    
+    echo -e "\nRedis Nodes:"
+    for node in $REDIS_A_NAME $REDIS_B_NAME $REDIS_C_NAME $; do
+        echo "- $node: $(docker inspect -f '{{.State.Running}}' "$node" 2>/dev/null || echo 'Not running')"
+    done
 }
 
 show_redis_status() {

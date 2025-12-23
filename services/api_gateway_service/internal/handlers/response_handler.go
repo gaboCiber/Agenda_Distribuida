@@ -20,6 +20,7 @@ type ResponseHandler struct {
 	raftNodes       []string
 	eventService    *services.EventService
 	redisClient     *redis.Client
+	pubsub          *redis.PubSub
 	currentRedisURL string
 	reconnectChan   chan struct{} // Canal para señalizar reconexión
 	reconnecting    bool          // Flag para evitar reconexiones simultáneas
@@ -61,6 +62,14 @@ func (rh *ResponseHandler) reconnectRedis(newRedisURL string) error {
 	defer func() { rh.reconnecting = false }()
 
 	rh.logger.Info("Reconectando a nuevo Redis primary", zap.String("new_url", newRedisURL))
+
+	// Cerrar pubsub actual si existe
+	if rh.pubsub != nil {
+		if err := rh.pubsub.Close(); err != nil {
+			rh.logger.Error("Error cerrando pubsub actual", zap.Error(err))
+		}
+		rh.pubsub = nil
+	}
 
 	// Validar que tengamos un cliente actual
 	if rh.redisClient == nil {
@@ -167,12 +176,69 @@ func (rh *ResponseHandler) StartResponseListener(ctx context.Context) error {
 			"users_events_response_1", "users_events_response_2", "users_events_response_3",
 			"groups_events_response_1", "groups_events_response_2", "groups_events_response_3",
 		}
-		pubsub := rh.redisClient.Subscribe(ctx, responseChannels...)
-		ch := pubsub.Channel()
+		
+		var ch <-chan *redis.Message
+		
+		// Reintentar suscripción con backoff exponencial
+		maxRetries := 5
+		backoff := 100 * time.Millisecond
+		
+		for retry := 0; retry < maxRetries; retry++ {
+			rh.pubsub = rh.redisClient.Subscribe(ctx, responseChannels...)
+			ch = rh.pubsub.Channel()
+			
+			// Verificar si la suscripción fue exitosa haciendo ping
+			pingErr := rh.redisClient.Ping(ctx).Err()
+			if pingErr == nil {
+				break // Suscripción exitosa
+			}
+			
+			// Cerrar pubsub fallido
+			if rh.pubsub != nil {
+				rh.pubsub.Close()
+				rh.pubsub = nil
+			}
+			
+			if retry < maxRetries-1 {
+				rh.logger.Warn("Error al suscribirse a Redis, reintentando...",
+					zap.Error(pingErr),
+					zap.Int("retry", retry+1),
+					zap.Duration("backoff", backoff))
+				
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				backoff *= 2 // Backoff exponencial
+			} else {
+				rh.logger.Error("No se pudo suscribirse a Redis después de varios intentos, esperando próximo reintento general",
+					zap.Error(pingErr),
+					zap.Int("max_retries", maxRetries))
+				
+				// Esperar antes de continuar al bucle principal para reintentar
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}
 
 		rh.logger.Info("Escuchando respuestas de Redis",
 			zap.Strings("channels", []string{"users_events_response", "events_response", "groups_events_response", "group_events_response"}),
 			zap.String("redis_url", rh.currentRedisURL))
+
+		// Si no se pudo suscribir (ch es nil), esperar y reintentar el bucle principal
+		if ch == nil {
+			rh.logger.Warn("No se pudo suscribirse a Redis, esperando antes de reintentar...")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+			continue // Volver al inicio del bucle principal
+		}
 
 		// Bucle de procesamiento de mensajes
 		keepRunning := true
@@ -209,14 +275,15 @@ func (rh *ResponseHandler) StartResponseListener(ctx context.Context) error {
 				}
 
 			case <-ctx.Done():
-				pubsub.Close()
+				rh.pubsub.Close()
 				return ctx.Err()
 			}
 		}
 
 		// Cerrar pubsub actual antes de reintentar
-		if pubsub != nil {
-			pubsub.Close()
+		if rh.pubsub != nil {
+			rh.pubsub.Close()
+			rh.pubsub = nil
 		}
 
 		// Pausa antes de reintentar

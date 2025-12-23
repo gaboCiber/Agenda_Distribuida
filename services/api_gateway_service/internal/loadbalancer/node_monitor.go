@@ -83,12 +83,7 @@ func (nm *NodeMonitor) checkAllNodes() {
 	nm.logger.Debug("Iniciando checkAllNodes")
 
 	var wg sync.WaitGroup
-	nodeStatus := make(map[string]bool)
-
-	// Inicializar todos los nodos como inactivos
-	for _, node := range nm.nodes {
-		nodeStatus[node] = false
-	}
+	var nodeStatus sync.Map
 
 	// Verificar cada nodo en paralelo
 	for _, node := range nm.nodes {
@@ -101,13 +96,14 @@ func (nm *NodeMonitor) checkAllNodes() {
 				nm.logger.Warn("Error al verificar nodo",
 					zap.String("nodo", nodeURL),
 					zap.Error(err))
+				nodeStatus.Store(nodeURL, false)
 				return
 			}
 
 			if isActive {
-				nodeStatus[nodeURL] = true
+				nodeStatus.Store(nodeURL, true)
 			} else {
-				nodeStatus[nodeURL] = false
+				nodeStatus.Store(nodeURL, false)
 			}
 		}(node)
 	}
@@ -117,11 +113,12 @@ func (nm *NodeMonitor) checkAllNodes() {
 
 	// Actualizar la lista de nodos activos
 	var active []string
-	for node, activeStatus := range nodeStatus {
-		if activeStatus {
-			active = append(active, node)
+	nodeStatus.Range(func(key, value interface{}) bool {
+		if value.(bool) {
+			active = append(active, key.(string))
 		}
-	}
+		return true
+	})
 
 	nm.logger.Debug("Verificación completada",
 		zap.Int("encontrados_activos", len(active)),

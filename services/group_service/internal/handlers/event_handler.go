@@ -14,6 +14,7 @@ import (
 
 type EventHandler struct {
 	redisClient      *redis.Client
+	pubsub           *redis.PubSub
 	eventService     *services.EventService
 	logger           *zap.Logger
 	channel          string
@@ -54,6 +55,14 @@ func (h *EventHandler) reconnectRedis(newRedisURL string) error {
 	defer func() { h.reconnecting = false }()
 
 	h.logger.Info("Reconectando a nuevo Redis primary", zap.String("new_url", newRedisURL))
+
+	// Cerrar pubsub actual si existe
+	if h.pubsub != nil {
+		if err := h.pubsub.Close(); err != nil {
+			h.logger.Error("Error cerrando pubsub actual", zap.Error(err))
+		}
+		h.pubsub = nil
+	}
 
 	if h.redisClient != nil {
 		if err := h.redisClient.Close(); err != nil {
@@ -107,6 +116,7 @@ func (h *EventHandler) reconnectRedis(newRedisURL string) error {
 }
 
 func (h *EventHandler) Start(ctx context.Context) error {
+	// Verificar el Redis primario al iniciar y reconectar si es necesario
 	h.logger.Info("Verificando Redis primario al iniciar...")
 	newRedisURL, err := h.eventService.UpdateRedisConnection(ctx, h.currentRedisURL)
 	if err != nil {
@@ -115,6 +125,7 @@ func (h *EventHandler) Start(ctx context.Context) error {
 		h.logger.Info("Redis primario diferente al configurado, reconectando...",
 			zap.String("old", h.currentRedisURL),
 			zap.String("new", newRedisURL))
+
 		if reconnectErr := h.reconnectRedis(newRedisURL); reconnectErr != nil {
 			h.logger.Error("Error reconectando a Redis primario al iniciar",
 				zap.Error(reconnectErr),
@@ -124,6 +135,7 @@ func (h *EventHandler) Start(ctx context.Context) error {
 		}
 	}
 
+	// Bucle principal
 	for {
 		select {
 		case <-ctx.Done():
@@ -143,13 +155,71 @@ func (h *EventHandler) Start(ctx context.Context) error {
 			}
 		}
 
-		pubsub := h.redisClient.Subscribe(ctx, h.channel)
-		ch := pubsub.Channel()
+		// Suscribirse al canal de Redis
+		var ch <-chan *redis.Message
+		
+		// Reintentar suscripción con backoff exponencial
+		maxRetries := 5
+		backoff := 100 * time.Millisecond
+		
+		for retry := 0; retry < maxRetries; retry++ {
+			h.pubsub = h.redisClient.Subscribe(ctx, h.channel)
+			ch = h.pubsub.Channel()
+			
+			// Verificar si la suscripción fue exitosa haciendo ping
+			pingErr := h.redisClient.Ping(ctx).Err()
+			if pingErr == nil {
+				break // Suscripción exitosa
+			}
+			
+			// Cerrar pubsub fallido
+			if h.pubsub != nil {
+				h.pubsub.Close()
+				h.pubsub = nil
+			}
+			
+			if retry < maxRetries-1 {
+				h.logger.Warn("Error al suscribirse a Redis, reintentando...",
+					zap.Error(pingErr),
+					zap.Int("retry", retry+1),
+					zap.Duration("backoff", backoff))
+				
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(backoff):
+				}
+				backoff *= 2 // Backoff exponencial
+			} else {
+				h.logger.Error("No se pudo suscribirse a Redis después de varios intentos, esperando próximo reintento general",
+					zap.Error(pingErr),
+					zap.Int("max_retries", maxRetries))
+				
+				// Esperar antes de continuar al bucle principal para reintentar
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(5 * time.Second):
+				}
+			}
+		}
 
 		h.logger.Info("Escuchando eventos de Redis",
 			zap.String("channel", h.channel),
 			zap.String("redis_url", h.currentRedisURL))
 
+		// Si no se pudo suscribir (ch es nil), esperar y reintentar el bucle principal
+		if ch == nil {
+			h.logger.Warn("No se pudo suscribirse a Redis, esperando antes de reintentar...")
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(5 * time.Second):
+			}
+			continue // Volver al inicio del bucle principal
+		}
+
+		// Bucle de procesamiento de mensajes
 		keepRunning := true
 		for keepRunning {
 			select {
@@ -165,7 +235,7 @@ func (h *EventHandler) Start(ctx context.Context) error {
 				h.logger.Info("Señal de reconexión recibida, cerrando pubsub actual")
 				keepRunning = false
 
-			case <-time.After(10 * time.Second):
+			case <-time.After(10 * time.Second): // Timeout para detectar conexiones inactivas
 				h.logger.Debug("Timeout de pubsub, verificando conexión...")
 				
 				// Primero verificar si el Redis primary ha cambiado
@@ -184,15 +254,18 @@ func (h *EventHandler) Start(ctx context.Context) error {
 				}
 
 			case <-ctx.Done():
-				pubsub.Close()
+				h.pubsub.Close()
 				return ctx.Err()
 			}
 		}
 
-		if pubsub != nil {
-			pubsub.Close()
+		// Cerrar pubsub actual antes de reintentar
+		if h.pubsub != nil {
+			h.pubsub.Close()
+			h.pubsub = nil
 		}
 
+		// Pausa antes de reintentar
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

@@ -35,9 +35,9 @@ func main() {
 	redisClient := redis.NewClient(redisOpts)
 	defer redisClient.Close()
 
-	// Verificar conexión a Redis
+	// Verificar conexión a Redis (no fatal si falla, el EventHandler se reconectará automáticamente)
 	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		logger.Fatal("No se pudo conectar a Redis", zap.Error(err))
+		logger.Warn("No se pudo conectar a Redis al iniciar, el servicio continuará y se reconectará automáticamente", zap.Error(err))
 	}
 
 	// Cliente para el servicio de base de datos

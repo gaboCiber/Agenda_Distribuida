@@ -38,11 +38,11 @@ func main() {
 	redisClient := redis.NewClient(redisOpts)
 	defer redisClient.Close()
 
-	// Ping Redis
+	// Ping Redis (no fatal si falla, el ResponseHandler se reconectará automáticamente)
 	if err := redisClient.Ping(context.Background()).Err(); err != nil {
-		logger.Fatal("Failed to connect to Redis", zap.Error(err))
+		logger.Warn("Failed to connect to Redis at startup, service will continue and reconnect automatically", zap.Error(err))
 	}
-	logger.Info("Connected to Redis", zap.String("url", cfg.Redis.URL))
+	logger.Info("Redis connection attempted", zap.String("url", cfg.Redis.URL))
 
 	// Initialize DB client
 	dbClient := clients.NewDBClient(cfg.DBService.URL, logger)
