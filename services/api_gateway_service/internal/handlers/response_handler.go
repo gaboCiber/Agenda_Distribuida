@@ -173,38 +173,38 @@ func (rh *ResponseHandler) StartResponseListener(ctx context.Context) error {
 
 		// Suscribirse a los canales de Redis
 		responseChannels := []string{
-			"users_events_response_1", "users_events_response_2", "users_events_response_3",
-			"groups_events_response_1", "groups_events_response_2", "groups_events_response_3",
+			"users_events_response_1", "users_events_response_2", "users_events_response_3", "users_events_response_4", "users_events_response_5", "users_events_response_6",
+			"groups_events_response_1", "groups_events_response_2", "groups_events_response_3", "groups_events_response_4", "groups_events_response_5", "groups_events_response_6",
 		}
-		
+
 		var ch <-chan *redis.Message
-		
+
 		// Reintentar suscripción con backoff exponencial
 		maxRetries := 5
 		backoff := 100 * time.Millisecond
-		
+
 		for retry := 0; retry < maxRetries; retry++ {
 			rh.pubsub = rh.redisClient.Subscribe(ctx, responseChannels...)
 			ch = rh.pubsub.Channel()
-			
+
 			// Verificar si la suscripción fue exitosa haciendo ping
 			pingErr := rh.redisClient.Ping(ctx).Err()
 			if pingErr == nil {
 				break // Suscripción exitosa
 			}
-			
+
 			// Cerrar pubsub fallido
 			if rh.pubsub != nil {
 				rh.pubsub.Close()
 				rh.pubsub = nil
 			}
-			
+
 			if retry < maxRetries-1 {
 				rh.logger.Warn("Error al suscribirse a Redis, reintentando...",
 					zap.Error(pingErr),
 					zap.Int("retry", retry+1),
 					zap.Duration("backoff", backoff))
-				
+
 				select {
 				case <-ctx.Done():
 					return ctx.Err()
@@ -215,7 +215,7 @@ func (rh *ResponseHandler) StartResponseListener(ctx context.Context) error {
 				rh.logger.Error("No se pudo suscribirse a Redis después de varios intentos, esperando próximo reintento general",
 					zap.Error(pingErr),
 					zap.Int("max_retries", maxRetries))
-				
+
 				// Esperar antes de continuar al bucle principal para reintentar
 				select {
 				case <-ctx.Done():

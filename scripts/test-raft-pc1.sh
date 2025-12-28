@@ -200,7 +200,7 @@ start_user() {
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=user_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=1 \
       agenda-user_event
@@ -212,7 +212,7 @@ start_user() {
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e REDIS_CHANNEL=user_events_2 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=2 \
       agenda-user_event
@@ -224,7 +224,7 @@ start_user() {
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e REDIS_CHANNEL=user_events_3 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=3 \
       agenda-user_event
@@ -240,7 +240,7 @@ start_group() {
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=group_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=1 \
       agenda-group_event
@@ -252,7 +252,7 @@ start_group() {
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e REDIS_CHANNEL=group_events_2 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=2 \
       agenda-group_event
@@ -264,7 +264,7 @@ start_group() {
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e REDIS_CHANNEL=group_events_3 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=3 \
       agenda-group_event
@@ -279,9 +279,9 @@ start_api() {
       -p 8070:8080 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
-      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
-      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
       -e JWT_EXPIRATION="24h" \
       -e LOG_LEVEL=debug \
@@ -294,9 +294,9 @@ start_api() {
       -p 8071:8080 \
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
-      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
-      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
       -e JWT_EXPIRATION="24h" \
       -e LOG_LEVEL=debug \
@@ -309,9 +309,9 @@ start_api() {
       -p 8072:8080 \
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003" \
-      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007" \
-      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008" \
+      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
+      -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
       -e JWT_EXPIRATION="24h" \
       -e LOG_LEVEL=debug \

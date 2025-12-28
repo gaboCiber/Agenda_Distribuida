@@ -1046,7 +1046,6 @@ func (r *groupEventRepository) HasAllMembersAccepted(ctx context.Context, groupI
 		ctx,
 		`SELECT COUNT(DISTINCT gs.user_id) 
 		FROM group_event_status gs
-		JOIN group_members gm ON gs.user_id = gm.user_id AND gs.group_id = gm.group_id
 		WHERE gs.event_id = $1 AND gs.group_id = $2 AND gs.status = 'accepted'`,
 		eventID,
 		groupID,

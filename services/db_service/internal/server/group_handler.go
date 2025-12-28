@@ -37,7 +37,7 @@ func (h *GroupHandler) RegisterRoutes(router *mux.Router) {
 	router.HandleFunc("/{id}", h.UpdateGroup).Methods("PUT")
 	router.HandleFunc("/{id}", h.DeleteGroup).Methods("DELETE")
 	router.HandleFunc("/users/{userId}", h.ListUserGroups).Methods("GET")
-	router.HandleFunc("/{groupId}/members", h.AddGroupMemberWithHierarchy).Methods("POST")
+	router.HandleFunc("/{groupId}/members", h.AddGroupMember).Methods("POST")
 	router.HandleFunc("/{groupId}/members", h.ListGroupMembers).Methods("GET")
 	router.HandleFunc("/{groupId}/members", h.GetGroupMember).Methods("GET")
 	router.HandleFunc("/{groupId}/members", h.UpdateGroupMember).Methods("PUT")
