@@ -148,6 +148,15 @@ func getMigrations() []migration {
 		{
 			name: "initial_schema",
 			statement: `
+				-- Service Registry table
+				CREATE TABLE IF NOT EXISTS service_registry (
+					service_name TEXT PRIMARY KEY,
+					address TEXT NOT NULL,
+					last_seen TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+				);
+
+				CREATE INDEX IF NOT EXISTS idx_service_registry_service_name ON service_registry(service_name);
+
 				-- Users table
 				CREATE TABLE IF NOT EXISTS users (
 					id TEXT PRIMARY KEY,

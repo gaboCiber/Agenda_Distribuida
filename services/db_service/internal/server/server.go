@@ -13,24 +13,34 @@ import (
 	"github.com/go-playground/validator/v10"
 	"github.com/gorilla/mux"
 	"github.com/rs/zerolog"
+	"go.uber.org/zap"
 )
 
 var validate = validator.New()
 
 type Server struct {
-	Server        *http.Server
-	log           *zerolog.Logger
-	db            *sql.DB
-	userAPI       *UserHandler
-	eventAPI      *EventHandler
-	groupAPI      *GroupHandler
-	groupEventAPI *GroupEventHandler
-	configAPI     *ConfigHandler
-	raftNode      *consensus.RaftNode // Add RaftNode to the server structure
+	Server             *http.Server
+	log                *zerolog.Logger
+	db                 *sql.DB
+	userAPI            *UserHandler
+	eventAPI           *EventHandler
+	groupAPI           *GroupHandler
+	groupEventAPI      *GroupEventHandler
+	configAPI          *ConfigHandler
+	serviceRegistryAPI *ServiceRegistryHandler
+	raftNode           *consensus.RaftNode // Add RaftNode to the server structure
 }
 
 func New(addr string, db *sql.DB, log *zerolog.Logger, raftNode *consensus.RaftNode) *Server {
 	// Initialize repositories
+
+	// Convert zerolog to zap logger for service registry
+	zapLogger, _ := zap.NewProduction()
+	defer zapLogger.Sync()
+
+	// Initialize and wrap the service registry repository with Raft
+	serviceRegistryRepo := repository.NewServiceRegistryRepository(db)
+	raftServiceRegistryRepo := raft_repository.NewRaftServiceRegistryRepository(serviceRegistryRepo, raftNode, log)
 
 	// Wrap the user repository with the Raft-aware repository
 	sqlUserRepo := repository.NewUserRepository(db, *log)
@@ -58,6 +68,7 @@ func New(addr string, db *sql.DB, log *zerolog.Logger, raftNode *consensus.RaftN
 	groupAPI := NewGroupHandler(raftGroupRepo, log)
 	groupEventAPI := NewGroupEventHandler(raftGroupEventRepo, log)
 	configHandler := NewConfigHandler(raftConfigRepo)
+	serviceRegistryAPI := NewServiceRegistryHandler(raftServiceRegistryRepo, zapLogger)
 
 	s := &Server{
 		Server: &http.Server{
@@ -66,14 +77,15 @@ func New(addr string, db *sql.DB, log *zerolog.Logger, raftNode *consensus.RaftN
 			WriteTimeout: 10 * time.Second,
 			IdleTimeout:  60 * time.Second,
 		},
-		db:            db,
-		log:           log,
-		userAPI:       userAPI,
-		eventAPI:      eventAPI,
-		groupAPI:      groupAPI,
-		groupEventAPI: groupEventAPI,
-		configAPI:     configHandler,
-		raftNode:      raftNode,
+		db:                 db,
+		log:                log,
+		userAPI:            userAPI,
+		eventAPI:           eventAPI,
+		groupAPI:           groupAPI,
+		groupEventAPI:      groupEventAPI,
+		configAPI:          configHandler,
+		serviceRegistryAPI: serviceRegistryAPI,
+		raftNode:           raftNode,
 	}
 
 	r := mux.NewRouter()
@@ -119,6 +131,9 @@ func (s *Server) setupRoutes(r *mux.Router) {
 
 	// Config routes
 	s.configAPI.RegisterRoutes(api)
+
+	// Service registry endpoints
+	s.serviceRegistryAPI.RegisterRoutes(api)
 
 	// Raft introspection routes
 	if s.raftNode != nil {

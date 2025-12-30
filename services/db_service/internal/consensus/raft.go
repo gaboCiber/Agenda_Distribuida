@@ -295,6 +295,36 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 	}
 
 	switch cmd.Repository {
+	case "ServiceRegistryRepository":
+		serviceRepo := repo.(repository.ServiceRegistryRepository)
+		switch cmd.Method {
+		case "Register":
+			var payload struct {
+				ServiceName string `json:"service_name"`
+				Address     string `json:"address"`
+			}
+			if err := json.Unmarshal(cmd.Payload, &payload); err != nil {
+				return fmt.Errorf("error al deserializar payload para ServiceRegistryRepository.Register: %w", err)
+			}
+			return serviceRepo.Register(context.Background(), payload.ServiceName, payload.Address)
+
+		case "Deregister":
+			var serviceName string
+			if err := json.Unmarshal(cmd.Payload, &serviceName); err != nil {
+				return fmt.Errorf("error al deserializar payload para ServiceRegistryRepository.Deregister: %w", err)
+			}
+			return serviceRepo.Deregister(context.Background(), serviceName)
+
+		case "UpdateLastSeen":
+			var serviceName string
+			if err := json.Unmarshal(cmd.Payload, &serviceName); err != nil {
+				return fmt.Errorf("error al deserializar payload para ServiceRegistryRepository.UpdateLastSeen: %w", err)
+			}
+			return serviceRepo.UpdateLastSeen(context.Background(), serviceName)
+
+		default:
+			return fmt.Errorf("método desconocido para ServiceRegistryRepository: %s", cmd.Method)
+		}
 	case "UserRepository":
 		userRepo := repo.(repository.UserRepository)
 		switch cmd.Method {

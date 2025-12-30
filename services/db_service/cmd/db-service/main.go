@@ -46,15 +46,16 @@ func main() {
 	groupRepo := repository.NewGroupRepository(appDB.DB(), logger)
 	groupEventRepo := repository.NewGroupEventRepository(appDB.DB(), logger)
 	configRepo := repository.NewConfigRepository(appDB.DB())
-	// Add other repositories here as they are created
+	serviceRegistryRepo := repository.NewServiceRegistryRepository(appDB.DB())
 
 	// Create a map of repositories to pass to the Raft node
 	repos := map[string]interface{}{
-		"UserRepository":      userRepo,
-		"EventRepository":     eventRepo,
-		"GroupRepository":     groupRepo,
-		"GroupEventRepository": groupEventRepo,
-		"ConfigRepository":    configRepo,
+		"UserRepository":          userRepo,
+		"EventRepository":         eventRepo,
+		"GroupRepository":         groupRepo,
+		"GroupEventRepository":    groupEventRepo,
+		"ConfigRepository":        configRepo,
+		"ServiceRegistryRepository": serviceRegistryRepo,
 	}
 
 	// Initialize Raft node

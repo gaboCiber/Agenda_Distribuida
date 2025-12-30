@@ -334,3 +334,25 @@ curl -X PUT http://localhost:8000/api/v1/configs/exampleName \
 
 # 5. Eliminar un config (DELETE):
 curl -X DELETE http://localhost:8000/api/v1/configs/exampleName
+
+
+#####################################################################
+#                       Service Registry                            #
+#####################################################################
+
+# Register a service:
+curl -X POST http://localhost:8000/api/v1/services/my-service \
+  -H "Content-Type: application/json" \
+  -d '{"address": "192.168.1.100:8080"}'
+
+# List all services:
+curl http://localhost:8000/api/v1/services
+
+# Get a specific service:
+curlhttp://localhost:8000/api/v1/services/my-service
+
+# Send a heartbeat:
+curl -X POST http://localhost:8000/api/v1/services/my-service/heartbeat
+
+# Deregister a service:
+curl -X DELETE http://localhost:8000/api/v1/services/my-service
