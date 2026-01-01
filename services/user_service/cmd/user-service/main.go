@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,6 +27,9 @@ func main() {
 	// Inicializar logger
 	logger := initLogger(cfg.LogLevel)
 	defer logger.Sync()
+
+	// Configurar el servicio de registro
+	registryService := services.NewRegistryService(cfg.RaftNodesURLs, logger)
 
 	// Configurar Redis
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
@@ -73,23 +78,47 @@ func main() {
 		}
 	}()
 
+	// Obtener IP del contenedor
+	containerIP, err := clients.GetContainerIP()
+	if err != nil {
+		logger.Warn("No se pudo obtener la IP del contenedor, usando localhost", zap.Error(err))
+		containerIP = "localhost"
+	}
+
+	// Configurar dirección del servidor HTTP
+	port := 8007
+	if p, err := strconv.Atoi(os.Getenv("PORT")); err == nil {
+		port = p
+	}
+	addr := fmt.Sprintf("%s:%d", containerIP, port)
+
 	// Iniciar servidor HTTP para health checks
 	httpHandler := handlers.NewHTTPHandler(logger)
 	mux := http.NewServeMux()
 	httpHandler.SetupRoutes(mux)
 
 	httpServer := &http.Server{
-		Addr:    ":8007",
+		Addr:    addr,
 		Handler: mux,
 	}
 
 	go func() {
-		logger.Info("Iniciando servidor HTTP en :8007")
+		logger.Info("Iniciando servidor HTTP",
+			zap.String("addr", httpServer.Addr))
+
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			logger.Error("Error al iniciar el servidor HTTP", zap.Error(err))
 			errChan <- err
 		}
 	}()
+
+	// Registrar el servicio
+	if err := registryService.RegisterService(cfg.ServiceName, addr); err != nil {
+		logger.Error("Error registrando el servicio", zap.Error(err))
+	} else {
+		// Iniciar heartbeats solo si el registro fue exitoso
+		go registryService.StartHeartbeats(cfg.ServiceName, addr, 30*time.Second)
+	}
 
 	// Esperar señales de terminación
 	sigChan := make(chan os.Signal, 1)

@@ -349,7 +349,7 @@ curl -X POST http://localhost:8000/api/v1/services/my-service \
 curl http://localhost:8000/api/v1/services
 
 # Get a specific service:
-curlhttp://localhost:8000/api/v1/services/my-service
+curl http://localhost:8000/api/v1/services/my-service
 
 # Send a heartbeat:
 curl -X POST http://localhost:8000/api/v1/services/my-service/heartbeat

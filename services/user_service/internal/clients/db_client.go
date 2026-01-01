@@ -8,22 +8,33 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"go.uber.org/zap"
 )
 
 type DBServiceClient struct {
-	baseURL string
-	client  *http.Client
-	logger  *zap.Logger
+	baseURL    string
+	httpClient *http.Client
+	logger     *zap.Logger
+	mu         sync.RWMutex
 }
 
-// RaftNodeInfo represents information about a Raft node
-type RaftNodeInfo struct {
-	ID     string `json:"id"`
-	State  string `json:"state"`
-	Leader string `json:"leader"`
+// RaftNodeInfo is now defined in the types package
+
+// GetBaseURL devuelve la URL base del cliente
+func (c *DBServiceClient) GetBaseURL() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.baseURL
+}
+
+// SetBaseURL actualiza la URL base del cliente
+func (c *DBServiceClient) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = strings.TrimSuffix(baseURL, "/")
 }
 
 // AgendaEvent represents a calendar/agenda event
@@ -43,60 +54,10 @@ func NewDBServiceClient(baseURL string, logger *zap.Logger) *DBServiceClient {
 	// Asegurarse de que la URL base no termine con /
 	baseURL = strings.TrimSuffix(baseURL, "/")
 	return &DBServiceClient{
-		baseURL: baseURL,
-		client:  &http.Client{},
-		logger:  logger,
+		baseURL:    baseURL,
+		httpClient: &http.Client{},
+		logger:     logger,
 	}
-}
-
-// FindAndUpdateLeader busca el líder actualizando el baseURL
-func (c *DBServiceClient) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	// Intentar con las URLs de nodos Raft proporcionadas
-	for _, nodeURL := range raftNodes {
-		// Limpiar URL
-		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
-		
-		// Hacer ping al nodo para ver si es líder
-		if c.isNodeLeader(ctx, nodeURL) {
-			c.baseURL = nodeURL
-			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
-			return nil
-		}
-	}
-	
-	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", raftNodes)
-}
-
-// isNodeLeader verifica si un nodo específico es el líder
-func (c *DBServiceClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
-	url := fmt.Sprintf("%s/raft/status", nodeURL)
-	
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false
-	}
-
-	var nodeInfo RaftNodeInfo
-	if err := json.Unmarshal(body, &nodeInfo); err != nil {
-		return false
-	}
-
-	return nodeInfo.State == "Leader"
 }
 
 // User representa un usuario en el sistema
@@ -123,7 +84,7 @@ type LoginResponse struct {
 
 // CreateUser crea un nuevo usuario en el sistema
 func (c *DBServiceClient) CreateUser(ctx context.Context, email, password, username string) (*User, error) {
-	url := fmt.Sprintf("%s/api/v1/users", c.baseURL)
+	url := fmt.Sprintf("%s/api/v1/users", c.GetBaseURL())
 
 	reqBody := map[string]interface{}{
 		"email":    email,
@@ -161,7 +122,7 @@ func (c *DBServiceClient) CreateUser(ctx context.Context, email, password, usern
 
 // GetUser obtiene un usuario por su ID
 func (c *DBServiceClient) GetUser(ctx context.Context, userID string) (*User, error) {
-	url := fmt.Sprintf("%s/api/v1/users/%s", c.baseURL, userID)
+	url := fmt.Sprintf("%s/api/v1/users/%s", c.GetBaseURL(), userID)
 
 	resp, err := c.doRequest(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -572,7 +533,8 @@ func (c *DBServiceClient) doRequest(ctx context.Context, method, url string, bod
 		return nil, fmt.Errorf("error al crear la solicitud: %w", err)
 	}
 
-	resp, err := c.client.Do(req)
+	// Usar httpClient en lugar de client
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.logger.Error("Error al enviar la solicitud", zap.Error(err))
 		return nil, fmt.Errorf("error al enviar la solicitud: %w", err)
@@ -598,13 +560,13 @@ func (c *DBServiceClient) doRequest(ctx context.Context, method, url string, bod
 // GetRedisPrimary obtiene la dirección del Redis primary desde el DB service
 func (c *DBServiceClient) GetRedisPrimary(ctx context.Context) (string, error) {
 	url := fmt.Sprintf("%s/api/v1/configs/redis_primary", c.baseURL)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
 	}
 
-	resp, err := c.client.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "", err
 	}

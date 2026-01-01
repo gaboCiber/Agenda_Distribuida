@@ -8,12 +8,14 @@ import (
 
 	"github.com/agenda-distribuida/user-service/internal/clients"
 	"github.com/agenda-distribuida/user-service/internal/models"
+	"github.com/agenda-distribuida/user-service/internal/raft"
 	"go.uber.org/zap"
 )
 
 type EventService struct {
-	dbClient *clients.DBServiceClient
-	logger   *zap.Logger
+	dbClient       *clients.DBServiceClient
+	leaderDiscover *raft.LeaderDiscovery
+	logger         *zap.Logger
 }
 
 // AgendaEvent representa un evento de agenda/calendario
@@ -31,14 +33,20 @@ type AgendaEvent struct {
 
 func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *EventService {
 	return &EventService{
-		dbClient: dbClient,
-		logger:   logger.Named("event_service"),
+		dbClient:       dbClient,
+		leaderDiscover: raft.NewLeaderDiscovery(logger.Named("raft_leader")),
+		logger:         logger.Named("event_service"),
 	}
 }
 
 // FindAndUpdateLeader busca y actualiza el líder del cluster Raft
 func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
+	leaderURL, err := s.leaderDiscover.FindAndUpdateLeader(ctx, raftNodes)
+	if err != nil {
+		return err
+	}
+	s.dbClient.SetBaseURL(leaderURL)
+	return nil
 }
 
 // UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado
