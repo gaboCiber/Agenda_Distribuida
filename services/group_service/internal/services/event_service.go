@@ -8,6 +8,7 @@ import (
 
 	"github.com/agenda-distribuida/group-service/internal/clients"
 	"github.com/agenda-distribuida/group-service/internal/models"
+	"github.com/agenda-distribuida/group-service/internal/raft"
 	"github.com/google/uuid"
 	"go.uber.org/zap"
 )
@@ -45,27 +46,24 @@ const (
 )
 
 type EventService struct {
-	dbClient *clients.DBServiceClient
-	logger   *zap.Logger
+	DBClient       *clients.DBServiceClient
+	LeaderDiscover *raft.LeaderDiscovery
+	logger         *zap.Logger
 }
 
 // NewEventService creates a new instance of EventService
 func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *EventService {
 	return &EventService{
-		dbClient: dbClient,
-		logger:   logger.Named("event_service"),
+		DBClient:       dbClient,
+		LeaderDiscover: raft.NewLeaderDiscovery(logger.Named("raft_leader_discovery")),
+		logger:         logger.Named("event_service"),
 	}
-}
-
-// FindAndUpdateLeader busca y actualiza el líder del cluster Raft
-func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
 }
 
 // UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado
 func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisURL string) (string, error) {
 	// Obtener el Redis primary actual desde el DB service
-	primary, err := s.dbClient.GetRedisPrimary(ctx)
+	primary, err := s.DBClient.GetRedisPrimary(ctx)
 	if err != nil {
 		s.logger.Warn("No se pudo obtener el Redis primary", zap.Error(err))
 		return currentRedisURL, err
@@ -78,8 +76,8 @@ func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisUR
 
 	// Si el primary es diferente al actual, necesitamos reconectar
 	if primary != currentRedisURL {
-		s.logger.Info("Redis primary ha cambiado", 
-			zap.String("old", currentRedisURL), 
+		s.logger.Info("Redis primary ha cambiado",
+			zap.String("old", currentRedisURL),
 			zap.String("new", primary))
 		return primary, nil
 	}
@@ -159,7 +157,7 @@ func (s *EventService) handleCreateGroup(ctx context.Context, event models.Event
 	}
 
 	// Create the group
-	group, err := s.dbClient.CreateGroup(ctx, req)
+	group, err := s.DBClient.CreateGroup(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("error creating group: %w", err)
 	}
@@ -204,7 +202,7 @@ func (s *EventService) handleGetGroup(ctx context.Context, event models.Event) (
 		zap.String("group_id", groupID.String()))
 
 	// Get the group
-	group, err := s.dbClient.GetGroup(ctx, groupID)
+	group, err := s.DBClient.GetGroup(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group: %w", err)
 	}
@@ -244,7 +242,7 @@ func (s *EventService) handleUpdateGroup(ctx context.Context, event models.Event
 	}
 
 	// Update the group
-	group, err := s.dbClient.UpdateGroup(ctx, groupID, data.Data)
+	group, err := s.DBClient.UpdateGroup(ctx, groupID, data.Data)
 	if err != nil {
 		return nil, fmt.Errorf("error updating group: %w", err)
 	}
@@ -280,7 +278,7 @@ func (s *EventService) handleDeleteGroup(ctx context.Context, event models.Event
 	}
 
 	// Delete the group
-	if err := s.dbClient.DeleteGroup(ctx, groupID); err != nil {
+	if err := s.DBClient.DeleteGroup(ctx, groupID); err != nil {
 		return nil, fmt.Errorf("error deleting group: %w", err)
 	}
 
@@ -322,7 +320,7 @@ func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Ev
 	}
 
 	// Verify the user adding the member is an admin
-	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID, req.AddedBy)
+	isAdmin, err := s.DBClient.IsGroupAdmin(ctx, req.GroupID, req.AddedBy)
 	if err != nil {
 		errMsg := fmt.Errorf("error checking admin status: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
@@ -337,7 +335,7 @@ func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Ev
 
 	// Check if the group is hierarchical and if we're adding an admin
 	if req.Role == "admin" {
-		group, err := s.dbClient.GetGroup(ctx, groupID)
+		group, err := s.DBClient.GetGroup(ctx, groupID)
 		if err != nil {
 			errMsg := fmt.Errorf("error getting group: %w", err)
 			resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
@@ -346,7 +344,7 @@ func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Ev
 
 		if group.IsHierarchical && group.ParentGroupID != nil {
 			// Check if the user is an admin of the parent group
-			parentAdmin, err := s.dbClient.IsGroupAdmin(ctx, group.ParentGroupID.String(), req.AddedBy)
+			parentAdmin, err := s.DBClient.IsGroupAdmin(ctx, group.ParentGroupID.String(), req.AddedBy)
 			if err != nil {
 				errMsg := fmt.Errorf("error checking parent group admin status: %w", err)
 				resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
@@ -362,7 +360,7 @@ func (s *EventService) handleAddGroupMember(ctx context.Context, event models.Ev
 	}
 
 	// Add the member to the group
-	member, err := s.dbClient.AddGroupMember(ctx, req.GroupID, req.UserID.String(), req.Role)
+	member, err := s.DBClient.AddGroupMember(ctx, req.GroupID, req.UserID.String(), req.Role)
 	if err != nil {
 		errMsg := fmt.Errorf("error adding group member: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.add.error", errMsg)
@@ -387,7 +385,7 @@ func (s *EventService) handleListGroupMembers(ctx context.Context, event models.
 	}
 
 	// Get the list of members
-	members, err := s.dbClient.ListGroupMembers(ctx, req.GroupID)
+	members, err := s.DBClient.ListGroupMembers(ctx, req.GroupID)
 	if err != nil {
 		errMsg := fmt.Errorf("error listing group members: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.list.error", errMsg)
@@ -421,7 +419,7 @@ func (s *EventService) handleGetGroupMember(ctx context.Context, event models.Ev
 	}
 
 	// Get the group member from the database
-	member, err := s.dbClient.GetGroupMember(ctx, requestData.GroupID, requestData.UserID)
+	member, err := s.DBClient.GetGroupMember(ctx, requestData.GroupID, requestData.UserID)
 	if err != nil {
 		s.logger.Error("Error getting group member",
 			zap.String("group_id", requestData.GroupID),
@@ -461,7 +459,7 @@ func (s *EventService) handleUpdateGroupMember(ctx context.Context, event models
 	}
 
 	// Update the group
-	err3 := s.dbClient.UpdateGroupMember(ctx, req.GroupID, req.UserEmail, req.Role)
+	err3 := s.DBClient.UpdateGroupMember(ctx, req.GroupID, req.UserEmail, req.Role)
 	if err3 != nil {
 		return nil, fmt.Errorf("error updating group: %w", err)
 	}
@@ -489,7 +487,7 @@ func (s *EventService) handleRemoveGroupMember(ctx context.Context, event models
 	}
 
 	// Remove the member from the group
-	err := s.dbClient.RemoveGroupMember(ctx, req.GroupID, req.UserEmail)
+	err := s.DBClient.RemoveGroupMember(ctx, req.GroupID, req.UserEmail)
 	if err != nil {
 		errMsg := fmt.Errorf("error removing group member: %w", err)
 		resp := models.NewErrorResponse(event.ID, "group.member.remove.error", errMsg)
@@ -514,7 +512,7 @@ func (s *EventService) handleListUserGroups(ctx context.Context, event models.Ev
 	}
 
 	// Get the list of groups for the user
-	groups, err := s.dbClient.ListUserGroups(ctx, req.UserID)
+	groups, err := s.DBClient.ListUserGroups(ctx, req.UserID)
 	if err != nil {
 		errMsg := fmt.Errorf("error listing user groups: %w", err)
 		resp := models.NewErrorResponse(event.ID, "user.groups.list.error", errMsg)
@@ -565,7 +563,7 @@ func (s *EventService) handleCreateInvitation(ctx context.Context, event models.
 	}
 
 	// Check if the inviter is an admin of the group
-	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, req.GroupID.String(), req.InvitedBy)
+	isAdmin, err := s.DBClient.IsGroupAdmin(ctx, req.GroupID.String(), req.InvitedBy)
 	if err != nil {
 		return nil, fmt.Errorf("error checking admin status: %w", err)
 	}
@@ -575,7 +573,7 @@ func (s *EventService) handleCreateInvitation(ctx context.Context, event models.
 	}
 
 	// Create the invitation
-	invitation, err := s.dbClient.CreateInvitation(
+	invitation, err := s.DBClient.CreateInvitation(
 		ctx,
 		req.GroupID.String(),
 		req.UserEmail,
@@ -611,7 +609,7 @@ func (s *EventService) handleAcceptInvitation(ctx context.Context, event models.
 	}
 
 	// Get the invitation
-	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	invitation, err := s.DBClient.GetInvitation(ctx, invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting invitation: %w", err)
 	}
@@ -626,12 +624,12 @@ func (s *EventService) handleAcceptInvitation(ctx context.Context, event models.
 	}
 
 	// Update the invitation status to accepted
-	if err := s.dbClient.RespondToInvitation(ctx, invitationID, "accepted"); err != nil {
+	if err := s.DBClient.RespondToInvitation(ctx, invitationID, "accepted"); err != nil {
 		return nil, fmt.Errorf("error accepting invitation: %w", err)
 	}
 
 	// Add user to the group as a member
-	_, err = s.dbClient.AddGroupMember(ctx, invitation.GroupID.String(), invitation.UserEmail, "member")
+	_, err = s.DBClient.AddGroupMember(ctx, invitation.GroupID.String(), invitation.UserEmail, "member")
 	if err != nil {
 		return nil, fmt.Errorf("error adding user to group: %w", err)
 	}
@@ -662,7 +660,7 @@ func (s *EventService) handleRejectInvitation(ctx context.Context, event models.
 	}
 
 	// Get the invitation
-	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	invitation, err := s.DBClient.GetInvitation(ctx, invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting invitation: %w", err)
 	}
@@ -677,7 +675,7 @@ func (s *EventService) handleRejectInvitation(ctx context.Context, event models.
 	}
 
 	// Update the invitation status to rejected
-	if err := s.dbClient.RespondToInvitation(ctx, invitationID, "rejected"); err != nil {
+	if err := s.DBClient.RespondToInvitation(ctx, invitationID, "rejected"); err != nil {
 		return nil, fmt.Errorf("error rejecting invitation: %w", err)
 	}
 
@@ -704,7 +702,7 @@ func (s *EventService) handleListInvitations(ctx context.Context, event models.E
 	status, _ := event.Data["status"].(string) // Optional status filter
 
 	// Get the invitations
-	invitations, err := s.dbClient.ListUserInvitations(ctx, userID, status)
+	invitations, err := s.DBClient.ListUserInvitations(ctx, userID, status)
 	if err != nil {
 		return nil, fmt.Errorf("error listing invitations: %w", err)
 	}
@@ -731,7 +729,7 @@ func (s *EventService) handleGetInvitation(ctx context.Context, event models.Eve
 	}
 
 	// Get the invitation
-	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	invitation, err := s.DBClient.GetInvitation(ctx, invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting invitation: %w", err)
 	}
@@ -767,7 +765,7 @@ func (s *EventService) handleCancelInvitation(ctx context.Context, event models.
 	}
 
 	// Get the invitation to verify ownership
-	invitation, err := s.dbClient.GetInvitation(ctx, invitationID)
+	invitation, err := s.DBClient.GetInvitation(ctx, invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting invitation: %w", err)
 	}
@@ -783,7 +781,7 @@ func (s *EventService) handleCancelInvitation(ctx context.Context, event models.
 	}
 
 	// Check if the user is the one who created the invitation or a group admin
-	isAdmin, err := s.dbClient.IsGroupAdmin(ctx, invitation.GroupID.String(), userUUID)
+	isAdmin, err := s.DBClient.IsGroupAdmin(ctx, invitation.GroupID.String(), userUUID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking admin status: %w", err)
 	}
@@ -794,7 +792,7 @@ func (s *EventService) handleCancelInvitation(ctx context.Context, event models.
 	}
 
 	// Delete the invitation
-	err = s.dbClient.DeleteInvitation(ctx, invitationID)
+	err = s.DBClient.DeleteInvitation(ctx, invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("error canceling invitation: %w", err)
 	}
@@ -836,7 +834,7 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 	}
 
 	// Check if the user is a member of the group
-	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	isMember, err := s.DBClient.IsGroupMember(ctx, groupID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking group membership: %w", err)
 	}
@@ -851,7 +849,7 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 	}
 
 	// Check if the group is hierarchical
-	group, err := s.dbClient.GetGroup(ctx, groupUUID)
+	group, err := s.DBClient.GetGroup(ctx, groupUUID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group: %w", err)
 	}
@@ -863,7 +861,7 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 			return nil, fmt.Errorf("invalid user ID: %w", err)
 		}
 
-		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		isAdmin, err := s.DBClient.IsGroupAdmin(ctx, groupID, userUUID)
 		if err != nil {
 			return nil, fmt.Errorf("error checking admin status: %w", err)
 		}
@@ -873,20 +871,20 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 		}
 
 		// For hierarchical groups, create the event with status 'accepted'
-		groupEvent, err := s.dbClient.CreateGroupEvent(ctx, groupID, eventID, userID, "accepted", true)
+		groupEvent, err := s.DBClient.CreateGroupEvent(ctx, groupID, eventID, userID, "accepted", true)
 		if err != nil {
 			return nil, fmt.Errorf("error creating group event: %w", err)
 		}
 
 		// For hierarchical groups, automatically accept the event for all members
-		members, err := s.dbClient.ListGroupMembers(ctx, groupID)
+		members, err := s.DBClient.ListGroupMembers(ctx, groupID)
 		if err != nil {
 			return nil, fmt.Errorf("error getting group members: %w", err)
 		}
 
 		// Add and set status for each member
 		for _, member := range members {
-			_, err := s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
+			_, err := s.DBClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
 			if err != nil {
 				s.logger.Error("Failed to add event status for member",
 					zap.String("event_id", eventID),
@@ -910,13 +908,13 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 	}
 
 	// For non-hierarchical groups, create the event with status 'pending'
-	groupEvent, err := s.dbClient.CreateGroupEvent(ctx, groupID, eventID, userID, "pending", false)
+	groupEvent, err := s.DBClient.CreateGroupEvent(ctx, groupID, eventID, userID, "pending", false)
 	if err != nil {
 		return nil, fmt.Errorf("error creating group event: %w", err)
 	}
 
 	// For non-hierarchical groups, set to pending the event for all members
-	members, err := s.dbClient.ListGroupMembers(ctx, groupID)
+	members, err := s.DBClient.ListGroupMembers(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group members: %w", err)
 	}
@@ -924,9 +922,9 @@ func (s *EventService) handleCreateGroupEvent(ctx context.Context, event models.
 	// Add and set status for each member
 	for _, member := range members {
 		if member.UserID.String() == userID {
-			_, err = s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
+			_, err = s.DBClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "accepted")
 		} else {
-			_, err = s.dbClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "pending")
+			_, err = s.DBClient.AddEventStatus(ctx, eventID, groupID, member.UserID.String(), "pending")
 		}
 
 		if err != nil {
@@ -974,7 +972,7 @@ func (s *EventService) handleGetGroupEvent(ctx context.Context, event models.Eve
 	}
 
 	// Check if the user is a member of the group
-	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	isMember, err := s.DBClient.IsGroupMember(ctx, groupID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking group membership: %w", err)
 	}
@@ -983,13 +981,13 @@ func (s *EventService) handleGetGroupEvent(ctx context.Context, event models.Eve
 	}
 
 	// Get the group event
-	groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+	groupEvent, err := s.DBClient.GetGroupEvent(ctx, groupID, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group event: %w", err)
 	}
 
 	// Get the user's status for this event
-	eventStatus, err := s.dbClient.GetEventStatus(ctx, eventID, userID)
+	eventStatus, err := s.DBClient.GetEventStatus(ctx, eventID, userID)
 	if err != nil && !strings.Contains(err.Error(), "not found") {
 		return nil, fmt.Errorf("error getting event status: %w", err)
 	}
@@ -997,7 +995,7 @@ func (s *EventService) handleGetGroupEvent(ctx context.Context, event models.Eve
 	// For non-hierarchical groups, check if all members have accepted
 	var allAccepted bool
 	if !groupEvent.IsHierarchical {
-		allAccepted, err = s.dbClient.HasAllMembersAccepted(ctx, eventID, groupID)
+		allAccepted, err = s.DBClient.HasAllMembersAccepted(ctx, eventID, groupID)
 		if err != nil {
 			s.logger.Error("Error checking if all members have accepted",
 				zap.String("event_id", eventID),
@@ -1046,7 +1044,7 @@ func (s *EventService) handleDeleteGroupEvent(ctx context.Context, event models.
 	}
 
 	// Get the group event first to check permissions
-	groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+	groupEvent, err := s.DBClient.GetGroupEvent(ctx, groupID, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group event: %w", err)
 	}
@@ -1059,7 +1057,7 @@ func (s *EventService) handleDeleteGroupEvent(ctx context.Context, event models.
 			return nil, fmt.Errorf("invalid user ID: %w", err)
 		}
 
-		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		isAdmin, err := s.DBClient.IsGroupAdmin(ctx, groupID, userUUID)
 		if err != nil {
 			return nil, fmt.Errorf("error checking admin status: %w", err)
 		}
@@ -1070,7 +1068,7 @@ func (s *EventService) handleDeleteGroupEvent(ctx context.Context, event models.
 	}
 
 	// Delete the group event
-	err = s.dbClient.DeleteGroupEvent(ctx, groupID, eventID)
+	err = s.DBClient.DeleteGroupEvent(ctx, groupID, eventID)
 	if err != nil {
 		return nil, fmt.Errorf("error deleting group event: %w", err)
 	}
@@ -1104,7 +1102,7 @@ func (s *EventService) handleListGroupEvents(ctx context.Context, event models.E
 	}
 
 	// Check if the user is a member of the group
-	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	isMember, err := s.DBClient.IsGroupMember(ctx, groupID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking group membership: %w", err)
 	}
@@ -1113,7 +1111,7 @@ func (s *EventService) handleListGroupEvents(ctx context.Context, event models.E
 	}
 
 	// Get all events for the group
-	groupEvents, err := s.dbClient.ListGroupEvents(ctx, groupID)
+	groupEvents, err := s.DBClient.ListGroupEvents(ctx, groupID)
 	if err != nil {
 		return nil, fmt.Errorf("error listing group events: %w", err)
 	}
@@ -1132,7 +1130,7 @@ func (s *EventService) handleListGroupEvents(ctx context.Context, event models.E
 		}
 
 		// Get the user's status for this event
-		eventStatus, err := s.dbClient.GetEventStatus(ctx, ge.EventID, userID)
+		eventStatus, err := s.DBClient.GetEventStatus(ctx, ge.EventID, userID)
 		if err == nil && eventStatus != nil {
 			eventData["user_status"] = eventStatus.Status
 		}
@@ -1191,7 +1189,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 	}
 
 	// Check if the user is a member of the group
-	isMember, err := s.dbClient.IsGroupMember(ctx, groupID, userID)
+	isMember, err := s.DBClient.IsGroupMember(ctx, groupID, userID)
 	if err != nil {
 		return nil, fmt.Errorf("error checking group membership: %w", err)
 	}
@@ -1208,7 +1206,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 	}
 
 	// Check if the group is hierarchical
-	group, err := s.dbClient.GetGroup(ctx, groupUUID)
+	group, err := s.DBClient.GetGroup(ctx, groupUUID)
 	if err != nil {
 		return nil, fmt.Errorf("error getting group: %w", err)
 	}
@@ -1221,7 +1219,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 			return nil, fmt.Errorf("invalid user ID: %w", err)
 		}
 
-		isAdmin, err := s.dbClient.IsGroupAdmin(ctx, groupID, userUUID)
+		isAdmin, err := s.DBClient.IsGroupAdmin(ctx, groupID, userUUID)
 		if err != nil {
 			return nil, fmt.Errorf("error checking admin status: %w", err)
 		}
@@ -1232,7 +1230,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 	}
 
 	// Update the event status
-	eventStatus, err := s.dbClient.UpdateEventStatus(ctx, eventID, userID, status)
+	eventStatus, err := s.DBClient.UpdateEventStatus(ctx, eventID, userID, status)
 	if err != nil {
 		return nil, fmt.Errorf("error updating event status: %w", err)
 	}
@@ -1240,7 +1238,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 	// For non-hierarchical groups, check if all members have accepted
 	var allAccepted bool
 	if !group.IsHierarchical && status == "accepted" {
-		allAccepted, err = s.dbClient.HasAllMembersAccepted(ctx, eventID, groupID)
+		allAccepted, err = s.DBClient.HasAllMembersAccepted(ctx, eventID, groupID)
 		if err != nil {
 			s.logger.Error("Error checking if all members have accepted",
 				zap.String("event_id", eventID),
@@ -1251,7 +1249,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 		// If all members have accepted, update the event status to 'accepted'
 		if allAccepted {
 			// First, get the current event to preserve its hierarchical status
-			groupEvent, err := s.dbClient.GetGroupEvent(ctx, groupID, eventID)
+			groupEvent, err := s.DBClient.GetGroupEvent(ctx, groupID, eventID)
 			if err != nil {
 				s.logger.Error("Error getting group event details",
 					zap.String("event_id", eventID),
@@ -1261,7 +1259,7 @@ func (s *EventService) handleUpdateGroupEventStatus(ctx context.Context, event m
 			}
 
 			// Update the event status while preserving the existing hierarchical status
-			_, err = s.dbClient.UpdateGroupEvent(ctx, groupID, eventID, "accepted", groupEvent.IsHierarchical)
+			_, err = s.DBClient.UpdateGroupEvent(ctx, groupID, eventID, "accepted", groupEvent.IsHierarchical)
 			if err != nil {
 				s.logger.Error("Error updating group event status to accepted",
 					zap.String("event_id", eventID),
@@ -1303,7 +1301,7 @@ func (s *EventService) handleGetGroupEventStatus(ctx context.Context, event mode
 	}
 
 	// Get the event status
-	eventStatus, err := s.dbClient.GetEventStatus(ctx, eventID, userID)
+	eventStatus, err := s.DBClient.GetEventStatus(ctx, eventID, userID)
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return &models.EventResponse{

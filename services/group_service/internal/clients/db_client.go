@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/agenda-distribuida/group-service/internal/models"
@@ -19,6 +20,7 @@ type DBServiceClient struct {
 	baseURL string
 	client  *http.Client
 	logger  *zap.Logger
+	mu      sync.RWMutex
 }
 
 type apiResponse struct {
@@ -64,6 +66,13 @@ func (c *DBServiceClient) doRequest(ctx context.Context, method, url string, bod
 	}
 
 	return respBody, nil
+}
+
+// SetBaseURL updates the base URL of the client
+func (c *DBServiceClient) SetBaseURL(baseURL string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.baseURL = strings.TrimSuffix(baseURL, "/")
 }
 
 // Group-related methods
@@ -562,7 +571,7 @@ func (c *DBServiceClient) ListUserInvitations(ctx context.Context, userID, statu
 	}
 
 	var resp struct {
-		Status string                           `json:"status"`
+		Status string                            `json:"status"`
 		Data   []*models.GroupInvitationResponse `json:"data"`
 	}
 
@@ -1039,68 +1048,10 @@ func (c *DBServiceClient) UpdateGroupEvent(ctx context.Context, groupID, eventID
 	return &resp.Data, nil
 }
 
-// RaftNodeInfo represents information about a Raft node
-type RaftNodeInfo struct {
-	ID         string `json:"id"`
-	State      string `json:"state"`
-	Term       int    `json:"term"`
-	LeaderID   string `json:"leader_id"`
-}
-
-// FindAndUpdateLeader busca el líder actualizando el baseURL
-func (c *DBServiceClient) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	// Intentar con las URLs de nodos Raft proporcionadas
-	for _, nodeURL := range raftNodes {
-		// Limpiar URL
-		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
-		
-		// Hacer ping al nodo para ver si es líder
-		if c.isNodeLeader(ctx, nodeURL) {
-			c.baseURL = nodeURL
-			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
-			return nil
-		}
-	}
-	
-	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", raftNodes)
-}
-
-// isNodeLeader verifica si un nodo específico es el líder
-func (c *DBServiceClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
-	url := fmt.Sprintf("%s/raft/status", nodeURL)
-	
-	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-	if err != nil {
-		return false
-	}
-
-	resp, err := c.client.Do(req)
-	if err != nil {
-		return false
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return false
-	}
-
-	var nodeInfo RaftNodeInfo
-	if err := json.Unmarshal(body, &nodeInfo); err != nil {
-		return false
-	}
-
-	return nodeInfo.State == "Leader"
-}
-
 // GetRedisPrimary obtiene la dirección del Redis primary desde el DB service
 func (c *DBServiceClient) GetRedisPrimary(ctx context.Context) (string, error) {
 	url := fmt.Sprintf("%s/api/v1/configs/redis_primary", c.baseURL)
-	
+
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return "", err
