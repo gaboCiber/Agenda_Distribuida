@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -43,9 +44,49 @@ func main() {
 	log.Printf("Supervisor Bind Address: %s", cfg.SupervisorBindAddr)
 	log.Printf("Supervisor Peers: %v", cfg.SupervisorPeers)
 
+	// Get the service URL (host:port)
+	host, port, err := net.SplitHostPort(cfg.SupervisorBindAddr)
+	if err != nil {
+		log.Fatalf("Invalid supervisor bind address: %v", err)
+	}
+	if host == "" || host == "0.0.0.0" {
+		host = getOutboundIP().String()
+	}
+	serviceURL := fmt.Sprintf("http://%s:%s", host, port)
+
 	// Initialize clients
 	redisClient := clients.NewRedisClient()
-	dbClient := clients.NewDBClient(cfg.DBServiceURL, cfg.RaftNodesURLs)
+	dbClient := clients.NewDBClient(
+		cfg.DBServiceURL,
+		cfg.RaftNodesURLs,
+		"redis-"+cfg.SupervisorID,
+		serviceURL,
+	)
+
+	// Register the service with the registry
+	metadata := fmt.Sprintf(`{"supervisor_id":"%s","peers":%v}`, cfg.SupervisorID, cfg.SupervisorPeers)
+	if err := dbClient.RegisterService(metadata); err != nil {
+		log.Printf("Warning: Failed to register service: %v", err)
+	} else {
+		log.Printf("Successfully registered service with URL: %s", serviceURL)
+		defer func() {
+			if err := dbClient.DeregisterService(); err != nil {
+				log.Printf("Failed to deregister service: %v", err)
+			} else {
+				log.Println("Successfully deregistered service")
+			}
+		}()
+	}
+
+	// Log discovered services
+	if services, err := dbClient.ListServices(); err != nil {
+		log.Printf("Failed to list services: %v", err)
+	} else {
+		log.Printf("Discovered %d services in registry", len(services))
+		for _, svc := range services {
+			log.Printf("- %s at %s", svc.ServiceName, svc.Address)
+		}
+	}
 
 	// Initialize and start the leader elector
 	peersMap := make(map[string]string)
@@ -91,4 +132,17 @@ func main() {
 	}
 
 	log.Println("Redis Supervisor Service shutting down gracefully.")
+}
+
+// getOutboundIP gets the preferred outbound IP address of this machine
+func getOutboundIP() net.IP {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		log.Printf("Warning: Could not determine outbound IP, using 127.0.0.1: %v", err)
+		return net.IPv4(127, 0, 0, 1)
+	}
+	defer conn.Close()
+
+	localAddr := conn.LocalAddr().(*net.UDPAddr)
+	return localAddr.IP
 }
