@@ -9,6 +9,7 @@ import (
 
 type Config struct {
 	Server struct {
+		Name         string
 		Host         string
 		Port         string
 		ReadTimeout  time.Duration
@@ -38,6 +39,7 @@ func Load() *Config {
 	cfg := &Config{}
 
 	// Server configuration
+	cfg.Server.Name = getEnv("SERVER_NAME", "api-gateway")
 	cfg.Server.Host = getEnv("SERVER_HOST", "0.0.0.0")
 	cfg.Server.Port = getEnv("SERVER_PORT", "8080")
 	cfg.Server.ReadTimeout = getEnvAsDuration("SERVER_READ_TIMEOUT", "10s")

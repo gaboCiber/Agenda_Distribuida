@@ -22,7 +22,7 @@ func NewEventService(dbClient *clients.DBClient, logger *zap.Logger) *EventServi
 
 // FindAndUpdateLeader busca y actualiza el líder del cluster Raft
 func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	return s.dbClient.FindAndUpdateLeader(ctx, raftNodes)
+	return s.dbClient.FindAndUpdateLeader(ctx)
 }
 
 // UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado

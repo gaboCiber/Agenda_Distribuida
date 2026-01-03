@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -44,8 +46,50 @@ func main() {
 	}
 	logger.Info("Redis connection attempted", zap.String("url", cfg.Redis.URL))
 
-	// Initialize DB client
-	dbClient := clients.NewDBClient(cfg.DBService.URL, logger)
+	// Get the host and port for this service
+	host, err := GetContainerIP()
+	if err != nil {
+		logger.Error("Failed to get container IP", zap.Error(err))
+		os.Exit(1)
+	}
+
+	logger.Info("Container IP", zap.String("ip", host))
+
+	cfg.Server.Host = host
+	serviceAddr := fmt.Sprintf("%s:%s", host, cfg.Server.Port)
+
+	// Initialize DB client with registry support
+	dbClient := clients.NewDBClient(cfg.Server.Name, serviceAddr, cfg.DBService.URL, logger)
+	// Set Raft nodes for leader discovery
+	dbClient.SetRaftNodes(cfg.RaftNodesURLs)
+
+	// Register this service
+	if err := dbClient.RegisterService(""); err != nil {
+		logger.Error("Failed to register service", zap.Error(err))
+	} else {
+		logger.Info("Successfully registered service with registry")
+
+		// List all registered services for debugging
+		if services, err := dbClient.ListServices(); err != nil {
+			logger.Error("Failed to list services", zap.Error(err))
+		} else {
+			logger.Info("Discovered services in registry", zap.Int("count", len(services)))
+			for _, svc := range services {
+				logger.Info("Service",
+					zap.String("name", svc.ServiceName),
+					zap.String("address", svc.Address))
+			}
+		}
+
+		// Deregister on shutdown
+		defer func() {
+			if err := dbClient.DeregisterService(); err != nil {
+				logger.Error("Failed to deregister service", zap.Error(err))
+			} else {
+				logger.Info("Successfully deregistered service")
+			}
+		}()
+	}
 
 	// Initialize EventService
 	eventService := services.NewEventService(dbClient, logger)
@@ -180,6 +224,68 @@ func main() {
 	}
 
 	logger.Info("Server exited")
+}
+
+// GetContainerIP obtiene la IP del contenedor actual
+func GetContainerIP() (string, error) {
+	// Primero intentamos con el nombre del host (funciona en Docker)
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" {
+		// Intentar resolver el hostname a una IP
+		addrs, err := net.LookupIP(hostname)
+		if err == nil {
+			for _, addr := range addrs {
+				if ipv4 := addr.To4(); ipv4 != nil {
+					return ipv4.String(), nil
+				}
+			}
+		}
+	}
+
+	// Si lo anterior falla, intentamos con las interfaces de red
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("error obteniendo interfaces de red: %v", err)
+	}
+
+	for _, iface := range ifaces {
+		// Ignorar interfaces apagadas o loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Verificar que sea una dirección IPv4 válida
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+
+			// Verificar que no sea una dirección link-local
+			if !ip.IsLinkLocalUnicast() {
+				return ip.String(), nil
+			}
+		}
+	}
+
+	// Último recurso: usar la variable de entorno HOSTNAME (común en Docker)
+	if hostIP := os.Getenv("HOSTNAME"); hostIP != "" {
+		return hostIP, nil
+	}
+
+	return "", fmt.Errorf("no se pudo determinar la IP del contenedor")
 }
 
 func initLogger(level string) *zap.Logger {
