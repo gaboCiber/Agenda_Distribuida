@@ -50,7 +50,8 @@ REDIS_SUPERVISOR_4_NAME="agenda-redis-supervisor-sup-4"
 REDIS_SUPERVISOR_5_NAME="agenda-redis-supervisor-sup-5"
 REDIS_SUPERVISOR_6_NAME="agenda-redis-supervisor-sup-6"
 
-PEERS_LIST="sup-1=${REDIS_SUPERVISOR_1_NAME}:6001,sup-2=${REDIS_SUPERVISOR_2_NAME}:6002,sup-3=${REDIS_SUPERVISOR_3_NAME}:6003,sup-4=${REDIS_SUPERVISOR_4_NAME}:6004,sup-5=${REDIS_SUPERVISOR_5_NAME}:6005,sup-6=${REDIS_SUPERVISOR_6_NAME}:6006"
+PEERS_LIST="sup-1=${REDIS_SUPERVISOR_1_NAME}:6001,sup-2=${REDIS_SUPERVISOR_2_NAME}:6002,sup-3=${REDIS_SUPERVISOR_3_NAME}:6003,sup-4=${REDIS_SUPERVISOR_4_NAME}:6004,sup-5=${REDIS_SUPERVISOR_5_NAME}:6005,sup-6=${REDIS_SUPERVISOR_6_NAME}:6006"    
+RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006"
 
 start_redis() {
     echo "Starting Redis cluster + supervisor (PC1 nodes)..."
@@ -95,7 +96,7 @@ start_redis() {
       -p 6001:6001 -p 8080:8080 \
       -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379,${REDIS_D_NAME}:6379,${REDIS_E_NAME}:6379,${REDIS_F_NAME}:6379" \
       -e DB_SERVICE_URL="http://agenda-db-raft-node-1:8001" \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e SUPERVISOR_ID=sup-1 \
       -e SUPERVISOR_BIND_ADDR=:6001 \
       -e HTTP_PORT=8080 \
@@ -109,7 +110,7 @@ start_redis() {
       -p 6002:6002 -p 8081:8081 \
       -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379,${REDIS_D_NAME}:6379,${REDIS_E_NAME}:6379,${REDIS_F_NAME}:6379" \
       -e DB_SERVICE_URL="http://agenda-db-raft-node-1:8001" \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e SUPERVISOR_ID=sup-2 \
       -e SUPERVISOR_BIND_ADDR=:6002 \
       -e HTTP_PORT=8081 \
@@ -123,7 +124,7 @@ start_redis() {
       -p 6003:6003 -p 8082:8082 \
       -e REDIS_ADDRS="${REDIS_A_NAME}:6379,${REDIS_B_NAME}:6379,${REDIS_C_NAME}:6379,${REDIS_D_NAME}:6379,${REDIS_E_NAME}:6379,${REDIS_F_NAME}:6379" \
       -e DB_SERVICE_URL="http://agenda-db-raft-node-1:8001" \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e SUPERVISOR_ID=sup-3 \
       -e SUPERVISOR_BIND_ADDR=:6003 \
       -e HTTP_PORT=8082 \
@@ -197,10 +198,11 @@ start_user() {
     # User Service 1
     docker run -d --name agenda-user-service-1 --network $NETWORK_NAME \
       -p 8007:8007 \
+      -e SERVICE_NAME=user-service-1 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=user_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=1 \
       agenda-user_event
@@ -209,10 +211,11 @@ start_user() {
     # User Service 2
     docker run -d --name agenda-user-service-2 --network $NETWORK_NAME \
       -p 8008:8007 \
+      -e SERVICE_NAME=user-service-2 \
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e REDIS_CHANNEL=user_events_2 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=2 \
       agenda-user_event
@@ -221,10 +224,11 @@ start_user() {
     # User Service 3
     docker run -d --name agenda-user-service-3 --network $NETWORK_NAME \
       -p 8009:8007 \
+      -e SERVICE_NAME=user-service-3 \
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e REDIS_CHANNEL=user_events_3 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=3 \
       agenda-user_event
@@ -237,10 +241,11 @@ start_group() {
     # Group Service 1
     docker run -d --name agenda-group-service-1 --network $NETWORK_NAME \
       -p 8010:8008 \
+      -e SERVICE_NAME=group-service-1 \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e REDIS_CHANNEL=group_events_1 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=1 \
       agenda-group_event
@@ -249,10 +254,11 @@ start_group() {
     # Group Service 2
     docker run -d --name agenda-group-service-2 --network $NETWORK_NAME \
       -p 8011:8008 \
+      -e SERVICE_NAME=group-service-2 \
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e REDIS_CHANNEL=group_events_2 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=2 \
       agenda-group_event
@@ -261,10 +267,11 @@ start_group() {
     # Group Service 3
     docker run -d --name agenda-group-service-3 --network $NETWORK_NAME \
       -p 8012:8008 \
+      -e SERVICE_NAME=group-service-3 \
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e REDIS_CHANNEL=group_events_3 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e LOG_LEVEL=debug \
       -e INSTANCE_ID=3 \
       agenda-group_event
@@ -277,9 +284,10 @@ start_api() {
     # API Gateway 1
     docker run -d --name agenda-api-gateway-1 --network $NETWORK_NAME \
       -p 8070:8080 \
+      -e SERVER_NAME="api-gateway-1" \
       -e REDIS_URL=redis://agenda-redis-a-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-1:8001 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
       -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
@@ -292,9 +300,10 @@ start_api() {
     # API Gateway 2
     docker run -d --name agenda-api-gateway-2 --network $NETWORK_NAME \
       -p 8071:8080 \
+      -e SERVER_NAME="api-gateway-2" \
       -e REDIS_URL=redis://agenda-redis-b-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-2:8002 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
       -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
@@ -307,9 +316,10 @@ start_api() {
     # API Gateway 3
     docker run -d --name agenda-api-gateway-3 --network $NETWORK_NAME \
       -p 8072:8080 \
+      -e SERVER_NAME="api-gateway-3" \
       -e REDIS_URL=redis://agenda-redis-c-service:6379 \
       -e DB_SERVICE_URL=http://agenda-db-raft-node-3:8003 \
-      -e RAFT_NODES_URLS="http://agenda-db-raft-node-1:8001,http://agenda-db-raft-node-2:8002,http://agenda-db-raft-node-3:8003,http://agenda-db-raft-node-4:8004,http://agenda-db-raft-node-5:8005,http://agenda-db-raft-node-6:8006" \
+      -e RAFT_NODES_URLS=$RAFT_NODES_URLS \
       -e USER_NODES_URLS="agenda-user-service-1:8007,agenda-user-service-2:8007,agenda-user-service-3:8007,agenda-user-service-4:8007,agenda-user-service-5:8007,agenda-user-service-6:8007" \
       -e GROUP_NODES_URLS="agenda-group-service-1:8008,agenda-group-service-2:8008,agenda-group-service-3:8008,agenda-group-service-4:8008,agenda-group-service-5:8008,agenda-group-service-6:8008" \
       -e JWT_SECRET="your-secret-key-change-in-production" \
