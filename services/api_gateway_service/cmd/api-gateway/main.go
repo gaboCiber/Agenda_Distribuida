@@ -55,7 +55,6 @@ func main() {
 
 	logger.Info("Container IP", zap.String("ip", host))
 
-	cfg.Server.Host = host
 	serviceAddr := fmt.Sprintf("%s:%s", host, cfg.Server.Port)
 
 	// Initialize DB client with registry support

@@ -45,13 +45,17 @@ func main() {
 	log.Printf("Supervisor Peers: %v", cfg.SupervisorPeers)
 
 	// Get the service URL (host:port)
-	host, port, err := net.SplitHostPort(cfg.SupervisorBindAddr)
+	_, port, err := net.SplitHostPort(cfg.SupervisorBindAddr)
 	if err != nil {
 		log.Fatalf("Invalid supervisor bind address: %v", err)
 	}
-	if host == "" || host == "0.0.0.0" {
-		host = getOutboundIP().String()
+	host, err := GetContainerIP()
+	if err != nil {
+		log.Printf("Failed to get container IP")
+		os.Exit(1)
 	}
+	log.Printf("Container IP: %s", host)
+
 	serviceURL := fmt.Sprintf("http://%s:%s", host, port)
 
 	// Initialize clients
@@ -135,14 +139,63 @@ func main() {
 }
 
 // getOutboundIP gets the preferred outbound IP address of this machine
-func getOutboundIP() net.IP {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		log.Printf("Warning: Could not determine outbound IP, using 127.0.0.1: %v", err)
-		return net.IPv4(127, 0, 0, 1)
+func GetContainerIP() (string, error) {
+	// Primero intentamos con el nombre del host (funciona en Docker)
+	hostname, err := os.Hostname()
+	if err == nil && hostname != "" {
+		// Intentar resolver el hostname a una IP
+		addrs, err := net.LookupIP(hostname)
+		if err == nil {
+			for _, addr := range addrs {
+				if ipv4 := addr.To4(); ipv4 != nil {
+					return ipv4.String(), nil
+				}
+			}
+		}
 	}
-	defer conn.Close()
 
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	return localAddr.IP
+	// Si lo anterior falla, intentamos con las interfaces de red
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return "", fmt.Errorf("error obteniendo interfaces de red: %v", err)
+	}
+
+	for _, iface := range ifaces {
+		// Ignorar interfaces apagadas o loopback
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+
+		for _, addr := range addrs {
+			var ip net.IP
+			switch v := addr.(type) {
+			case *net.IPNet:
+				ip = v.IP
+			case *net.IPAddr:
+				ip = v.IP
+			}
+
+			// Verificar que sea una dirección IPv4 válida
+			if ip == nil || ip.IsLoopback() || ip.To4() == nil {
+				continue
+			}
+
+			// Verificar que no sea una dirección link-local
+			if !ip.IsLinkLocalUnicast() {
+				return ip.String(), nil
+			}
+		}
+	}
+
+	// Último recurso: usar la variable de entorno HOSTNAME (común en Docker)
+	if hostIP := os.Getenv("HOSTNAME"); hostIP != "" {
+		return hostIP, nil
+	}
+
+	return "", fmt.Errorf("no se pudo determinar la IP del contenedor")
 }
