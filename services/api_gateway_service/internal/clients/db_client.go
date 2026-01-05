@@ -58,58 +58,146 @@ func (c *DBClient) SetRaftNodes(raftNodes []string) {
 	c.raftNodes = raftNodes
 }
 
-// FindAndUpdateLeader busca el líder actualizando el baseURL
+// // FindAndUpdateLeader busca el líder actualizando el baseURL
+// func (c *DBClient) FindAndUpdateLeader(ctx context.Context) error {
+// 	if len(c.raftNodes) == 0 {
+// 		return fmt.Errorf("no Raft nodes configured for leader discovery")
+// 	}
+
+// 	// Intentar con las URLs de nodos Raft configuradas
+// 	for _, nodeURL := range c.raftNodes {
+// 		// Limpiar URL
+// 		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+
+// 		// Hacer ping al nodo para ver si es líder
+// 		if c.isNodeLeader(ctx, nodeURL) {
+// 			c.baseURL = nodeURL
+// 			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
+// 			return nil
+// 		}
+// 	}
+
+// 	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", c.raftNodes)
+// }
+
+// // isNodeLeader verifica si un nodo específico es el líder
+// func (c *DBClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
+// 	url := fmt.Sprintf("%s/raft/status", nodeURL)
+
+// 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
+// 	if err != nil {
+// 		return false
+// 	}
+
+// 	resp, err := c.client.Do(req)
+// 	if err != nil {
+// 		return false
+// 	}
+// 	defer resp.Body.Close()
+
+// 	if resp.StatusCode != http.StatusOK {
+// 		return false
+// 	}
+
+// 	body, err := io.ReadAll(resp.Body)
+// 	if err != nil {
+// 		return false
+// 	}
+
+// 	var nodeInfo RaftNodeInfo
+// 	if err := json.Unmarshal(body, &nodeInfo); err != nil {
+// 		return false
+// 	}
+
+// 	return nodeInfo.State == "Leader"
+// }
+
+// FindAndUpdateLeader busca el líder actualizado del cluster Raft
 func (c *DBClient) FindAndUpdateLeader(ctx context.Context) error {
 	if len(c.raftNodes) == 0 {
 		return fmt.Errorf("no Raft nodes configured for leader discovery")
 	}
 
+	// Track the last error to provide better feedback
+	var lastErr error
+	var leaderFound bool
+
 	// Intentar con las URLs de nodos Raft configuradas
 	for _, nodeURL := range c.raftNodes {
 		// Limpiar URL
 		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+		if nodeURL == "" {
+			continue
+		}
+
+		// Create a timeout context for each node check
+		nodeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
 
 		// Hacer ping al nodo para ver si es líder
-		if c.isNodeLeader(ctx, nodeURL) {
-			c.baseURL = nodeURL
-			c.logger.Info("Líder actualizado", zap.String("new_leader", nodeURL))
-			return nil
+		isLeader, err := c.checkNodeLeader(nodeCtx, nodeURL)
+		if err != nil {
+			c.logger.Debug("Error checking node status",
+				zap.String("node", nodeURL),
+				zap.Error(err))
+			lastErr = fmt.Errorf("error checking node %s: %w", nodeURL, err)
+			continue
+		}
+
+		if isLeader {
+			// Verify the node is still the leader with a second check
+			// to prevent race conditions during leader elections
+			isStillLeader, err := c.checkNodeLeader(nodeCtx, nodeURL)
+			if err == nil && isStillLeader {
+				c.baseURL = nodeURL
+				c.logger.Info("Líder actualizado",
+					zap.String("new_leader", nodeURL))
+				leaderFound = true
+				break
+			}
 		}
 	}
 
-	return fmt.Errorf("no se encontró ningún líder en los nodos: %v", c.raftNodes)
+	if !leaderFound {
+		if lastErr != nil {
+			return fmt.Errorf("no se pudo encontrar un líder: %v", lastErr)
+		}
+		return fmt.Errorf("no se encontró ningún líder en los nodos: %v", c.raftNodes)
+	}
+
+	return nil
 }
 
-// isNodeLeader verifica si un nodo específico es el líder
-func (c *DBClient) isNodeLeader(ctx context.Context, nodeURL string) bool {
+// checkNodeLeader checks if a node is the leader, returning (isLeader, error)
+func (c *DBClient) checkNodeLeader(ctx context.Context, nodeURL string) (bool, error) {
 	url := fmt.Sprintf("%s/raft/status", nodeURL)
 
 	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("failed to create request: %w", err)
 	}
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return false
+		return false, nil // Not a leader
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false
+		return false, fmt.Errorf("failed to read response: %w", err)
 	}
 
 	var nodeInfo RaftNodeInfo
 	if err := json.Unmarshal(body, &nodeInfo); err != nil {
-		return false
+		return false, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	return nodeInfo.State == "Leader"
+	return nodeInfo.State == "Leader", nil
 }
 
 // RegisterService registers this service with the registry

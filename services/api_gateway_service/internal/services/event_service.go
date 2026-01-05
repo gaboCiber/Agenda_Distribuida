@@ -3,6 +3,7 @@ package services
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/agenda-distribuida/api-gateway-service/internal/clients"
 	"go.uber.org/zap"
@@ -27,8 +28,18 @@ func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []stri
 
 // UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado
 func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisURL string) (string, error) {
+	// Asegurarnos de consultar al líder vigente antes de pedir el primary
+	leaderCtx, cancelLeader := context.WithTimeout(ctx, 3*time.Second)
+	if err := s.dbClient.FindAndUpdateLeader(leaderCtx); err != nil {
+		s.logger.Debug("No se pudo actualizar líder antes de pedir Redis primary", zap.Error(err))
+	}
+	cancelLeader()
+
 	// Obtener el Redis primary actual desde el DB service
-	primary, err := s.dbClient.GetRedisPrimary(ctx)
+	primaryCtx, cancelPrimary := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelPrimary()
+
+	primary, err := s.dbClient.GetRedisPrimary(primaryCtx)
 	if err != nil {
 		s.logger.Warn("No se pudo obtener el Redis primary", zap.Error(err))
 		return currentRedisURL, err

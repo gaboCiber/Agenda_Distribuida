@@ -68,29 +68,29 @@ func main() {
 	)
 
 	// Register the service with the registry
-	metadata := fmt.Sprintf(`{"supervisor_id":"%s","peers":%v}`, cfg.SupervisorID, cfg.SupervisorPeers)
-	if err := dbClient.RegisterService(metadata); err != nil {
-		log.Printf("Warning: Failed to register service: %v", err)
-	} else {
-		log.Printf("Successfully registered service with URL: %s", serviceURL)
-		defer func() {
-			if err := dbClient.DeregisterService(); err != nil {
-				log.Printf("Failed to deregister service: %v", err)
-			} else {
-				log.Println("Successfully deregistered service")
-			}
-		}()
-	}
+	// metadata := fmt.Sprintf(`{"supervisor_id":"%s","peers":%v}`, cfg.SupervisorID, cfg.SupervisorPeers)
+	// if err := dbClient.RegisterService(metadata); err != nil {
+	// 	log.Printf("Warning: Failed to register service: %v", err)
+	// } else {
+	// 	log.Printf("Successfully registered service with URL: %s", serviceURL)
+	// 	defer func() {
+	// 		if err := dbClient.DeregisterService(); err != nil {
+	// 			log.Printf("Failed to deregister service: %v", err)
+	// 		} else {
+	// 			log.Println("Successfully deregistered service")
+	// 		}
+	// 	}()
+	// }
 
 	// Log discovered services
-	if services, err := dbClient.ListServices(); err != nil {
-		log.Printf("Failed to list services: %v", err)
-	} else {
-		log.Printf("Discovered %d services in registry", len(services))
-		for _, svc := range services {
-			log.Printf("- %s at %s", svc.ServiceName, svc.Address)
-		}
-	}
+	// if services, err := dbClient.ListServices(); err != nil {
+	// 	log.Printf("Failed to list services: %v", err)
+	// } else {
+	// 	log.Printf("Discovered %d services in registry", len(services))
+	// 	for _, svc := range services {
+	// 		log.Printf("- %s at %s", svc.ServiceName, svc.Address)
+	// 	}
+	// }
 
 	// Initialize and start the leader elector
 	peersMap := make(map[string]string)

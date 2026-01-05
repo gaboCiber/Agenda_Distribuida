@@ -29,7 +29,7 @@ func main() {
 	defer logger.Sync()
 
 	// Configurar el servicio de registro
-	registryService := services.NewRegistryService(cfg.RaftNodesURLs, logger)
+	// registryService := services.NewRegistryService(cfg.RaftNodesURLs, logger)
 
 	// Configurar Redis
 	redisOpts, err := redis.ParseURL(cfg.RedisURL)
@@ -113,12 +113,12 @@ func main() {
 	}()
 
 	// Registrar el servicio
-	if err := registryService.RegisterService(cfg.ServiceName, addr); err != nil {
-		logger.Error("Error registrando el servicio", zap.Error(err))
-	} else {
-		// Iniciar heartbeats solo si el registro fue exitoso
-		go registryService.StartHeartbeats(cfg.ServiceName, addr, 30*time.Second)
-	}
+	// if err := registryService.RegisterService(cfg.ServiceName, addr); err != nil {
+	// 	logger.Error("Error registrando el servicio", zap.Error(err))
+	// } else {
+	// 	// Iniciar heartbeats solo si el registro fue exitoso
+	// 	go registryService.StartHeartbeats(cfg.ServiceName, addr, 30*time.Second)
+	// }
 
 	// Esperar señales de terminación
 	sigChan := make(chan os.Signal, 1)

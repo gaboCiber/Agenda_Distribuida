@@ -63,32 +63,32 @@ func main() {
 	dbClient.SetRaftNodes(cfg.RaftNodesURLs)
 
 	// Register this service
-	if err := dbClient.RegisterService(""); err != nil {
-		logger.Error("Failed to register service", zap.Error(err))
-	} else {
-		logger.Info("Successfully registered service with registry")
+	// if err := dbClient.RegisterService(""); err != nil {
+	// 	logger.Error("Failed to register service", zap.Error(err))
+	// } else {
+	// 	logger.Info("Successfully registered service with registry")
 
-		// List all registered services for debugging
-		if services, err := dbClient.ListServices(); err != nil {
-			logger.Error("Failed to list services", zap.Error(err))
-		} else {
-			logger.Info("Discovered services in registry", zap.Int("count", len(services)))
-			for _, svc := range services {
-				logger.Info("Service",
-					zap.String("name", svc.ServiceName),
-					zap.String("address", svc.Address))
-			}
-		}
+	// 	// List all registered services for debugging
+	// 	if services, err := dbClient.ListServices(); err != nil {
+	// 		logger.Error("Failed to list services", zap.Error(err))
+	// 	} else {
+	// 		logger.Info("Discovered services in registry", zap.Int("count", len(services)))
+	// 		for _, svc := range services {
+	// 			logger.Info("Service",
+	// 				zap.String("name", svc.ServiceName),
+	// 				zap.String("address", svc.Address))
+	// 		}
+	// 	}
 
-		// Deregister on shutdown
-		defer func() {
-			if err := dbClient.DeregisterService(); err != nil {
-				logger.Error("Failed to deregister service", zap.Error(err))
-			} else {
-				logger.Info("Successfully deregistered service")
-			}
-		}()
-	}
+	// 	// Deregister on shutdown
+	// 	defer func() {
+	// 		if err := dbClient.DeregisterService(); err != nil {
+	// 			logger.Error("Failed to deregister service", zap.Error(err))
+	// 		} else {
+	// 			logger.Info("Successfully deregistered service")
+	// 		}
+	// 	}()
+	// }
 
 	// Initialize EventService
 	eventService := services.NewEventService(dbClient, logger)

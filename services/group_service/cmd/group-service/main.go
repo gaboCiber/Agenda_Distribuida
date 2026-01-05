@@ -86,26 +86,26 @@ func main() {
 	addr := fmt.Sprintf("%s:%d", containerIP, 8008)
 
 	// Configurar el servicio de registro
-	serviceName := cfg.ServiceName
-	serviceAddress := fmt.Sprintf("http://%s:8008", containerIP)
+	// serviceName := cfg.ServiceName
+	// serviceAddress := fmt.Sprintf("http://%s:8008", containerIP)
 
-	// Crear el servicio de registro
-	registryService := services.NewRegistryService(cfg.RaftNodesURLs, logger)
+	// // Crear el servicio de registro
+	// registryService := services.NewRegistryService(cfg.RaftNodesURLs, logger)
 
 	// Registrar el servicio
-	if err := registryService.RegisterService(serviceName, serviceAddress); err != nil {
-		logger.Error("Error registrando el servicio",
-			zap.String("service", serviceName),
-			zap.String("address", serviceAddress),
-			zap.Error(err))
-	} else {
-		logger.Info("Servicio registrado exitosamente",
-			zap.String("service", serviceName),
-			zap.String("address", serviceAddress))
+	// if err := registryService.RegisterService(serviceName, serviceAddress); err != nil {
+	// 	logger.Error("Error registrando el servicio",
+	// 		zap.String("service", serviceName),
+	// 		zap.String("address", serviceAddress),
+	// 		zap.Error(err))
+	// } else {
+	// 	logger.Info("Servicio registrado exitosamente",
+	// 		zap.String("service", serviceName),
+	// 		zap.String("address", serviceAddress))
 
-		// Iniciar el envío de heartbeats
-		go registryService.StartHeartbeats(serviceName, serviceAddress, 30*time.Second)
-	}
+	// 	// Iniciar el envío de heartbeats
+	// 	go registryService.StartHeartbeats(serviceName, serviceAddress, 30*time.Second)
+	// }
 
 	// Iniciar servidor HTTP para health checks
 	httpHandler := handlers.NewHTTPHandler(logger)
