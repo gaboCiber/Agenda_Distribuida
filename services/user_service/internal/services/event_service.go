@@ -15,6 +15,7 @@ import (
 type EventService struct {
 	dbClient       *clients.DBServiceClient
 	leaderDiscover *raft.LeaderDiscovery
+	raftNodes      []string
 	logger         *zap.Logger
 }
 
@@ -31,17 +32,22 @@ type AgendaEvent struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-func NewEventService(dbClient *clients.DBServiceClient, logger *zap.Logger) *EventService {
+func NewEventService(dbClient *clients.DBServiceClient, raftNodes []string, logger *zap.Logger) *EventService {
 	return &EventService{
 		dbClient:       dbClient,
 		leaderDiscover: raft.NewLeaderDiscovery(logger.Named("raft_leader")),
+		raftNodes:      raftNodes,
 		logger:         logger.Named("event_service"),
 	}
 }
 
 // FindAndUpdateLeader busca y actualiza el líder del cluster Raft
-func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []string) error {
-	leaderURL, err := s.leaderDiscover.FindAndUpdateLeader(ctx, raftNodes)
+func (s *EventService) FindAndUpdateLeader(ctx context.Context) error {
+	if len(s.raftNodes) == 0 {
+		return fmt.Errorf("no hay nodos Raft configurados para descubrimiento de líder")
+	}
+
+	leaderURL, err := s.leaderDiscover.FindAndUpdateLeader(ctx, s.raftNodes)
 	if err != nil {
 		return err
 	}
@@ -51,8 +57,18 @@ func (s *EventService) FindAndUpdateLeader(ctx context.Context, raftNodes []stri
 
 // UpdateRedisConnection actualiza la conexión Redis si el primary ha cambiado
 func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisURL string) (string, error) {
+	// Asegurarnos de consultar al líder vigente antes de pedir el primary
+	leaderCtx, cancelLeader := context.WithTimeout(ctx, 3*time.Second)
+	if err := s.FindAndUpdateLeader(leaderCtx); err != nil {
+		s.logger.Debug("No se pudo actualizar líder antes de pedir Redis primary", zap.Error(err))
+	}
+	cancelLeader()
+
 	// Obtener el Redis primary actual desde el DB service
-	primary, err := s.dbClient.GetRedisPrimary(ctx)
+	primaryCtx, cancelPrimary := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelPrimary()
+
+	primary, err := s.dbClient.GetRedisPrimary(primaryCtx)
 	if err != nil {
 		s.logger.Warn("No se pudo obtener el Redis primary", zap.Error(err))
 		return currentRedisURL, err
@@ -65,8 +81,8 @@ func (s *EventService) UpdateRedisConnection(ctx context.Context, currentRedisUR
 
 	// Si el primary es diferente al actual, necesitamos reconectar
 	if primary != currentRedisURL {
-		s.logger.Info("Redis primary ha cambiado", 
-			zap.String("old", currentRedisURL), 
+		s.logger.Info("Redis primary ha cambiado",
+			zap.String("old", currentRedisURL),
 			zap.String("new", primary))
 		return primary, nil
 	}

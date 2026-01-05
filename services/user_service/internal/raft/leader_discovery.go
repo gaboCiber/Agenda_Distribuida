@@ -45,17 +45,31 @@ func (ld *LeaderDiscovery) GetLeaderURL() string {
 
 // FindAndUpdateLeader encuentra y actualiza el líder del clúster Raft
 func (ld *LeaderDiscovery) FindAndUpdateLeader(ctx context.Context, raftNodes []string) (string, error) {
-	for _, nodeURL := range raftNodes {
-		nodeURL = strings.TrimSuffix(strings.TrimSpace(nodeURL), "/")
+	if len(raftNodes) == 0 {
+		return "", fmt.Errorf("no se proporcionaron nodos Raft para descubrir líder")
+	}
 
-		// Verificar si el nodo actual es el líder
-		isLeader, err := ld.isRaftLeader(nodeURL)
-		if err != nil {
-			ld.logger.Debug("Error verificando líder",
-				zap.String("node", nodeURL),
-				zap.Error(err))
+	for _, rawNodeURL := range raftNodes {
+		nodeURL := strings.TrimSuffix(strings.TrimSpace(rawNodeURL), "/")
+		if nodeURL == "" {
 			continue
 		}
+
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+
+		nodeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		isLeader, _ := ld.isRaftLeader(nodeCtx, nodeURL)
+		cancel()
+
+		// if err != nil {
+		// 	ld.logger.Debug("Error verificando líder",
+		// 		zap.String("node", nodeURL),
+		// 		zap.Error(err))
+		// 	lastErr = err
+		// 	continue
+		// }
 
 		if isLeader {
 			ld.Lock()
@@ -72,31 +86,31 @@ func (ld *LeaderDiscovery) FindAndUpdateLeader(ctx context.Context, raftNodes []
 }
 
 // isRaftLeader verifica si un nodo Raft es el líder actual
-func (ld *LeaderDiscovery) isRaftLeader(nodeURL string) (bool, error) {
+func (ld *LeaderDiscovery) isRaftLeader(ctx context.Context, nodeURL string) (bool, error) {
 	url := fmt.Sprintf("%s/raft/status", nodeURL)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("error creando request: %w", err)
 	}
 
 	resp, err := ld.httpClient.Do(req)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("error ejecutando request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("código de estado inesperado: %d", resp.StatusCode)
+		return false, nil
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return false, err
+		return false, fmt.Errorf("error leyendo respuesta: %w", err)
 	}
 
 	var nodeInfo RaftNodeInfo
 	if err := json.Unmarshal(body, &nodeInfo); err != nil {
-		return false, err
+		return false, fmt.Errorf("error parseando respuesta: %w", err)
 	}
 
 	return nodeInfo.State == "Leader", nil

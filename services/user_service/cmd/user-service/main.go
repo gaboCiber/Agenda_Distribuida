@@ -49,7 +49,7 @@ func main() {
 	dbClient := clients.NewDBServiceClient(cfg.DBServiceURL, logger)
 
 	// Servicio de eventos
-	eventService := services.NewEventService(dbClient, logger)
+	eventService := services.NewEventService(dbClient, cfg.RaftNodesURLs, logger)
 
 	// Manejador de eventos
 	eventHandler := handlers.NewEventHandler(
