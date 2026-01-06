@@ -151,7 +151,7 @@ start_raft_db() {
     docker run -d --name agenda-db-raft-node-1 --network $NETWORK_NAME \
       -p 8001:8001 \
       -e RAFT_ID=node1 \
-      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \
+      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node1/raft \
       -e DB_PATH=/data/node1/app.db \
       -e SERVER_PORT=8001 \
@@ -165,7 +165,7 @@ start_raft_db() {
     docker run -d --name agenda-db-raft-node-2 --network $NETWORK_NAME \
       -p 8002:8002 \
       -e RAFT_ID=node2 \
-      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \
+      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node2/raft \
       -e DB_PATH=/data/node2/app.db \
       -e SERVER_PORT=8002 \
@@ -179,7 +179,7 @@ start_raft_db() {
     docker run -d --name agenda-db-raft-node-3 --network $NETWORK_NAME \
       -p 8003:8003 \
       -e RAFT_ID=node3 \
-      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003,node4=agenda-db-raft-node-4:9004,node5=agenda-db-raft-node-5:9005,node6=agenda-db-raft-node-6:9006" \
+      -e RAFT_PEERS="node1=agenda-db-raft-node-1:9001,node2=agenda-db-raft-node-2:9002,node3=agenda-db-raft-node-3:9003" \
       -e RAFT_DATA_DIR=/data/node3/raft \
       -e DB_PATH=/data/node3/app.db \
       -e SERVER_PORT=8003 \

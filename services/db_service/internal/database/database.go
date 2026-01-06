@@ -198,7 +198,7 @@ func getMigrations() []migration {
 				CREATE TABLE IF NOT EXISTS group_members (
 					id TEXT PRIMARY KEY,
 					group_id TEXT NOT NULL,
-					user_id TEXT NOT NULL,
+					user_id INTEGER NOT NULL,
 					role TEXT NOT NULL DEFAULT 'member',
 					is_inherited BOOLEAN DEFAULT 0,
 					joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
