@@ -147,9 +147,9 @@ curl -X POST http://localhost:8000/api/v1/groups/{groupID}/members \
 # Replace {groupId} with actual group ID
 curl -X PUT http://localhost:8000/api/v1/groups/{groupId}/members \
   -H "Content-Type: application/json" \
-  -d '{
-    "email": "user@example.com",
-    "role": "admin"
+  -d '{ \
+    "email": "user@example.com", \
+    "role": "admin" \
   }'
 
 # 4. Remove a Member

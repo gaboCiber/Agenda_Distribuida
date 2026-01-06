@@ -126,6 +126,11 @@ func (s *Supervisor) stopLeaderLoops() {
 }
 
 func (s *Supervisor) synchronizeDB() {
+	if !s.elector.IsLeader() {
+		log.Println("Skipping DB synchronization: not leader.")
+		return
+	}
+
 	s.stateMu.RLock()
 	primary := s.currentPrimary
 	s.stateMu.RUnlock()
@@ -341,6 +346,10 @@ func (s *Supervisor) clusterHealthCheckLoop(ctx context.Context) {
 			log.Println("Stopping cluster health check loop.")
 			return
 		case <-ticker.C:
+			if !s.elector.IsLeader() {
+				log.Println("No longer leader, stopping cluster health check loop.")
+				return
+			}
 			log.Println("Cluster health check: scanning cluster state...")
 		}
 
