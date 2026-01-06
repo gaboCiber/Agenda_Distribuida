@@ -545,7 +545,7 @@ func (r *groupRepository) AddMember(ctx context.Context, member *models.GroupMem
 		for rows.Next() {
 			var eventID uuid.UUID
 			var isHierarchical bool
-			
+
 			if err := rows.Scan(&eventID, &isHierarchical); err != nil {
 				r.log.Error().
 					Err(err).
@@ -605,13 +605,20 @@ func (r *groupRepository) UpdateGroupMember(ctx context.Context, groupID, userID
         UPDATE group_members
         SET role = $1
         WHERE group_id = $2 AND user_id = $3
-        RETURNING id
     `
 
-	var id uuid.UUID
-	err := r.db.QueryRowContext(ctx, query, role, groupID, userID).Scan(&id)
+	result, err := r.db.ExecContext(ctx, query, role, groupID, userID)
 	if err != nil {
 		return fmt.Errorf("error updating group member: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("error getting rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return fmt.Errorf("no group member found with the specified group_id and user_id")
 	}
 
 	return nil

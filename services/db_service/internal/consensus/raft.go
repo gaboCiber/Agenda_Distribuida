@@ -533,21 +533,26 @@ func (rn *RaftNode) dispatchCommand(cmd DBCommand) error {
 			return groupRepo.AddMember(context.Background(), member)
 
 		case "UpdateGroupMember":
-			var member models.GroupMember
+			type updateMemberPayload struct {
+				GroupID uuid.UUID `json:"group_id"`
+				UserID  uuid.UUID `json:"user_id"`
+				Role    string    `json:"role"`
+			}
+			var member updateMemberPayload
 			if err := json.Unmarshal(cmd.Payload, &member); err != nil {
 				return fmt.Errorf("error al deserializar payload para GroupRepository.UpdateGroupMember: %w", err)
 			}
 
 			// LWW Logic
-			existingMember, err := groupRepo.GetGroupMember(context.Background(), member.GroupID, member.UserID)
-			if err != nil {
-				logger.InfoLogger.Printf("[LWW] Miembro del grupo no encontrado, procediendo con la operación.")
-			} else {
-				if !member.JoinedAt.After(existingMember.JoinedAt) {
-					logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el miembro %s en el grupo %s. El comando es más antiguo o igual.", member.UserID, member.GroupID)
-					return nil // Operación ignorada exitosamente
-				}
-			}
+			// existingMember, err := groupRepo.GetGroupMember(context.Background(), member.GroupID, member.UserID)
+			// if err != nil {
+			// 	logger.InfoLogger.Printf("[LWW] Miembro del grupo no encontrado, procediendo con la operación.")
+			// } else {
+			// 	if !member.JoinedAt.After(existingMember.JoinedAt) {
+			// 		logger.InfoLogger.Printf("[LWW] Se ignoró la actualización para el miembro %s en el grupo %s. El comando es más antiguo o igual.", member.UserID, member.GroupID)
+			// 		return nil // Operación ignorada exitosamente
+			// 	}
+			// }
 
 			return groupRepo.UpdateGroupMember(context.Background(), member.GroupID, member.UserID, member.Role)
 

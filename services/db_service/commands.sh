@@ -138,7 +138,7 @@ curl -X POST http://localhost:8000/api/v1/groups/{groupID}/members \
   -H "Content-Type: application/json" \
   -d '{
     "email": "test2@example.com",
-    "role": "admin"
+    "role": "member"
   }'
 
 # 3. Update a Member
@@ -146,10 +146,10 @@ curl -X POST http://localhost:8000/api/v1/groups/{groupID}/members \
 # Update a member's role using email
 # Replace {groupId} with actual group ID
 curl -X PUT http://localhost:8000/api/v1/groups/{groupId}/members \
-  -H "Content-Type: application/json" \
+  -H "Content-Type: application/json" 
   -d '{ \
-    "email": "user@example.com", \
-    "role": "admin" \
+    "email": "user@example.com", 
+    "role": "admin" 
   }'
 
 # 4. Remove a Member
