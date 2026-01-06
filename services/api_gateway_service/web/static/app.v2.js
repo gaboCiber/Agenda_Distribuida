@@ -303,7 +303,10 @@ async function loadEvents() {
                             <div class="date">Fin: ${endTime.toLocaleString()}</div>
                             ${event.location ? `<div class="date">Ubicación: ${event.location}</div>` : ''}
                         </div>
-                        <button onclick="deleteEvent('${event.id}')" class="btn-danger" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;" title="Eliminar evento">🗑️</button>
+                        <div style="display: flex; flex-direction: column; gap: 5px;">
+                            <button onclick="showUpdateEventForm('${event.id}')" class="btn-primary" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;" title="Actualizar evento">✏️</button>
+                            <button onclick="deleteEvent('${event.id}')" class="btn-danger" style="margin-left: 10px; padding: 5px 10px; font-size: 12px;" title="Eliminar evento">🗑️</button>
+                        </div>
                     </div>
                 `;
                 container.appendChild(eventCard);
@@ -913,13 +916,19 @@ function getTabTitle(tabName) {
 
 // Función para cargar miembros en la pestaña de gestión
 async function loadManagementMembers() {
+    console.log('🔄 [DEBUG] loadManagementMembers called');
+    
     const modal = document.getElementById('group-management-modal');
     const groupId = modal.dataset.groupId;
     const groupName = modal.dataset.groupName;
     const isHierarchical = modal.dataset.isHierarchical === 'true';
+    
+    console.log('🔍 [DEBUG] Loading members for group:', { groupId, isHierarchical });
 
     try {
         const result = await apiRequest(`/groups/members?group_id=${groupId}`);
+        console.log('📋 [DEBUG] Members received in loadManagementMembers:', result);
+        
         const membersList = document.getElementById('management-members-list');
 
         if (result.members && result.members.length > 0) {
@@ -956,7 +965,8 @@ async function loadManagementMembers() {
                             ${roleDisplay}
                         </div>
                         ${isHierarchical ?
-                            `<button class="btn-secondary" style="margin-left: 10px; padding: 5px 10px;" onclick="changeMemberRole('${member.id}', '${userRole}')">
+                            `<button class="btn-secondary" style="margin-left: 10px; padding: 5px 10px;" 
+                             onclick="console.log('🔘 Button clicked!'); changeMemberRole('${member.id}', '${userRole}')">
                                 Cambiar Rol
                             </button>` : ''
                         }
@@ -990,37 +1000,58 @@ function loadGroupSettings() {
 
 // Función para cambiar el rol de un miembro
 async function changeMemberRole(memberId, currentRole) {
+    console.log('🔄 [DEBUG] changeMemberRole called with:', { memberId, currentRole });
+    
     const modal = document.getElementById('group-management-modal');
     const groupId = modal.dataset.groupId;
     const userRole = modal.dataset.userRole || 'member';
+    
+    console.log('🔍 [DEBUG] Group management modal data:', { groupId, userRole });
 
     // Verificar permisos - solo admins pueden cambiar roles
     if (userRole !== 'admin') {
+        console.log('❌ [DEBUG] Permission denied - user is not admin:', userRole);
         showNotification('Solo los administradores pueden cambiar roles', 'error');
         return;
     }
+    
+    console.log('✅ [DEBUG] Permission check passed - user is admin');
 
     const newRole = currentRole === 'admin' ? 'member' : 'admin';
+    console.log('🔄 [DEBUG] Role change planned:', { currentRole, newRole });
 
     try {
         console.log(`🔄 Changing member ${memberId} role from ${currentRole} to ${newRole} in group ${groupId}`);
 
         // Obtener el email del miembro (necesitamos buscarlo en la lista)
+        console.log('🔍 [DEBUG] Fetching group members to find member email...');
         const membersResult = await apiRequest(`/groups/members?group_id=${groupId}`);
+        console.log('📋 [DEBUG] Group members received:', membersResult);
+        
         const member = membersResult.members.find(m => m.id === memberId);
+        console.log('👤 [DEBUG] Found member to update:', member);
+        
         const memberEmail = member.user_email || member.userEmail || member.email;
+        console.log('📧 [DEBUG] Member email extracted:', memberEmail);
 
         if (!memberEmail) {
+            console.log('❌ [DEBUG] No member email found');
             showNotification('No se pudo obtener el email del miembro', 'error');
             return;
         }
 
-        const result = await apiRequest(`/groups/${groupId}/members/${encodeURIComponent(memberEmail)}/role`, 'PUT', {
+        const apiUrl = `/groups/${groupId}/members/${encodeURIComponent(memberEmail)}/role`;
+        const payload = {
             group_id: groupId,
             email: memberEmail,
             role: newRole,
             user_id: userId
-        });
+        };
+        
+        console.log('🌐 [DEBUG] Making API call:', { apiUrl, payload });
+
+        const result = await apiRequest(apiUrl, 'PUT', payload);
+        console.log('✅ [DEBUG] API call successful:', result);
 
         showNotification(`Rol cambiado a ${getRoleDisplayName(newRole)} exitosamente!`, 'success');
         console.log('✅ Member role updated successfully:', result);
@@ -1743,7 +1774,145 @@ window.onload = () => {
     setInterval(debugState, 10000);
 
     console.log('✅ [DEBUG] App initialization completed');
-};
+}
+
+// Show update event form with current event data
+async function showUpdateEventForm(eventId) {
+    try {
+        console.log('✏️ Loading event for update:', eventId);
+        
+        // Get current event data
+        const events = await apiRequest(`/events?user_id=${encodeURIComponent(userId)}`);
+        const event = events.events.find(e => e.id === eventId);
+        
+        if (!event) {
+            showNotification('Evento no encontrado', 'error');
+            return;
+        }
+        
+        console.log('🔍 Event found for update:', { id: event.id, title: event.title });
+        
+        // Populate form with current data
+        document.getElementById('update-event-id').value = event.id;
+        console.log('🔍 Set update-event-id to:', document.getElementById('update-event-id').value);
+        document.getElementById('update-event-title').value = event.title || '';
+        document.getElementById('update-event-description').value = event.description || '';
+        document.getElementById('update-event-location').value = event.location || '';
+        
+        // Convert dates to datetime-local format
+        const startTime = event.start_time ? new Date(event.start_time) : new Date();
+        const endTime = event.end_time ? new Date(event.end_time) : new Date();
+        
+        // Format for datetime-local input (YYYY-MM-DDTHH:MM)
+        const formatDateTimeLocal = (date) => {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            return `${year}-${month}-${day}T${hours}:${minutes}`;
+        };
+        
+        document.getElementById('update-event-start').value = formatDateTimeLocal(startTime);
+        document.getElementById('update-event-end').value = formatDateTimeLocal(endTime);
+        
+        // Show modal
+        document.getElementById('update-event-modal').style.display = 'block';
+        
+    } catch (error) {
+        console.error('❌ Failed to load event for update:', error);
+        showNotification('Error al cargar evento para actualizar: ' + error.message, 'error');
+    }
+}
+
+// Update event function
+async function updateEvent(event) {
+    event.preventDefault();
+    
+    try {
+        const eventId = document.getElementById('update-event-id').value;
+        const title = document.getElementById('update-event-title').value;
+        const description = document.getElementById('update-event-description').value;
+        const location = document.getElementById('update-event-location').value;
+        const startTime = document.getElementById('update-event-start').value;
+        const endTime = document.getElementById('update-event-end').value;
+        
+        console.log('✏️ Updating event:', {
+            eventId,
+            title,
+            description,
+            location,
+            startTime,
+            endTime
+        });
+        
+        // Create update event data
+        const updateData = {
+            id: generateUUID(),
+            type: "agenda.event.update",
+            data: {
+                user_id: userId,
+                event_id: eventId,
+                title: title,
+                description: description,
+                location: location,
+                start_time: startTime ? new Date(startTime).toISOString() : undefined,
+                end_time: endTime ? new Date(endTime).toISOString() : undefined
+            },
+            metadata: {
+                reply_to: "users_events_response"
+            }
+        };
+        
+        // Remove undefined values (but never remove event_id)
+        Object.keys(updateData.data).forEach(key => {
+            if (key !== 'event_id' && (updateData.data[key] === undefined || updateData.data[key] === '')) {
+                delete updateData.data[key];
+            }
+        });
+        
+        console.log('🔍 Final update data to send:', JSON.stringify(updateData, null, 2));
+        
+        // Send update request via Redis (as specified in requirements)
+        const response = await fetch('/api/events/update', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`
+            },
+            body: JSON.stringify(updateData)
+        });
+        
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            showNotification('Evento actualizado exitosamente!', 'success');
+            closeModal('update-event-modal');
+            
+            // Reload events to show updated data
+            await loadEvents();
+        } else {
+            throw new Error(result.error || 'Error al actualizar evento');
+        }
+        
+    } catch (error) {
+        console.error('❌ Failed to update event:', error);
+        showNotification('Error al actualizar evento: ' + error.message, 'error');
+    }
+}
+
+// Generate UUID for event ID
+function generateUUID() {
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+}
 
 // Delete event function
 async function deleteEvent(eventId) {

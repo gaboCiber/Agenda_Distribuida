@@ -383,3 +383,125 @@ func (h *EventHandler) DeleteEvent(c *gin.Context) {
 		"event_id": eventID,
 	})
 }
+
+// UpdateEvent handles event update requests
+func (h *EventHandler) UpdateEvent(c *gin.Context) {
+	var req map[string]interface{}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		h.logger.Error("❌ Error parsing update event request", zap.Error(err))
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	h.logger.Info("📝 Raw update request received", zap.Any("full_request", req))
+
+	// Extract data from the nested structure
+	data, ok := req["data"].(map[string]interface{})
+	if !ok {
+		h.logger.Error("❌ Missing data field in update request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "data field is required"})
+		return
+	}
+
+	// Extract required fields from data
+	var eventID string
+	switch v := data["event_id"].(type) {
+	case string:
+		eventID = v
+	case nil:
+		h.logger.Error("❌ event_id is nil in update request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "event_id is required"})
+		return
+	default:
+		h.logger.Error("❌ event_id is not a string in update request", zap.Any("event_id_type", fmt.Sprintf("%T", v)))
+		c.JSON(http.StatusBadRequest, gin.H{"error": "event_id must be a string"})
+		return
+	}
+
+	if eventID == "" {
+		h.logger.Error("❌ Empty event_id in update request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "event_id is required"})
+		return
+	}
+
+	userID, ok := data["user_id"].(string)
+	if !ok || userID == "" {
+		h.logger.Error("❌ Missing user_id in update request")
+		c.JSON(http.StatusBadRequest, gin.H{"error": "user_id is required"})
+		return
+	}
+
+	h.logger.Info("📝 Updating event",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	// Create update event data
+	eventData := map[string]interface{}{
+		"id":   uuid.New().String(),
+		"type": "agenda.event.update",
+		"data": map[string]interface{}{
+			"user_id":  userID,
+			"event_id": eventID,
+		},
+		"metadata": map[string]string{
+			"reply_to": "users_events_response",
+		},
+	}
+
+	// Add optional fields if present (from data, not req)
+	if title, ok := data["title"].(string); ok && title != "" {
+		eventData["data"].(map[string]interface{})["title"] = title
+	}
+	if description, ok := data["description"].(string); ok {
+		eventData["data"].(map[string]interface{})["description"] = description
+	}
+	if location, ok := data["location"].(string); ok {
+		eventData["data"].(map[string]interface{})["location"] = location
+	}
+	if startTime, ok := data["start_time"].(string); ok && startTime != "" {
+		eventData["data"].(map[string]interface{})["start_time"] = startTime
+	}
+	if endTime, ok := data["end_time"].(string); ok && endTime != "" {
+		eventData["data"].(map[string]interface{})["end_time"] = endTime
+	}
+
+	// Send event and wait for response
+	response, err := h.sendEventAndWaitForResponse(c.Request.Context(), eventData)
+	if err != nil {
+		h.logger.Error("❌ Failed to update event",
+			zap.Error(err),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update event: " + err.Error()})
+		return
+	}
+
+	if !response.Success {
+		h.logger.Warn("⚠️ Event update failed",
+			zap.String("error", response.Error),
+			zap.String("event_id", eventID),
+			zap.String("user_id", userID))
+
+		// User-friendly error messages
+		userMessage := "Failed to update event"
+		if strings.Contains(response.Error, "not found") {
+			userMessage = "Event not found"
+		} else if strings.Contains(response.Error, "permission") {
+			userMessage = "You don't have permission to update this event"
+		}
+
+		c.JSON(http.StatusBadRequest, gin.H{"error": userMessage})
+		return
+	}
+
+	h.logger.Info("✅ Event updated successfully",
+		zap.String("event_id", eventID),
+		zap.String("user_id", userID))
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":  true,
+		"message":  "Event updated successfully",
+		"event_id": eventID,
+		"data":     response.Data,
+	})
+}

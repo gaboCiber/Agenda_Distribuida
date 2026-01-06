@@ -162,6 +162,7 @@ func main() {
 		{
 			events.POST("", eventHandler.CreateEvent)
 			events.GET("", eventHandler.GetEvents)
+			events.POST("/update", eventHandler.UpdateEvent)
 			events.DELETE("/:id", eventHandler.DeleteEvent)
 		}
 
@@ -323,6 +324,9 @@ func initLogger(level string) *zap.Logger {
 
 func corsMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		// Log todas las peticiones para depuración
+		fmt.Printf("[HTTP-DEBUG] %s %s from %s\n", c.Request.Method, c.Request.URL.Path, c.Request.RemoteAddr)
+
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Content-Type, Authorization")

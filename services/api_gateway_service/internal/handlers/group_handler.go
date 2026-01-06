@@ -603,6 +603,9 @@ func (h *GroupHandler) enrichGroupsWithUsernames(ctx context.Context, groups []i
 func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (string, error) {
 	eventID := uuid.New().String()
 
+	// Get the correct user channel for this request
+	userChannel := h.loadBalancer.SelectUserNode()
+
 	eventData := map[string]interface{}{
 		"id":   eventID,
 		"type": "user.get",
@@ -610,7 +613,7 @@ func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (str
 			"user_id": userID,
 		},
 		"metadata": map[string]string{
-			"reply_to": "users_events_response",
+			"reply_to": strings.Replace(userChannel, "user_events_", "users_events_response_", 1),
 		},
 	}
 
@@ -627,8 +630,7 @@ func (h *GroupHandler) getUserEmailByID(ctx context.Context, userID string) (str
 
 	// Publish to the correct channel: users_events
 	redisClient := h.responseHandler.GetRedisClient()
-	groupChannel := h.loadBalancer.SelectGroupNode()
-	if err := redisClient.Publish(ctx, groupChannel, eventJSON).Err(); err != nil {
+	if err := redisClient.Publish(ctx, userChannel, eventJSON).Err(); err != nil {
 		return "", fmt.Errorf("failed to publish event: %w", err)
 	}
 
